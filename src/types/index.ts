@@ -312,6 +312,13 @@ export interface BijazConfig {
       path: string;
     };
     sources: Record<string, unknown>;
+    roaming?: {
+      enabled: boolean;
+      allowSources: string[];
+      allowTypes: Array<'news' | 'social' | 'market'>;
+      minTrust: 'low' | 'medium' | 'high';
+      socialOptIn: boolean;
+    };
   };
   memory: {
     dbPath: string;

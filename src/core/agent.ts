@@ -1,5 +1,5 @@
 import type { BijazConfig } from './config.js';
-import { createLlmClient } from './llm.js';
+import { createLlmClient, createOpenAiClient } from './llm.js';
 import { decideTrade } from './decision.js';
 import { Logger } from './logger.js';
 import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
@@ -16,9 +16,13 @@ import { getUserContext, updateUserContext } from '../memory/user.js';
 import { ConversationHandler } from './conversation.js';
 import { AutonomousManager } from './autonomous.js';
 import { generateDailyReport, formatDailyReport } from './opportunities.js';
+import { explainPrediction } from './explain.js';
+import { checkExposureLimits } from './exposure.js';
 
 export class BijazAgent {
   private llm: ReturnType<typeof createLlmClient>;
+  private infoLlm: ReturnType<typeof createOpenAiClient>;
+  private executorLlm: ReturnType<typeof createOpenAiClient>;
   private marketClient: PolymarketMarketClient;
   private executor: ExecutionAdapter;
   private limiter: DbSpendingLimitEnforcer;
@@ -33,6 +37,8 @@ export class BijazAgent {
       process.env.BIJAZ_DB_PATH = config.memory.dbPath;
     }
     this.llm = createLlmClient(this.config);
+    this.infoLlm = createOpenAiClient(this.config, this.config.agent.openaiModel);
+    this.executorLlm = createOpenAiClient(this.config, this.config.agent.openaiModel);
     this.marketClient = new PolymarketMarketClient(this.config);
     this.executor = this.createExecutor(config);
 
@@ -42,7 +48,12 @@ export class BijazAgent {
       confirmationThreshold: config.wallet?.limits?.confirmationThreshold ?? 10,
     });
 
-    this.conversation = new ConversationHandler(this.llm, this.marketClient, this.config);
+    this.conversation = new ConversationHandler(
+      this.llm,
+      this.marketClient,
+      this.config,
+      this.infoLlm
+    );
 
     this.autonomous = new AutonomousManager(
       this.llm,
@@ -155,6 +166,15 @@ export class BijazAgent {
       return `Resolved ${updated} prediction(s).`;
     }
 
+    // Command: /explain <predictionId>
+    if (trimmed.startsWith('/explain ')) {
+      const predictionId = trimmed.replace('/explain ', '').trim();
+      if (!predictionId) {
+        return 'Usage: /explain <predictionId>';
+      }
+      return this.explainPrediction(predictionId);
+    }
+
     // Command: /profile
     if (trimmed === '/profile') {
       const profile = getUserContext(sender);
@@ -202,6 +222,17 @@ export class BijazAgent {
         reasoning: `Manual command from ${sender}`,
       };
 
+      const exposureCheck = checkExposureLimits({
+        config: this.config,
+        market,
+        outcome: decision.outcome,
+        amount,
+        side: decision.action,
+      });
+      if (!exposureCheck.allowed) {
+        return `Trade blocked: ${exposureCheck.reason ?? 'exposure limit exceeded'}`;
+      }
+
       const limitCheck = await this.limiter.checkAndReserve(amount);
       if (!limitCheck.allowed) {
         return `Trade blocked: ${limitCheck.reason ?? 'limit exceeded'}`;
@@ -221,6 +252,13 @@ export class BijazAgent {
       const marketId = trimmed.replace('/analyze ', '').trim();
       this.logger.info(`Analyzing market ${marketId} for ${sender}`);
       return this.conversation.analyzeMarket(sender, marketId);
+    }
+
+    // Command: /analyze-json <marketId>
+    if (trimmed.startsWith('/analyze-json ')) {
+      const marketId = trimmed.replace('/analyze-json ', '').trim();
+      const result = await this.conversation.analyzeMarketStructured(sender, marketId);
+      return JSON.stringify(result, null, 2);
     }
 
     // Command: /ask <topic> - Ask about a topic and find relevant markets
@@ -339,6 +377,8 @@ export class BijazAgent {
 Just type naturally to chat about predictions, events, or markets.
 /ask <topic> - Ask about a topic and find relevant markets
 /analyze <id> - Deep analysis of a specific market
+/analyze-json <id> - Structured analysis (JSON)
+/explain <predictionId> - Explain a prediction decision
 /markets <query> - Search for prediction markets
 /clear - Clear conversation history
 
@@ -385,6 +425,10 @@ Just type naturally to chat about predictions, events, or markets.
     return buildBriefing(10);
   }
 
+  private async explainPrediction(predictionId: string): Promise<string> {
+    return explainPrediction({ predictionId, config: this.config, llm: this.llm });
+  }
+
 
   private async autonomousScan(): Promise<string> {
     const markets = await this.getMarketsForScan();
@@ -400,7 +444,7 @@ Just type naturally to chat about predictions, events, or markets.
         break;
       }
 
-      const decision = await decideTrade(this.llm, market, remaining);
+      const decision = await decideTrade(this.llm, this.executorLlm, market, remaining);
       if (decision.action === 'hold') {
         decisions.push(`${market.id}: hold`);
         continue;

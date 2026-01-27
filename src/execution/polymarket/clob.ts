@@ -95,6 +95,27 @@ export interface TickSize {
   minOrderSize: string;
 }
 
+export interface CLOBMarketToken {
+  token_id: string;
+  outcome: string;
+  price?: string;
+  winner?: boolean;
+}
+
+export interface CLOBMarket {
+  condition_id: string;
+  question_id?: string;
+  tokens: CLOBMarketToken[];
+  neg_risk?: boolean;
+  min_tick_size?: string;
+  min_order_size?: string;
+  rewards?: {
+    rates: Array<{ asset_address: string; rewards_daily_rate: number }>;
+    min_size: string;
+    max_spread: string;
+  };
+}
+
 // ============================================================================
 // CLOB Client
 // ============================================================================
@@ -202,6 +223,83 @@ export class PolymarketCLOBClient {
     }
 
     return (await response.json()) as { bid: string; ask: string };
+  }
+
+  /**
+   * Get market details from CLOB API including token IDs.
+   * This is the authoritative source for token IDs needed for order placement.
+   */
+  async getMarket(conditionId: string): Promise<CLOBMarket> {
+    const url = `${this.clobUrl}/markets/${conditionId}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new CLOBError(`Failed to fetch market: ${response.status}`, response.status);
+    }
+
+    return (await response.json()) as CLOBMarket;
+  }
+
+  /**
+   * List markets from CLOB API.
+   * Returns markets with full token information.
+   */
+  async listMarkets(next_cursor?: string): Promise<{ data: CLOBMarket[]; next_cursor?: string }> {
+    const url = new URL(`${this.clobUrl}/markets`);
+    if (next_cursor) {
+      url.searchParams.set('next_cursor', next_cursor);
+    }
+    const response = await fetch(url.toString());
+
+    if (!response.ok) {
+      throw new CLOBError(`Failed to list markets: ${response.status}`, response.status);
+    }
+
+    return (await response.json()) as { data: CLOBMarket[]; next_cursor?: string };
+  }
+
+  /**
+   * Get token IDs for a market condition.
+   * Convenience method that extracts just the token IDs from market data.
+   * Returns [yesTokenId, noTokenId] or null if not found.
+   */
+  async getTokenIds(conditionId: string): Promise<[string, string] | null> {
+    try {
+      const market = await this.getMarket(conditionId);
+      if (!market.tokens || market.tokens.length < 2) {
+        return null;
+      }
+
+      // Find Yes and No tokens
+      const yesToken = market.tokens.find(t => t.outcome.toLowerCase() === 'yes');
+      const noToken = market.tokens.find(t => t.outcome.toLowerCase() === 'no');
+
+      if (yesToken && noToken) {
+        return [yesToken.token_id, noToken.token_id];
+      }
+
+      // Fallback: assume first two tokens are Yes/No in order
+      const tokens = market.tokens;
+      if (tokens[0] && tokens[1]) {
+        return [tokens[0].token_id, tokens[1].token_id];
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Check if a market is negative risk.
+   */
+  async isNegRiskMarket(conditionId: string): Promise<boolean> {
+    try {
+      const market = await this.getMarket(conditionId);
+      return market.neg_risk === true;
+    } catch {
+      return false;
+    }
   }
 
   // ==========================================================================

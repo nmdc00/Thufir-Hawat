@@ -38,6 +38,7 @@ describe('proactive search', () => {
       wallet: { limits: { daily: 100, perTrade: 25, confirmationThreshold: 10 } },
       polymarket: { api: { gamma: 'https://example.com', clob: 'https://example.com' } },
       intel: {
+        roaming: { enabled: true, socialOptIn: true, minTrust: 'low' },
         sources: {
           newsapi: { enabled: true, queries: [] },
           googlenews: { enabled: true, queries: [] },

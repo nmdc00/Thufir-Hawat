@@ -14,7 +14,9 @@ import type { BijazConfig } from './config.js';
 import type { PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
+import { checkExposureLimits } from './exposure.js';
 import { scanForOpportunities, generateDailyReport, formatDailyReport, type Opportunity } from './opportunities.js';
+import { getDailyPnLRollup } from './daily_pnl.js';
 import { createPrediction, listOpenPositions } from '../memory/predictions.js';
 import { openDatabase } from '../memory/db.js';
 import { Logger } from './logger.js';
@@ -270,6 +272,17 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return `${opp.market.id}: Skipped (insufficient budget)`;
     }
 
+    const exposureCheck = checkExposureLimits({
+      config: this.config,
+      market: opp.market,
+      outcome: opp.direction.includes('YES') ? 'YES' : 'NO',
+      amount,
+      side: opp.direction.includes('LONG') ? 'buy' : 'sell',
+    });
+    if (!exposureCheck.allowed) {
+      return `${opp.market.id}: Blocked (${exposureCheck.reason ?? 'exposure limit exceeded'})`;
+    }
+
     // Check limits
     const limitCheck = await this.limiter.checkAndReserve(amount);
     if (!limitCheck.allowed) {
@@ -398,6 +411,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
    */
   async generateDailyPnLReport(): Promise<string> {
     const pnl = this.getDailyPnL();
+    const rollup = getDailyPnLRollup(pnl.date);
     const report = await generateDailyReport(this.llm, this.marketClient, this.bijazConfig);
 
     const lines: string[] = [];
@@ -413,6 +427,19 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     lines.push(`• Full auto: ${status.fullAuto ? 'ON' : 'OFF'}`);
     lines.push(`• Paused: ${status.isPaused ? `YES (${status.pauseReason})` : 'NO'}`);
     lines.push(`• Remaining daily budget: $${status.remainingDaily.toFixed(2)}`);
+    lines.push('');
+    lines.push('**PnL Rollup:**');
+    lines.push(`• Realized: ${rollup.realizedPnl >= 0 ? '+' : ''}$${rollup.realizedPnl.toFixed(2)}`);
+    lines.push(`• Unrealized: ${rollup.unrealizedPnl >= 0 ? '+' : ''}$${rollup.unrealizedPnl.toFixed(2)}`);
+    lines.push(`• Total: ${rollup.totalPnl >= 0 ? '+' : ''}$${rollup.totalPnl.toFixed(2)}`);
+    if (rollup.byDomain.length > 0) {
+      lines.push('• By domain:');
+      for (const row of rollup.byDomain) {
+        lines.push(
+          `  - ${row.domain}: ${row.totalPnl >= 0 ? '+' : ''}$${row.totalPnl.toFixed(2)}`
+        );
+      }
+    }
     lines.push('');
     lines.push('─'.repeat(40));
     lines.push('');

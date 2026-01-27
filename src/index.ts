@@ -17,6 +17,8 @@ import { listCalibrationSummaries } from './memory/calibration.js';
 import { listOpenPositions } from './memory/predictions.js';
 import { listOpenPositionsFromTrades } from './memory/trades.js';
 import { getCashBalance } from './memory/portfolio.js';
+import { explainPrediction } from './core/explain.js';
+import { checkExposureLimits } from './core/exposure.js';
 
 // Re-export types
 export * from './types/index.js';
@@ -67,6 +69,7 @@ export const VERSION = '0.1.0';
  */
 export class Bijaz {
   private configPath?: string;
+  private config?: BijazConfig;
   private userId: string;
   private llm?: ReturnType<typeof createLlmClient>;
   private marketClient?: PolymarketMarketClient;
@@ -89,6 +92,7 @@ export class Bijaz {
     }
 
     const config = loadConfig(this.configPath);
+    this.config = config;
     if (config.memory?.dbPath) {
       process.env.BIJAZ_DB_PATH = config.memory.dbPath;
     }
@@ -152,6 +156,17 @@ export class Bijaz {
   }
 
   /**
+   * Analyze a market with structured output.
+   */
+  async analyzeStructured(_marketId: string): Promise<unknown> {
+    this.ensureStarted();
+    if (!this.conversation) {
+      throw new Error('Conversation handler not initialized');
+    }
+    return this.conversation.analyzeMarketStructured(this.userId, _marketId);
+  }
+
+  /**
    * Execute a trade.
    */
   async trade(_params: {
@@ -165,6 +180,19 @@ export class Bijaz {
     }
 
     const market = await this.marketClient.getMarket(_params.marketId);
+    const exposureCheck = checkExposureLimits({
+      config: this.config,
+      market,
+      outcome: _params.outcome,
+      amount: _params.amount,
+      side: 'buy',
+    });
+    if (!exposureCheck.allowed) {
+      return {
+        executed: false,
+        message: exposureCheck.reason ?? 'Trade blocked by exposure limits',
+      };
+    }
     const limitCheck = await this.limiter.checkAndReserve(_params.amount);
     if (!limitCheck.allowed) {
       return {
@@ -277,6 +305,14 @@ export class Bijaz {
       return summaries.filter((summary) => summary.domain === _domain);
     }
     return summaries;
+  }
+
+  /**
+   * Explain a prediction decision.
+   */
+  async explainPrediction(predictionId: string): Promise<string> {
+    this.ensureStarted();
+    return explainPrediction({ predictionId, config: this.config, llm: this.llm });
   }
 
   /**

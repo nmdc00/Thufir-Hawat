@@ -156,7 +156,7 @@ function suggestPositionSize(
   return { suggested: Math.round(suggested * 100) / 100, reasoning };
 }
 
-const SYSTEM_PROMPT = `You are Bijaz, an autonomous prediction market trader.
+const EXECUTOR_PROMPT = `You are Bijaz, an autonomous prediction market trader.
 
 Your key principles:
 1. Be CALIBRATED - adjust confidence based on your historical accuracy
@@ -178,7 +178,8 @@ If your calibration in this domain is poor, be extra conservative or hold.
 `;
 
 export async function decideTrade(
-  llm: LlmClient,
+  plannerLlm: LlmClient,
+  executorLlm: LlmClient,
   market: Market,
   remainingDaily: number
 ): Promise<Decision> {
@@ -198,7 +199,7 @@ export async function decideTrade(
   // For now, assume max 10% edge for suggestion purposes
   const positionSuggestion = suggestPositionSize(0.10, domainCalibration, remainingDaily);
 
-  const userPrompt = `## Market
+  const marketContext = `## Market
 Question: ${market.question}
 Outcomes: ${market.outcomes.join(', ')}
 Current Prices: ${JSON.stringify(market.prices)}
@@ -211,16 +212,48 @@ Remaining daily budget: $${remainingDaily.toFixed(2)}
 Suggested max position: $${positionSuggestion.suggested.toFixed(2)} (${positionSuggestion.reasoning})
 ${calibrationContext}
 ${recentPredictions}
+`.trim();
+
+  const plannerPrompt = `${marketContext}
+
+## Task
+Provide a concise trade plan (max 120 words). Include:
+- recommended action: buy/sell/hold
+- outcome: YES/NO if buy/sell
+- confidence: low/medium/high
+- suggested amount in USD (respect remaining budget + suggested max position)
+- key factors and key risks
+
+Do NOT return JSON. Do NOT include chain-of-thought. Keep it short and factual.`;
+
+  let plan = '';
+  try {
+    const plannerResponse = await plannerLlm.complete(
+      [
+        { role: 'system', content: 'You are a concise trading planner.' },
+        { role: 'user', content: plannerPrompt },
+      ],
+      { temperature: 0.2 }
+    );
+    plan = plannerResponse.content.trim();
+  } catch {
+    plan = '';
+  }
+
+  const executorPrompt = `${marketContext}
+
+## Planner Guidance
+${plan || '(none)'}
 
 ## Task
 Analyze this market. If you see edge ≥5% (your probability estimate differs from market price by ≥0.05), consider trading. Otherwise, hold.
 
 Remember: Your calibration data shows your historical accuracy. If you've been overconfident or wrong in this domain, adjust accordingly.`;
 
-  const response = await llm.complete(
+  const response = await executorLlm.complete(
     [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: userPrompt },
+      { role: 'system', content: EXECUTOR_PROMPT },
+      { role: 'user', content: executorPrompt },
     ],
     { temperature: 0.1 }
   );

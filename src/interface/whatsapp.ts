@@ -59,6 +59,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
           await onMessage({
             channel: 'whatsapp',
             senderId: sender,
+            peerKind: 'dm',
             text: msg.text?.body?.trim() ?? '',
           });
         }

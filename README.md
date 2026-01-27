@@ -244,6 +244,12 @@ intel:
     model: text-embedding-3-small
     apiBaseUrl: https://api.openai.com
   retentionDays: 30
+  roaming:
+    enabled: true
+    allowSources: []     # optional allowlist of source names
+    allowTypes: []       # optional allowlist of types: news|social|market
+    minTrust: medium
+    socialOptIn: false   # must be true to include social sources in proactive search
 ```
 
 #### Autonomy
@@ -326,6 +332,10 @@ channels:
 # Set up your wallet (NEVER share your private key)
 bijaz wallet setup
 
+# Create a .env file and validate API keys
+bijaz env init
+bijaz env check
+
 # Configure prediction markets
 bijaz markets connect polymarket
 
@@ -358,6 +368,8 @@ bijaz portfolio
 bijaz portfolio --set-cash 1000
 bijaz portfolio --add-cash 250
 bijaz portfolio --withdraw-cash 100
+# Reconcile ledger cash vs on-chain USDC
+bijaz portfolio --reconcile
 
 # Sync market cache (improves portfolio pricing)
 bijaz markets sync --limit 200
@@ -384,7 +396,22 @@ bijaz user set <id> --domains politics,crypto --risk moderate --pref timezone=ES
 bijaz intel status
 bijaz intel recent --limit 20
 bijaz intel alerts --limit 50
-bijaz intel proactive --provider internal --max-queries 8
+bijaz intel proactive --max-queries 8
+```
+
+### Predictions (CLI)
+```bash
+bijaz predictions add --market-id m1 --title "Example" --outcome YES --prob 0.6
+bijaz predictions list
+bijaz predictions show <id>
+bijaz predictions explain <id>
+bijaz predictions resolve
+```
+
+### PnL (CLI)
+```bash
+bijaz pnl
+bijaz pnl --date 2026-01-26
 ```
 
 ### Memory (CLI)
@@ -402,6 +429,8 @@ bijaz memory prune --days 90
 - Persistent memory with auto-compaction and semantic recall
 - `/ask <topic>` - Ask about a topic and find relevant markets
 - `/analyze <marketId>` - Deep LLM analysis of a specific market
+- `/analyze-json <marketId>` - Structured analysis (JSON)
+- `/explain <predictionId>` - Explain a prediction decision
 - `/markets <query>` - Search for prediction markets
 - `/clear` - Clear conversation history
 - `/alerts` - Start intel alert setup
@@ -633,16 +662,32 @@ MIT License - See [LICENSE](LICENSE)
 ## Clawdbot Integration Plan
 
 Bijaz is designed to eventually fork [Clawdbot](https://github.com/clawdbot/clawdbot) for its:
-- **Proactive search capabilities** - now implemented locally, but Clawdbot offers a mature foundation
+- **Proactive search capabilities** - implemented locally, but Clawdbot offers a mature foundation
 - **Multi-step reasoning** - Complex task decomposition
 - **Session management** - Robust conversation state
 - **Skills system** - Modular capabilities
 
-Currently, Bijaz uses a lightweight gateway substitute. The plan is to integrate Clawdbot's core to enable:
+Currently, Bijaz uses a lightweight gateway with Clawdbot-style session routing plus per-agent session isolation.
+The plan is to integrate more of Clawdbot's gateway core to enable:
 1. Proactive news monitoring and market scanning
 2. Multi-step research before making predictions
 3. Learning from conversation patterns
 4. More sophisticated autonomous reasoning
+
+### Market Data Live Subscriptions
+Bijaz can optionally use a WebSocket feed to keep market prices fresh (watchlist-only by default). If you have a
+market data WebSocket endpoint, configure:
+
+```yaml
+polymarket:
+  stream:
+    enabled: true
+    wsUrl: "wss://your-stream-endpoint"
+    watchlistOnly: true
+    maxWatchlist: 50
+    staleAfterSeconds: 180
+    refreshIntervalSeconds: 300
+```
 
 ### Proactive Search (Clawdbot-Style, Local)
 Bijaz now runs a Clawdbot-style proactive search loop locally. It generates queries from your watchlist

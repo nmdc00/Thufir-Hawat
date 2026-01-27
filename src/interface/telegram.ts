@@ -43,12 +43,20 @@ export class TelegramAdapter implements ChannelAdapter {
               continue;
             }
             const chatId = String(message.chat.id);
+            const chatType = String(message.chat.type ?? 'private');
+            const peerKind =
+              chatType === 'group' || chatType === 'supergroup'
+                ? 'group'
+                : chatType === 'channel'
+                  ? 'channel'
+                  : 'dm';
             if (this.allowedChatIds.size > 0 && !this.allowedChatIds.has(chatId)) {
               continue;
             }
             await onMessage({
               channel: 'telegram',
               senderId: chatId,
+              peerKind,
               text: message.text.trim(),
             });
           }

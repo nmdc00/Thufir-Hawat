@@ -50,6 +50,9 @@ vi.mock('../src/core/conversation.js', () => ({
     async analyzeMarket() {
       return 'analysis';
     }
+    async analyzeMarketStructured() {
+      return { marketId: 'm1', question: 'Test market', plan: { steps: [] }, analysis: {} };
+    }
     async chat() {
       return 'chat reply';
     }
@@ -112,6 +115,7 @@ describe('Bijaz programmatic API', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    openPositions = [];
   });
 
   afterEach(() => {
@@ -187,6 +191,18 @@ describe('Bijaz programmatic API', () => {
 
     const result = await bijaz.analyze('m1');
     expect(result).toBe('analysis');
+
+    await bijaz.stop();
+  });
+
+  it('structured analyze delegates to conversation handler', async () => {
+    const { configPath, dbPath } = writeTempConfig();
+    process.env.BIJAZ_DB_PATH = dbPath;
+    const bijaz = new Bijaz({ configPath, userId: 'test-user' });
+    await bijaz.start();
+
+    const result = await bijaz.analyzeStructured('m1');
+    expect(result).toMatchObject({ marketId: 'm1', question: 'Test market' });
 
     await bijaz.stop();
   });

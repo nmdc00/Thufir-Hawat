@@ -1,6 +1,6 @@
 # Bijaz Progress
 
-Last updated: 2026-01-26
+Last updated: 2026-01-27
 
 ## North Star
 Autonomous trading assistant for prediction markets with strong guardrails:
@@ -52,11 +52,44 @@ Autonomous trading assistant for prediction markets with strong guardrails:
 
 ## Current Work Log
 
+### 2026-01-27 (Session 7)
+- **LLM orchestration pipeline**
+  - Claude (Sonnet 4.5) plans; OpenAI executes trade decisions
+  - OpenAI fallback for planning on Anthropic rate limits
+  - Info-digest compression for large contexts (token efficiency)
+- **Multi-agent routing + partial isolation**
+  - Per-agent session routing in gateway
+  - Per-agent chat transcript storage (shared DB/ledger/intel)
+  - Tests added for session isolation
+
+### 2026-01-27 (Session 6)
+- **Polymarket CLOB Execution Adapter - Token ID Resolution Fixed**
+  - Updated `Market` interface to include `conditionId`, `tokens`, `clobTokenIds`, `negRisk` fields
+  - Added CLOB API methods for fetching market data with token IDs:
+    - `getMarket(conditionId)` - fetch market with full token details
+    - `listMarkets()` - list markets from CLOB API
+    - `getTokenIds(conditionId)` - convenience method for token lookup
+    - `isNegRiskMarket(conditionId)` - check market type
+  - `LiveExecutor` now properly fetches token IDs from CLOB when not in market data
+    - Added token ID cache to avoid repeated API calls
+    - `fetchAndCacheTokenIds()` method for CLOB API fetching
+    - `getTokenId()` never falls back to market ID (was broken)
+    - `checkNegRiskMarket()` now async, fetches from CLOB if needed
+  - Market normalization extracts token IDs from various API formats
+  - Added `enrichWithTokenIds()` convenience method on market client
+  - **New CLI commands**:
+    - `bijaz markets tokens <id>` - Fetch token IDs from CLOB for a market
+    - `bijaz markets clob-status` - Test CLOB API connectivity
+  - Fixed TypeScript errors in `stream.ts` (EventEmitter super() call)
+  - All execution tests passing (8/8)
+
 ### 2026-01-26 (Session 5)
 - **Conversational intel alert setup**
 - **Alert scoring + ranking** (keywords/entities/sentiment)
 - **Intel retention pruning** + CLI preview
 - **Docs/config alignment**
+- **Intel source registry + roaming controls** (trust thresholds, social opt-in)
+- **Env setup + validation CLI** (`bijaz env init`, `bijaz env check`) + `.env.example`
 
 ### 2026-01-26 (Session 4)
 - **Persistent chat memory (Clawdbot-style)** with JSONL transcripts + summaries
@@ -142,7 +175,7 @@ Autonomous trading assistant for prediction markets with strong guardrails:
 - Implemented intel search, richer briefings, and user profile memory.
 - Added wallet keystore encryption, wallet CLI commands, and wallet loading helper.
 
-## What's Working (as of 2026-01-26)
+## What's Working (as of 2026-01-27)
 - [x] Conversational chat about events/markets
 - [x] Market search and analysis (`/ask`, `/analyze`, `/markets`)
 - [x] **Daily Top 10 Opportunities** (`/top10`)
@@ -170,21 +203,38 @@ Autonomous trading assistant for prediction markets with strong guardrails:
 - [x] Trade ledger with realized PnL
 - [x] Market cache sync job + CLI
 - [x] Proactive search (Clawdbot-style local loop)
+- [x] Clawdbot-style session key routing (gateway + session keys)
+- [x] Agent intelligence: research planner + decision explanations
+- [x] Exposure limits enforced (per-market + per-domain)
+- [x] Ledger vs on-chain balance reconciliation (CLI)
+- [x] Daily PnL rollups (CLI)
+- [x] Market data live subscriptions (watchlist-only + staleness fallback)
+- [x] Live execution adapter (CLOB) implemented (requires live test trade)
+- [x] Multi-agent routing with per-agent session isolation (chat)
+- [x] LLM plan/execute pipeline (Claude plans, OpenAI executes)
 
 ## What's Missing
-- [ ] Polymarket execution adapter (CLOB or on-chain signing) - **CRITICAL for real trading**
-- [ ] Full Clawdbot fork (gateway + sessions + channels)
+- [ ] **Live trading test** - Execute real trade on Polymarket (adapter code complete, needs testing)
+- [ ] **Position tracking from CLOB** - Query positions from CLOB API (local ledger exists)
+- [ ] Full Clawdbot fork (gateway + sessions + channels beyond Telegram/WhatsApp)
 - [ ] ChromaDB vector search (optional; SQLite embeddings now exist)
 
 ## Next Steps (Priority Order)
-1) **Build Polymarket execution adapter**
-   - CLOB API integration
-   - Real on-chain signing
-   - Connect to wallet keystore
+1) **Test live execution with real Polymarket trade**
+   - CLOB API integration: DONE
+   - Token ID resolution: DONE
+   - Order signing: DONE
+   - Next: Execute $1 test trade on testnet/mainnet
 
-2) **Fork Clawdbot for proactive search**
+2) **Add position tracking from CLOB API**
+   - Query user positions from CLOB
+   - Reconcile with local ledger
+   - Display in CLI and chat
+
+3) **Evaluate Clawdbot fork scope**
+   - Keep lightweight routing + partial isolation
+   - Decide on skills/plugin lifecycle + extra channels
+
+3) **Fork Clawdbot for proactive search**
    - Multi-step reasoning
    - Autonomous news monitoring
-
-3) **Portfolio/balance reporting**
-   - Track live positions and wallet balances

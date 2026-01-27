@@ -2,26 +2,23 @@
 
 This document provides everything needed to continue development on Bijaz.
 
-## Latest Session (2026-01-26, Session 5)
+## Latest Session (2026-01-27, Session 7)
 
 ### What Was Done
-1. **Intel alerts (conversational setup)**
-   - Bot asks users if they want to configure alerts
-   - Prompts for watchlist-only, keywords, and sources
-   - Writes alert settings into config automatically
+1. **Polymarket CLOB execution adapter**
+   - Token ID resolution via CLOB API
+   - Live executor fetches token IDs and signs orders correctly
+   - New CLI commands: `bijaz markets tokens`, `bijaz markets clob-status`
 
-2. **Alert ranking + scoring**
-   - Weighted scoring (keywords/entities/sentiment)
-   - Entity + sentiment-aware filters
-   - CLI preview (`bijaz intel alerts`)
+2. **LLM orchestration pipeline**
+   - Claude plans, OpenAI executes trade decisions
+   - OpenAI fallback on Anthropic rate limits
+   - Context compression (info digest) for token efficiency
 
-3. **Intel retention + pruning**
-   - Automatic pruning of old intel items
-   - Manual `bijaz memory prune` for chat cleanup
-
-4. **Docs + config aligned**
-   - Updated README + INTEL_SOURCES
-   - Default config cleaned up + new alert fields
+3. **Multi-agent routing + partial isolation**
+   - Per-agent routing in gateway
+   - Per-agent chat transcripts/summaries (shared DB/ledger/intel)
+   - Tests added for session isolation
 
 ### What's Ready to Use
 - Conversational chat (just type naturally)
@@ -37,10 +34,20 @@ This document provides everything needed to continue development on Bijaz.
 - Portfolio positions + cash balance tracking (CLI `bijaz portfolio --set-cash`)
 - Trade ledger + realized PnL (FIFO) + market cache sync
 - Proactive search loop (Clawdbot-style, local) + CLI `bijaz intel proactive`
+- Clawdbot-style session routing (session keys per channel)
+- Research planner + prediction explanations (`bijaz predictions explain`)
+- Exposure limits enforced (per-market + per-domain)
+- Ledger vs on-chain balance reconciliation (`bijaz portfolio --reconcile`)
+- Daily PnL rollups (`bijaz pnl`)
+- Market data live subscriptions (watchlist-only + staleness fallback)
+- Intel source registry + roaming controls (trust thresholds, social opt-in)
+- Env setup + validation CLI (`bijaz env init`, `bijaz env check`) + `.env.example`
+- Live trading adapter (CLOB) implemented; needs a live test trade
 
 ### Immediate Next Steps
-1. Build Polymarket execution adapter (CLOB API) for real trading
-2. Full Clawdbot fork (gateway + sessions + channels)
+1. Execute a $1 live trade via CLOB (verify end-to-end)
+2. Add position tracking from CLOB API
+3. Decide on Clawdbot fork scope (skills/plugin lifecycle vs lightweight gateway)
 
 ---
 

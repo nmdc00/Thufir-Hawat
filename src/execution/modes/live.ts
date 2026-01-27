@@ -58,6 +58,7 @@ export class LiveExecutor implements ExecutionAdapter {
   private signer: PolymarketOrderSigner;
   private limits: SpendingLimitEnforcer;
   private initialized: boolean = false;
+  private tokenIdCache: Map<string, [string, string]> = new Map(); // conditionId -> [yesTokenId, noTokenId]
 
   constructor(options: LiveExecutorOptions) {
     // Load wallet
@@ -140,13 +141,19 @@ export class LiveExecutor implements ExecutionAdapter {
       return { executed: false, message: 'Invalid decision: missing amount or outcome.' };
     }
 
-    // Get token ID for the outcome
-    const tokenId = this.getTokenId(market, decision.outcome);
+    // Get token ID for the outcome - first try local, then fetch from CLOB
+    let tokenId = this.getTokenId(market, decision.outcome);
     if (!tokenId) {
-      return {
-        executed: false,
-        message: `Cannot find token ID for outcome ${decision.outcome} in market ${market.id}`,
-      };
+      // Fetch from CLOB API (authoritative source)
+      const tokenIds = await this.fetchAndCacheTokenIds(market);
+      if (!tokenIds) {
+        return {
+          executed: false,
+          message: `Cannot find token IDs for market ${market.id} (condition: ${market.conditionId}). ` +
+            `Market may not be available on CLOB.`,
+        };
+      }
+      tokenId = decision.outcome === 'YES' ? tokenIds[0] : tokenIds[1];
     }
 
     // Get current price
@@ -189,8 +196,11 @@ export class LiveExecutor implements ExecutionAdapter {
         };
       }
 
-      // Step 2: Verify exchange address is whitelisted
-      const exchangeAddress = this.getExchangeAddress(market);
+      // Step 2: Check if negative risk market and get exchange address
+      const negRisk = await this.checkNegRiskMarket(market);
+      const exchangeAddress = this.getExchangeAddress(negRisk);
+
+      // Step 3: Verify exchange address is whitelisted
       try {
         assertWhitelisted(exchangeAddress, 'order execution');
       } catch (e) {
@@ -209,14 +219,14 @@ export class LiveExecutor implements ExecutionAdapter {
         throw e;
       }
 
-      // Step 3: Build and sign order
+      // Step 4: Build and sign order
       const clobOrder = await this.signer.buildCLOBOrder(
         {
           tokenId,
           price,
           size: shares,
           side: decision.action === 'buy' ? 'BUY' : 'SELL',
-          negRisk: this.isNegRiskMarket(market),
+          negRisk,
         },
         'GTC' // Good til cancelled
       );
@@ -234,10 +244,11 @@ export class LiveExecutor implements ExecutionAdapter {
           price,
           shares,
           side: decision.action,
+          negRisk,
         },
       });
 
-      // Step 4: Submit order to CLOB
+      // Step 5: Submit order to CLOB
       const response = await this.clobClient.postOrder(clobOrder);
 
       if (!response.success || !response.orderID) {
@@ -258,10 +269,10 @@ export class LiveExecutor implements ExecutionAdapter {
         };
       }
 
-      // Step 5: Confirm the spend
+      // Step 6: Confirm the spend
       this.limits.confirm(decision.amount);
 
-      // Step 6: Record execution
+      // Step 7: Record execution
       recordExecution({
         id: predictionId,
         executionPrice: price,
@@ -471,59 +482,91 @@ export class LiveExecutor implements ExecutionAdapter {
   /**
    * Get the token ID for a market outcome.
    *
-   * For Polymarket, the market object should contain token IDs.
-   * This may need to be fetched from the market data API.
+   * Priority order:
+   * 1. Market's tokens array (from normalized market data)
+   * 2. Market's clobTokenIds array
+   * 3. Cached token IDs from previous CLOB API fetch
+   * 4. Fetch from CLOB API (authoritative source)
+   *
+   * NEVER falls back to market ID - that doesn't work.
    */
   private getTokenId(market: Market, outcome: 'YES' | 'NO'): string | null {
-    // Market data should include token IDs
-    // The structure depends on how the market was fetched
-    const marketData = market as unknown as {
-      tokens?: Array<{ token_id: string; outcome: string }>;
-      clobTokenIds?: string[];
-      tokenIds?: Record<string, string>;
-    };
+    const outcomeLower = outcome.toLowerCase();
 
-    // Try tokens array format
-    if (marketData.tokens) {
-      const token = marketData.tokens.find(
-        (t) => t.outcome.toUpperCase() === outcome
+    // 1. Try tokens array from market data
+    if (market.tokens && market.tokens.length > 0) {
+      const token = market.tokens.find(
+        (t) => t.outcome.toLowerCase() === outcomeLower
       );
-      if (token) return token.token_id;
+      if (token?.token_id) return token.token_id;
     }
 
-    // Try tokenIds map format
-    if (marketData.tokenIds) {
-      return marketData.tokenIds[outcome] ?? null;
+    // 2. Try clobTokenIds array (index 0 = YES, index 1 = NO)
+    if (market.clobTokenIds && market.clobTokenIds.length >= 2) {
+      return outcome === 'YES' ? market.clobTokenIds[0] : market.clobTokenIds[1];
     }
 
-    // Try clobTokenIds array (index 0 = YES, index 1 = NO)
-    if (marketData.clobTokenIds) {
-      return outcome === 'YES'
-        ? marketData.clobTokenIds[0] ?? null
-        : marketData.clobTokenIds[1] ?? null;
+    // 3. Check cache
+    const conditionId = market.conditionId || market.id;
+    const cached = this.tokenIdCache.get(conditionId);
+    if (cached) {
+      return outcome === 'YES' ? cached[0] : cached[1];
     }
 
-    // Fallback: use market ID as token ID (may not always work)
-    console.warn(
-      `[LiveExecutor] Could not find token ID for ${outcome} in market ${market.id}, using market ID`
-    );
-    return market.id;
+    // Token ID not available - caller should use fetchAndCacheTokenIds first
+    return null;
+  }
+
+  /**
+   * Fetch token IDs from CLOB API and cache them.
+   * Returns [yesTokenId, noTokenId] or null if fetch fails.
+   */
+  private async fetchAndCacheTokenIds(market: Market): Promise<[string, string] | null> {
+    const conditionId = market.conditionId || market.id;
+
+    // Check cache first
+    const cached = this.tokenIdCache.get(conditionId);
+    if (cached) return cached;
+
+    try {
+      const tokenIds = await this.clobClient.getTokenIds(conditionId);
+      if (tokenIds) {
+        this.tokenIdCache.set(conditionId, tokenIds);
+        console.log(`[LiveExecutor] Cached token IDs for ${conditionId}: YES=${tokenIds[0]}, NO=${tokenIds[1]}`);
+        return tokenIds;
+      }
+    } catch (error) {
+      console.error(`[LiveExecutor] Failed to fetch token IDs for ${conditionId}:`, error);
+    }
+
+    return null;
   }
 
   /**
    * Determine if a market uses the negative risk exchange.
+   * Checks market data first, falls back to CLOB API if needed.
    */
-  private isNegRiskMarket(market: Market): boolean {
-    // Markets with neg risk typically have a specific flag or category
-    const marketData = market as unknown as { negRisk?: boolean; enableOrderBook?: boolean };
-    return marketData.negRisk === true;
+  private async checkNegRiskMarket(market: Market): Promise<boolean> {
+    // Check market data first
+    if (market.negRisk !== undefined) {
+      return market.negRisk;
+    }
+
+    // Fetch from CLOB API
+    const conditionId = market.conditionId || market.id;
+    try {
+      return await this.clobClient.isNegRiskMarket(conditionId);
+    } catch {
+      // Default to non-neg-risk (safer, uses standard exchange)
+      return false;
+    }
   }
 
   /**
    * Get the exchange address for a market.
    */
-  private getExchangeAddress(market: Market): string {
-    return this.isNegRiskMarket(market)
+  private getExchangeAddress(negRisk: boolean): string {
+    return negRisk
       ? EXCHANGE_ADDRESSES.NEG_RISK_CTF_EXCHANGE
       : EXCHANGE_ADDRESSES.CTF_EXCHANGE;
   }

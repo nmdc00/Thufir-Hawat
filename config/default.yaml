@@ -12,6 +12,8 @@ gateway:
 agent:
   # Primary LLM model
   model: claude-sonnet-4-5-20251101
+  # OpenAI model (used for info gathering + execution)
+  openaiModel: gpt-5.2
   # Fallback model (faster, cheaper)
   fallbackModel: claude-3-5-haiku-20241022
   # Model provider: anthropic | openai | local
@@ -52,6 +54,14 @@ polymarket:
   api:
     gamma: https://gamma-api.polymarket.com
     clob: https://clob.polymarket.com
+  stream:
+    enabled: false
+    wsUrl: ""            # optional WebSocket endpoint
+    watchlistOnly: true
+    maxWatchlist: 50
+    reconnectSeconds: 10
+    staleAfterSeconds: 180
+    refreshIntervalSeconds: 300
 
 # Execution mode
 execution:
@@ -104,6 +114,27 @@ memory:
     model: text-embedding-3-small
     apiBaseUrl: https://api.openai.com
 
+# Session routing (Clawdbot-style)
+session:
+  mainKey: main
+  dmScope: per-channel-peer  # main | per-peer | per-channel-peer
+  identityLinks: {}
+
+# Multi-agent routing (optional)
+# agents:
+#   defaultAgentId: main
+#   agentIds: [main, research]
+#   routes:
+#     - agentId: research
+#       channel: telegram
+#       peerIds: ["123456789"]
+#   overrides:
+#     research:
+#       agent:
+#         model: claude-sonnet-4-5-20251101
+#       autonomy:
+#         enabled: false
+
 # Notifications / schedulers
 notifications:
   briefing:
@@ -143,8 +174,8 @@ notifications:
     excludeKeywords: []
     minKeywordOverlap: 1
     minTitleLength: 8
-    minSentiment:
-    maxSentiment:
+    # minSentiment: -1
+    # maxSentiment: 1
     sentimentPreset: any
     includeEntities: []
     excludeEntities: []
@@ -216,3 +247,11 @@ intel:
       keywords: []
       accounts: []
       maxTweetsPerFetch: 25
+
+  # Roaming controls for proactive search
+  roaming:
+    enabled: true
+    allowSources: []
+    allowTypes: []
+    minTrust: medium
+    socialOptIn: true

@@ -397,6 +397,14 @@ intel:
       enabled: true
       trackWatchlist: true
 
+  # Roaming controls (used by proactive search)
+  roaming:
+    enabled: true
+    allowSources: []     # optional allowlist of source names
+    allowTypes: []       # optional allowlist of types: news|social|market
+    minTrust: medium
+    socialOptIn: false   # must be true to include social sources
+
 notifications:
   intelAlerts:
     enabled: true

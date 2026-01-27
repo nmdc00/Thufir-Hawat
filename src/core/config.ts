@@ -22,6 +22,7 @@ const ConfigSchema = z.object({
   agent: z.object({
     model: z.string(),
     fallbackModel: z.string().optional(),
+    openaiModel: z.string().default('gpt-5.2'),
     provider: z.enum(['anthropic', 'openai', 'local']).default('anthropic'),
     apiBaseUrl: z.string().optional(),
     workspace: z.string().optional(),
@@ -42,6 +43,12 @@ const ConfigSchema = z.object({
           confirmationThreshold: z.number().default(10),
         })
         .default({}),
+      exposure: z
+        .object({
+          maxPositionPercent: z.number().default(20),
+          maxDomainPercent: z.number().default(40),
+        })
+        .default({}),
     })
     .default({}),
   polymarket: z.object({
@@ -50,6 +57,17 @@ const ConfigSchema = z.object({
       clob: z.string(),
     }),
     rpcUrl: z.string().optional(),
+    stream: z
+      .object({
+        enabled: z.boolean().default(false),
+        wsUrl: z.string().optional(),
+        watchlistOnly: z.boolean().default(true),
+        maxWatchlist: z.number().default(50),
+        reconnectSeconds: z.number().default(10),
+        staleAfterSeconds: z.number().default(180),
+        refreshIntervalSeconds: z.number().default(300),
+      })
+      .default({}),
   }),
   intel: z
     .object({
@@ -122,6 +140,15 @@ const ConfigSchema = z.object({
             .default({ enabled: false }),
         })
         .default({}),
+      roaming: z
+        .object({
+          enabled: z.boolean().default(true),
+          allowSources: z.array(z.string()).default([]),
+          allowTypes: z.array(z.enum(['news', 'social', 'market'])).default([]),
+          minTrust: z.enum(['low', 'medium', 'high']).default('medium'),
+          socialOptIn: z.boolean().default(false),
+        })
+        .default({}),
       retentionDays: z.number().default(30),
     })
     .default({}),
@@ -141,6 +168,69 @@ const ConfigSchema = z.object({
       })
       .default({ enabled: false }),
   }),
+  session: z
+    .object({
+      mainKey: z.string().default('main'),
+      dmScope: z.enum(['main', 'per-peer', 'per-channel-peer']).default('per-channel-peer'),
+      identityLinks: z.record(z.array(z.string())).default({}),
+    })
+    .default({}),
+  agents: z
+    .object({
+      defaultAgentId: z.string().default('main'),
+      agentIds: z.array(z.string()).default([]),
+      routes: z
+        .array(
+          z.object({
+            agentId: z.string(),
+            channel: z.enum(['telegram', 'whatsapp', 'cli']).optional(),
+            peerIds: z.array(z.string()).optional(),
+            peerKinds: z.array(z.enum(['dm', 'group', 'channel'])).optional(),
+            threadIds: z.array(z.string()).optional(),
+          })
+        )
+        .default([]),
+      overrides: z
+        .record(
+          z
+            .object({
+              agent: z
+                .object({
+                  model: z.string().optional(),
+                  fallbackModel: z.string().optional(),
+                  openaiModel: z.string().optional(),
+                  provider: z.enum(['anthropic', 'openai', 'local']).optional(),
+                  apiBaseUrl: z.string().optional(),
+                  workspace: z.string().optional(),
+                })
+                .default({}),
+              memory: z
+                .object({
+                  sessionsPath: z.string().optional(),
+                })
+                .default({}),
+              autonomy: z
+                .object({
+                  enabled: z.boolean().optional(),
+                  scanIntervalSeconds: z.number().optional(),
+                  maxMarketsPerScan: z.number().optional(),
+                  watchlistOnly: z.boolean().optional(),
+                  eventDriven: z.boolean().optional(),
+                  eventDrivenMinItems: z.number().optional(),
+                  fullAuto: z.boolean().optional(),
+                  minEdge: z.number().optional(),
+                  requireHighConfidence: z.boolean().optional(),
+                  pauseOnLossStreak: z.number().optional(),
+                  dailyReportTime: z.string().optional(),
+                  maxTradesPerScan: z.number().optional(),
+                })
+                .default({}),
+            })
+            .default({})
+        )
+        .default({}),
+    })
+    .default({}),
   channels: z
     .object({
       telegram: z
@@ -289,6 +379,16 @@ export function loadConfig(configPath?: string): BijazConfig {
   }
   if (cfg.memory?.sessionsPath) {
     cfg.memory.sessionsPath = expandHome(cfg.memory.sessionsPath);
+  }
+  if (cfg.agents?.overrides) {
+    for (const override of Object.values(cfg.agents.overrides)) {
+      if (override.agent?.workspace) {
+        override.agent.workspace = expandHome(override.agent.workspace);
+      }
+      if (override.memory?.sessionsPath) {
+        override.memory.sessionsPath = expandHome(override.memory.sessionsPath);
+      }
+    }
   }
 
   return cfg;

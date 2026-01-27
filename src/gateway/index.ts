@@ -1,9 +1,9 @@
 #!/usr/bin/env node
+import 'dotenv/config';
 import http from 'node:http';
 
 import { loadConfig } from '../core/config.js';
 import { Logger } from '../core/logger.js';
-import { BijazAgent } from '../core/agent.js';
 import { TelegramAdapter } from '../interface/telegram.js';
 import { WhatsAppAdapter } from '../interface/whatsapp.js';
 import { resolveOutcomes } from '../core/resolver.js';
@@ -15,6 +15,11 @@ import { pruneIntel } from '../intel/store.js';
 import { rankIntelAlerts } from '../intel/alerts.js';
 import { syncMarketCache } from '../core/markets_sync.js';
 import { runProactiveSearch } from '../core/proactive_search.js';
+import { buildAgentPeerSessionKey, resolveThreadSessionKeys } from './session_keys.js';
+import { PolymarketStreamClient } from '../execution/polymarket/stream.js';
+import { upsertMarketCache } from '../memory/market_cache.js';
+import { getMarketCache } from '../memory/market_cache.js';
+import { createAgentRegistry } from './agent_router.js';
 
 const config = loadConfig();
 const rawLevel = (process.env.BIJAZ_LOG_LEVEL ?? 'info').toLowerCase();
@@ -23,20 +28,92 @@ const level =
     ? rawLevel
     : 'info';
 const logger = new Logger(level);
-const agent = new BijazAgent(config, logger);
+const agentRegistry = createAgentRegistry(config, logger);
+const defaultAgent =
+  agentRegistry.agents.get(agentRegistry.defaultAgentId) ??
+  agentRegistry.agents.values().next().value;
 
 const telegram = config.channels.telegram.enabled ? new TelegramAdapter(config) : null;
 const whatsapp = config.channels.whatsapp.enabled ? new WhatsAppAdapter(config) : null;
 
-agent.start();
+for (const instance of agentRegistry.agents.values()) {
+  instance.start();
+}
 
-const onIncoming = async (channel: 'telegram' | 'whatsapp', senderId: string, text: string) => {
-  const reply = await agent.handleMessage(senderId, text);
-  if (channel === 'telegram' && telegram) {
-    await telegram.sendMessage(senderId, reply);
+// Market stream (watchlist-only)
+const streamConfig = config.polymarket?.stream;
+const streamClient =
+  streamConfig?.enabled && streamConfig.wsUrl ? new PolymarketStreamClient(config) : null;
+const streamMarketClient = new PolymarketMarketClient(config);
+
+if (streamClient) {
+  streamClient.on('connected', () => logger.info('Market stream connected.'));
+  streamClient.on('disconnected', () => logger.warn('Market stream disconnected.'));
+  streamClient.on('error', (err) => logger.error('Market stream error', err));
+  streamClient.on('update', async (update) => {
+    const marketId = update.marketId ? update.marketId : '';
+    if (!marketId) return;
+    let question = '';
+    let outcomes: string[] = [];
+    let category: string | undefined;
+    if (marketId) {
+      const cachedMarket = getMarketCache(marketId);
+      if (cachedMarket) {
+        question = cachedMarket.question;
+        outcomes = cachedMarket.outcomes ?? [];
+        category = cachedMarket.category ?? undefined;
+      } else {
+        try {
+          const market = await streamMarketClient.getMarket(marketId);
+          question = market.question;
+          outcomes = market.outcomes ?? [];
+          category = market.category ?? undefined;
+        } catch {
+          return;
+        }
+      }
+    }
+    if (!question) return;
+    upsertMarketCache({
+      id: update.marketId,
+      question,
+      outcomes,
+      prices: update.prices ?? {},
+      category,
+    });
+  });
+  streamClient.connect();
+}
+
+const onIncoming = async (
+  message: {
+    channel: 'telegram' | 'whatsapp' | 'cli';
+    senderId: string;
+    text: string;
+    peerKind?: 'dm' | 'group' | 'channel';
+    threadId?: string;
   }
-  if (channel === 'whatsapp' && whatsapp) {
-    await whatsapp.sendMessage(senderId, reply);
+) => {
+  const { agentId, agent: activeAgent } = agentRegistry.resolveAgent(message);
+  const sessionKey = buildAgentPeerSessionKey({
+    agentId,
+    mainKey: config.session?.mainKey,
+    channel: message.channel,
+    peerKind: message.peerKind ?? 'dm',
+    peerId: message.senderId,
+    dmScope: config.session?.dmScope,
+    identityLinks: config.session?.identityLinks,
+  });
+  const session = resolveThreadSessionKeys({
+    baseSessionKey: sessionKey,
+    threadId: message.threadId,
+  }).sessionKey;
+  const reply = await activeAgent.handleMessage(session, message.text);
+  if (message.channel === 'telegram' && telegram) {
+    await telegram.sendMessage(message.senderId, reply);
+  }
+  if (message.channel === 'whatsapp' && whatsapp) {
+    await whatsapp.sendMessage(message.senderId, reply);
   }
 };
 
@@ -57,7 +134,7 @@ if (briefingConfig?.enabled) {
       return;
     }
 
-    const message = await agent.generateBriefing();
+    const message = await defaultAgent.generateBriefing();
     const channels = briefingConfig.channels ?? [];
     if (channels.includes('telegram') && telegram) {
       for (const chatId of config.channels.telegram.allowedChatIds ?? []) {
@@ -124,7 +201,7 @@ if (intelFetchConfig?.enabled) {
       if (config.autonomy?.eventDriven) {
         const minItems = config.autonomy?.eventDrivenMinItems ?? 1;
         if (result.storedCount >= minItems) {
-          const scanResult = await agent.getAutonomous().runScan();
+          const scanResult = await defaultAgent.getAutonomous().runScan();
           logger.info(`Event-driven scan: ${scanResult}`);
         }
       }
@@ -207,7 +284,7 @@ if (proactiveConfig?.enabled) {
 
 const dailyReportConfig = config.notifications?.dailyReport;
 if (dailyReportConfig?.enabled) {
-  agent.getAutonomous().on('daily-report', async (report) => {
+  defaultAgent.getAutonomous().on('daily-report', async (report) => {
     const channels = dailyReportConfig.channels ?? [];
     if (channels.includes('telegram') && telegram) {
       for (const chatId of config.channels.telegram.allowedChatIds ?? []) {
@@ -245,8 +322,49 @@ if (intelRetentionDays > 0) {
 if (telegram) {
   telegram.startPolling(async (msg) => {
     logger.info(`Telegram message from ${msg.senderId}: ${msg.text}`);
-    await onIncoming('telegram', msg.senderId, msg.text);
+    await onIncoming(msg);
   });
+}
+
+if (streamClient && streamConfig?.watchlistOnly) {
+  const refreshStreamSubs = () => {
+    const watchlist = listWatchlist(streamConfig.maxWatchlist ?? 50);
+    const marketIds = watchlist.map((item) => item.marketId);
+    if (marketIds.length > 0) {
+      streamClient.subscribe(marketIds);
+    }
+  };
+
+  refreshStreamSubs();
+  setInterval(refreshStreamSubs, 5 * 60 * 1000);
+
+  const staleAfterMs = (streamConfig.staleAfterSeconds ?? 180) * 1000;
+  const refreshIntervalMs = (streamConfig.refreshIntervalSeconds ?? 300) * 1000;
+  setInterval(async () => {
+    const watchlist = listWatchlist(streamConfig.maxWatchlist ?? 50);
+    for (const item of watchlist) {
+      const lastUpdate = streamClient.getLastUpdate(item.marketId);
+      if (!lastUpdate || Date.now() - lastUpdate > staleAfterMs) {
+        try {
+          const market = await streamMarketClient.getMarket(item.marketId);
+          upsertMarketCache({
+            id: market.id,
+            question: market.question,
+            outcomes: market.outcomes ?? [],
+            prices: market.prices ?? {},
+            volume: market.volume ?? null,
+            liquidity: market.liquidity ?? null,
+            endDate: market.endDate ?? null,
+            category: market.category ?? null,
+            resolved: market.resolved ?? false,
+            resolution: market.resolution ?? null,
+          });
+        } catch {
+          continue;
+        }
+      }
+    }
+  }, refreshIntervalMs);
 }
 
 async function sendIntelAlerts(
@@ -381,7 +499,7 @@ const server = http.createServer(async (req, res) => {
         const payload = JSON.parse(body);
         await whatsapp.handleWebhook(payload, async (msg) => {
           logger.info(`WhatsApp message from ${msg.senderId}: ${msg.text}`);
-          await onIncoming('whatsapp', msg.senderId, msg.text);
+          await onIncoming(msg);
         });
         res.writeHead(200);
         res.end('ok');

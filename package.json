@@ -27,6 +27,7 @@
     "better-sqlite3": "^9.4.0",
     "chromadb": "^1.5.0",
     "commander": "^12.0.0",
+    "dotenv": "^16.4.5",
     "ethers": "^5.7.2",
     "eventemitter3": "^5.0.1",
     "fast-xml-parser": "^4.3.0",

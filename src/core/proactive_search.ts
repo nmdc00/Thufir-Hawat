@@ -1,8 +1,9 @@
 import type { BijazConfig } from './config.js';
 import { createLlmClient } from './llm.js';
 import { listWatchlist } from '../memory/watchlist.js';
-import { listRecentIntel } from '../intel/store.js';
+import { listRecentIntel, type StoredIntel } from '../intel/store.js';
 import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
+import { listQueryCapableRoamingSources } from '../intel/sources_registry.js';
 import {
   runIntelPipelineDetailedWithOverrides,
   type IntelPipelineResult,
@@ -168,10 +169,14 @@ export async function runProactiveSearch(
   let storedItems: StoredIntel[] = [];
   let storedCount = 0;
   if (queries.length > 0) {
+    const allowedSources = listQueryCapableRoamingSources(config).map((entry) => entry.name);
+    if (allowedSources.length === 0) {
+      return { storedCount: 0, storedItems: [], queries };
+    }
     const result = await runIntelPipelineDetailedWithOverrides(config, {
-      newsapiQueries: queries,
-      googlenewsQueries: queries,
-      twitterKeywords: queries,
+      newsapiQueries: allowedSources.includes('newsapi') ? queries : undefined,
+      googlenewsQueries: allowedSources.includes('googlenews') ? queries : undefined,
+      twitterKeywords: allowedSources.includes('twitter') ? queries : undefined,
     });
     storedItems = storedItems.concat(result.storedItems);
     storedCount += result.storedCount;

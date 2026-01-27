@@ -21,6 +21,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import yaml from 'yaml';
+import { createResearchPlan, runResearchPlan } from './research_planner.js';
+import { ToolRegistry } from './tools.js';
 
 export interface ConversationContext {
   userId: string;
@@ -242,13 +244,20 @@ function extractSearchTopics(message: string): string[] {
  */
 export class ConversationHandler {
   private llm: LlmClient;
+  private infoLlm?: LlmClient;
   private marketClient: PolymarketMarketClient;
   private config: BijazConfig;
   private sessions: SessionStore;
   private chatVectorStore: ChatVectorStore;
 
-  constructor(llm: LlmClient, marketClient: PolymarketMarketClient, config: BijazConfig) {
+  constructor(
+    llm: LlmClient,
+    marketClient: PolymarketMarketClient,
+    config: BijazConfig,
+    infoLlm?: LlmClient
+  ) {
     this.llm = llm;
+    this.infoLlm = infoLlm;
     this.marketClient = marketClient;
     this.config = config;
     this.sessions = new SessionStore(config);
@@ -323,8 +332,10 @@ export class ConversationHandler {
       .filter(Boolean)
       .join('\n');
 
-    // Construct messages for the LLM
-    const systemMessage = SYSTEM_PROMPT + (contextBlock ? `\n\n---\n\n${contextBlock}` : '');
+    const systemMessage = await this.buildPlannerSystemMessage({
+      contextBlock,
+      userMessage: message,
+    });
 
     // Build messages array
     const messages: ChatMessage[] = [
@@ -409,6 +420,46 @@ export class ConversationHandler {
     }
     lines.push('');
     return lines.join('\n');
+  }
+
+  private async buildPlannerSystemMessage(params: {
+    contextBlock: string;
+    userMessage: string;
+  }): Promise<string> {
+    const { contextBlock, userMessage } = params;
+    if (!contextBlock) {
+      return SYSTEM_PROMPT;
+    }
+
+    if (!this.infoLlm || contextBlock.length < 600) {
+      return SYSTEM_PROMPT + `\n\n---\n\n${contextBlock}`;
+    }
+
+    const prompt = `Summarize the context into a compact brief for the planner.
+Include: user preferences, recent decisions/positions, key intel, and relevant markets.
+Do not speculate or add new information. Max 120 words.
+
+User message: ${userMessage}
+
+Context:
+${contextBlock}`.trim();
+
+    try {
+      const response = await this.infoLlm.complete(
+        [
+          { role: 'system', content: 'You are a concise information gatherer.' },
+          { role: 'user', content: prompt },
+        ],
+        { temperature: 0.1 }
+      );
+      const digest = response.content.trim();
+      if (!digest) {
+        return SYSTEM_PROMPT + `\n\n---\n\n${contextBlock}`;
+      }
+      return SYSTEM_PROMPT + `\n\n---\n\n## Info Digest\n${digest}`;
+    } catch {
+      return SYSTEM_PROMPT + `\n\n---\n\n${contextBlock}`;
+    }
   }
 
   private maybePromptIntelAlerts(userId: string): string | null {
@@ -616,6 +667,22 @@ export class ConversationHandler {
         market.question ?? marketId,
         userId
       );
+      const tools = new ToolRegistry();
+      const plan = await createResearchPlan({
+        llm: this.llm,
+        subject: market.question ?? marketId,
+      });
+      const research = await runResearchPlan({
+        config: this.config,
+        marketClient: this.marketClient,
+        subject: {
+          id: market.id,
+          question: market.question ?? marketId,
+          category: market.category,
+        },
+        plan,
+        tools,
+      });
 
       const prompt = `Please analyze this prediction market and give me your probability estimate with reasoning:
 
@@ -636,10 +703,14 @@ Give me:
         summary ? `## Conversation Summary\n${summary}` : '',
         semanticChatContext,
         intelContext,
+        research.context,
       ]
         .filter(Boolean)
         .join('\n');
-      const systemMessage = SYSTEM_PROMPT + (contextBlock ? `\n\n---\n\n${contextBlock}` : '');
+      const systemMessage = await this.buildPlannerSystemMessage({
+        contextBlock,
+        userMessage: market.question ?? marketId,
+      });
 
       const response = await this.llm.complete(
         [
@@ -653,6 +724,97 @@ Give me:
     } catch (error) {
       return `Failed to analyze market: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
+  }
+
+  /**
+   * Structured market analysis for UI consumption.
+   */
+  async analyzeMarketStructured(
+    userId: string,
+    marketId: string
+  ): Promise<{
+    marketId: string;
+    question: string;
+    plan: { steps: Array<{ action: string; query?: string }> };
+    analysis: Record<string, unknown>;
+    context: string;
+  }> {
+    const market = await this.marketClient.getMarket(marketId);
+    const summary = this.sessions.getSummary(userId);
+    const userContext = buildUserContext(userId, this.config);
+    const intelContext = buildIntelContext();
+    const semanticChatContext = await this.buildSemanticChatContext(
+      market.question ?? marketId,
+      userId
+    );
+    const tools = new ToolRegistry();
+    const plan = await createResearchPlan({
+      llm: this.llm,
+      subject: market.question ?? marketId,
+    });
+    const research = await runResearchPlan({
+      config: this.config,
+      marketClient: this.marketClient,
+      subject: {
+        id: market.id,
+        question: market.question ?? marketId,
+        category: market.category,
+      },
+      plan,
+      tools,
+    });
+
+    const prompt = `Return JSON only with fields:
+{
+  "probability": number,          // 0-1
+  "summary": string,              // 1-2 sentences
+  "keyFactors": string[],
+  "mindChange": string[],
+  "edge": string,                 // e.g., "market 42% vs estimate 55%"
+  "confidence": "low"|"medium"|"high"
+}
+
+Market:
+${market.question}
+Outcomes: ${market.outcomes.join(', ')}
+Prices: YES ${((market.prices['Yes'] ?? market.prices['YES'] ?? market.prices[0] ?? 0) * 100).toFixed(0)}% / NO ${((market.prices['No'] ?? market.prices['NO'] ?? market.prices[1] ?? 0) * 100).toFixed(0)}%
+Volume: $${(market.volume ?? 0).toLocaleString()}
+Category: ${market.category ?? 'unknown'}
+`;
+
+    const contextBlock = [
+      userContext,
+      summary ? `## Conversation Summary\n${summary}` : '',
+      semanticChatContext,
+      intelContext,
+      research.context,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const systemMessage = await this.buildPlannerSystemMessage({
+      contextBlock,
+      userMessage: market.question ?? marketId,
+    });
+
+    const response = await this.llm.complete(
+      [
+        { role: 'system', content: systemMessage },
+        { role: 'user', content: prompt },
+      ],
+      { temperature: 0.3 }
+    );
+
+    const analysis = safeParseJson(response.content) ?? {
+      summary: response.content.trim(),
+    };
+
+    return {
+      marketId: market.id,
+      question: market.question ?? marketId,
+      plan: research.plan,
+      analysis,
+      context: research.context,
+    };
   }
 
   /**
@@ -670,6 +832,20 @@ Give me:
     const userContext = buildUserContext(userId, this.config);
     const summary = this.sessions.getSummary(userId);
     const semanticChatContext = await this.buildSemanticChatContext(topic, userId);
+    const tools = new ToolRegistry();
+    const plan = await createResearchPlan({
+      llm: this.llm,
+      subject: topic,
+    });
+    const research = await runResearchPlan({
+      config: this.config,
+      marketClient: this.marketClient,
+      subject: {
+        question: topic,
+      },
+      plan,
+      tools,
+    });
     const marketContext =
       markets.length > 0
         ? `\n## Relevant Prediction Markets\n${formatMarketsForChat(markets)}`
@@ -685,13 +861,23 @@ Please:
 
 ${marketContext}`;
 
-    const systemContext = [userContext, summary ? `## Conversation Summary\n${summary}` : '', semanticChatContext]
+    const systemContext = [
+      userContext,
+      summary ? `## Conversation Summary\n${summary}` : '',
+      semanticChatContext,
+      research.context,
+    ]
       .filter(Boolean)
       .join('\n');
 
+    const systemMessage = await this.buildPlannerSystemMessage({
+      contextBlock: systemContext,
+      userMessage: topic,
+    });
+
     const response = await this.llm.complete(
       [
-        { role: 'system', content: SYSTEM_PROMPT + '\n\n' + systemContext },
+        { role: 'system', content: systemMessage },
         { role: 'user', content: prompt },
       ],
       { temperature: 0.6 }
@@ -699,4 +885,16 @@ ${marketContext}`;
 
     return response.content;
   }
+}
+
+function safeParseJson(input: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(input);
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }

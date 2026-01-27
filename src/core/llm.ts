@@ -20,14 +20,21 @@ export interface LlmClient {
 export function createLlmClient(config: BijazConfig): LlmClient {
   switch (config.agent.provider) {
     case 'anthropic':
-      return new AnthropicClient(config);
+      return createAnthropicClientWithFallback(config);
     case 'openai':
       return new OpenAiClient(config);
     case 'local':
       return new LocalClient(config);
     default:
-      return new AnthropicClient(config);
+      return createAnthropicClientWithFallback(config);
   }
+}
+
+export function createOpenAiClient(
+  config: BijazConfig,
+  modelOverride?: string
+): LlmClient {
+  return new OpenAiClient(config, modelOverride);
 }
 
 class AnthropicClient implements LlmClient {
@@ -69,8 +76,8 @@ class OpenAiClient implements LlmClient {
   private model: string;
   private baseUrl: string;
 
-  constructor(config: BijazConfig) {
-    this.model = config.agent.model;
+  constructor(config: BijazConfig, modelOverride?: string) {
+    this.model = modelOverride ?? config.agent.model;
     this.baseUrl = config.agent.apiBaseUrl ?? 'https://api.openai.com';
   }
 
@@ -134,4 +141,37 @@ class LocalClient implements LlmClient {
     const text = data.choices?.[0]?.message?.content?.trim() ?? '';
     return { content: text, model: this.model };
   }
+}
+
+class FallbackLlmClient implements LlmClient {
+  constructor(
+    private primary: LlmClient,
+    private fallback: LlmClient,
+    private shouldFallback: (error: unknown) => boolean
+  ) {}
+
+  async complete(messages: ChatMessage[], options?: { temperature?: number }): Promise<LlmResponse> {
+    try {
+      return await this.primary.complete(messages, options);
+    } catch (error) {
+      if (!this.shouldFallback(error)) {
+        throw error;
+      }
+      return this.fallback.complete(messages, options);
+    }
+  }
+}
+
+function isRateLimitError(error: unknown): boolean {
+  const err = error as { status?: number; message?: string };
+  if (err?.status === 429) return true;
+  const message = (err?.message ?? '').toLowerCase();
+  return message.includes('rate limit') || message.includes('too many requests') || message.includes('429');
+}
+
+function createAnthropicClientWithFallback(config: BijazConfig): LlmClient {
+  const primary = new AnthropicClient(config);
+  const fallbackModel = config.agent.openaiModel ?? config.agent.fallbackModel ?? 'gpt-5.2';
+  const fallback = new OpenAiClient(config, fallbackModel);
+  return new FallbackLlmClient(primary, fallback, isRateLimitError);
 }
