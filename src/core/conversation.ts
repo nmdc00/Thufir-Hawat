@@ -69,14 +69,32 @@ Get the most recent intel/news items.
 ### calibration_stats
 Get the user's prediction track record and calibration stats.
 
+### current_time
+Get the current date/time. Use for time-sensitive markets or news.
+
 ### twitter_search
 Search recent tweets for a topic.
+
+### get_portfolio
+View current positions, balances, and P&L.
+
+### get_predictions
+Review past predictions and outcomes for calibration.
+
+### get_order_book
+View market depth and liquidity.
+
+### price_history
+View historical odds for a market.
 
 ### web_search
 Search the web for information, news, research, or facts.
 
 ### web_fetch
 Fetch and read content from a web page URL.
+
+### place_bet
+Place a bet on a prediction market. Use after researching and analyzing a market. Requires market_id, outcome (YES/NO), and amount. System spending and exposure limits apply automatically.
 
 ## Response format:
 - Be conversational, not robotic

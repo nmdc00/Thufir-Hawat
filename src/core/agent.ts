@@ -53,6 +53,8 @@ export class BijazAgent {
     this.toolContext = {
       config: this.config,
       marketClient: this.marketClient,
+      executor: this.executor,
+      limiter: this.limiter,
     };
 
     this.conversation = new ConversationHandler(

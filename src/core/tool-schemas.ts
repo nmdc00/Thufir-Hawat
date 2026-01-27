@@ -88,6 +88,21 @@ export const BIJAZ_TOOLS: Tool[] = [
     },
   },
   {
+    name: 'current_time',
+    description:
+      'Get the current date and time. Use to understand temporal context for markets and news.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        timezone: {
+          type: 'string',
+          description: 'Timezone (default: UTC). Examples: "America/New_York", "Europe/London"',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'twitter_search',
     description:
       'Search recent tweets via Twitter API. Use to find real-time discussion on a topic.',
@@ -104,6 +119,79 @@ export const BIJAZ_TOOLS: Tool[] = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'get_portfolio',
+    description:
+      'Get current portfolio: positions, balances, and P&L. Use before betting to understand available capital and exposure.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'get_predictions',
+    description:
+      'Get past predictions and their outcomes. Use to review betting history, learn from mistakes, and improve calibration.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: 'Maximum predictions to return (default: 20)',
+        },
+        status: {
+          type: 'string',
+          enum: ['all', 'pending', 'resolved', 'won', 'lost'],
+          description: 'Filter by status (default: all)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'get_order_book',
+    description:
+      'Get order book depth for a market. Shows bid/ask prices and liquidity at each level.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        market_id: {
+          type: 'string',
+          description: 'The Polymarket market ID',
+        },
+        depth: {
+          type: 'number',
+          description: 'Number of price levels to return (default: 5)',
+        },
+      },
+      required: ['market_id'],
+    },
+  },
+  {
+    name: 'price_history',
+    description:
+      'Get historical price data for a market. Shows how odds have changed over time.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        market_id: {
+          type: 'string',
+          description: 'The Polymarket market ID',
+        },
+        interval: {
+          type: 'string',
+          enum: ['1h', '4h', '1d', '1w'],
+          description: 'Time interval between data points (default: 1d)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Number of data points (default: 30)',
+        },
+      },
+      required: ['market_id'],
     },
   },
   {
@@ -142,6 +230,34 @@ export const BIJAZ_TOOLS: Tool[] = [
         },
       },
       required: ['url'],
+    },
+  },
+  {
+    name: 'place_bet',
+    description:
+      'Place a bet on a prediction market. Use after researching a market to execute a trade. System spending/exposure limits apply automatically.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        market_id: {
+          type: 'string',
+          description: 'The Polymarket market ID to bet on',
+        },
+        outcome: {
+          type: 'string',
+          enum: ['YES', 'NO'],
+          description: 'The outcome to bet on (YES or NO)',
+        },
+        amount: {
+          type: 'number',
+          description: 'Amount in USD to bet',
+        },
+        reasoning: {
+          type: 'string',
+          description: 'Your reasoning for this bet (stored for calibration tracking)',
+        },
+      },
+      required: ['market_id', 'outcome', 'amount'],
     },
   },
 ];

@@ -4,9 +4,9 @@
 
 ---
 
-## Current Status: Tool Calling Implementation
+## Current Status: Trading Tools Complete
 
-Tool calling is implemented for Anthropic and OpenAI (fallback on rate limits).
+All trading tools implemented (Phases 12-17). Tool calling works with Anthropic and OpenAI fallback.
 
 ---
 
@@ -20,28 +20,35 @@ Tool calling is implemented for Anthropic and OpenAI (fallback on rate limits).
 | 4. Intelligence Layer | COMPLETE | RSS, NewsAPI, vector storage |
 | 5. Agent Reasoning | COMPLETE | LLM works with tool calling |
 | 5.5. Tool Calling | COMPLETE | See [TOOL_CALLING_IMPLEMENTATION.md](./TOOL_CALLING_IMPLEMENTATION.md) |
-| **9. Twitter Search** | **COMPLETE** | Real-time Twitter + SerpAPI fallback |
-| **10. Web Search** | **PLANNED** | See [WEB_TOOLS_IMPLEMENTATION.md](./WEB_TOOLS_IMPLEMENTATION.md) |
-| **11. Web Fetch** | **PLANNED** | Readability-based page extraction |
-| 6. Channel Integration | IN PROGRESS | Tool calling unblocked |
+| 9. Twitter Search | COMPLETE | Real-time Twitter + SerpAPI fallback |
+| 10. Web Search | COMPLETE | SerpAPI + Brave fallback |
+| 11. Web Fetch | COMPLETE | Readability + SSRF protection |
+| 12. Current Time | COMPLETE | Temporal awareness |
+| **13. Place Bet** | **COMPLETE** | Autonomous trading via tool |
+| 14. Get Portfolio | COMPLETE | View positions/balance |
+| 15. Get Predictions | COMPLETE | Betting history |
+| 16. Get Order Book | COMPLETE | Market depth |
+| 17. Price History | COMPLETE | Historical odds |
+| 6. Channel Integration | IN PROGRESS | Telegram working |
 | 7. Polish & Testing | NOT STARTED | |
 
 ---
 
-## Current Sprint: Tool Calling
+## Current Sprint: Trading Tools (COMPLETE)
 
 ### Tasks
 
-- [x] Create `src/core/tool-schemas.ts` - Anthropic tool definitions
+- [x] Create `src/core/tool-schemas.ts` - Anthropic tool definitions (14 tools)
 - [x] Create `src/core/tool-executor.ts` - Tool execution logic
 - [x] Modify `src/core/llm.ts` - Add `AgenticAnthropicClient`
 - [x] Modify `src/core/conversation.ts` - Use agentic client
-- [x] Modify `src/core/agent.ts` - Pass tool context
+- [x] Modify `src/core/agent.ts` - Pass tool context (executor, limiter)
 - [x] Create `tests/tool-calling.test.ts` - Test suite
 - [x] Update system prompt with accurate tool descriptions
 - [x] Add OpenAI tool-calling tests
+- [x] Implement trading tools (Phases 12-17)
 - [ ] E2E testing with deployed agent
-- [ ] Deploy and verify tool calling works
+- [ ] Deploy and verify all tools work
 
 ### Phase 9 - Real-Time Twitter Search (Complete)
 
@@ -63,12 +70,43 @@ See [WEB_TOOLS_IMPLEMENTATION.md](./WEB_TOOLS_IMPLEMENTATION.md)
 - [ ] Add tests
 
 **Phase 11: Web Fetch**
-- [ ] Add `web_fetch` tool schema
-- [ ] Install `@mozilla/readability`, `jsdom`
-- [ ] Implement `fetchAndExtract()` with Readability
-- [ ] Add timeout and SSRF protection
-- [ ] Update system prompt
-- [ ] Add tests
+- [x] Add `web_fetch` tool schema
+- [x] Install `@mozilla/readability`, `jsdom`
+- [x] Implement `fetchAndExtract()` with Readability
+- [x] Add timeout and SSRF protection
+- [x] Update system prompt
+- [x] Add tests
+
+### Next: Phase 12-17 - Trading Tools
+
+See [TRADING_TOOLS_IMPLEMENTATION.md](./TRADING_TOOLS_IMPLEMENTATION.md)
+
+**Phase 12: Current Time** (COMPLETE)
+- [x] Add `current_time` tool
+
+**Phase 13: Place Bet** (COMPLETE)
+- [x] Add `place_bet` tool schema
+- [x] Add `place_bet` handler with exposure/spending limit checks
+- [x] Integrate with executor (ExecutionAdapter)
+- [x] Record predictions for calibration tracking
+- [x] Add 11 unit tests (all passing)
+- [x] Update system prompt
+
+**Phase 14: Get Portfolio** (COMPLETE)
+- [x] Add `get_portfolio` tool
+- [x] Show positions, balances, P&L
+
+**Phase 15: Get Predictions** (COMPLETE)
+- [x] Add `get_predictions` tool
+- [x] Show betting history and stats
+
+**Phase 16: Get Order Book** (COMPLETE)
+- [x] Add `get_order_book` tool
+- [x] CLOB API integration
+
+**Phase 17: Price History** (COMPLETE)
+- [x] Add `price_history` tool
+- [x] Gamma API integration
 
 ---
 
@@ -79,14 +117,21 @@ See [WEB_TOOLS_IMPLEMENTATION.md](./WEB_TOOLS_IMPLEMENTATION.md)
 - Updated system prompt to reflect real tools
 - Added unit tests for tool schemas/executor and OpenAI tool loop
 - **Tool calling implementation:**
-  - `src/core/tool-schemas.ts` - 6 tools defined
+  - `src/core/tool-schemas.ts` - 14 tools defined
   - `src/core/tool-executor.ts` - Tool execution logic
   - `src/core/llm.ts` - AgenticAnthropicClient + AgenticOpenAiClient
   - `src/core/conversation.ts` - Uses agentic client
-  - `src/core/agent.ts` - Passes tool context
-  - Tests created for tool calling
+  - `src/core/agent.ts` - Passes tool context (config, marketClient, executor, limiter)
+  - Tests created for tool calling (135 tests passing)
 - **Phase 9 Complete:** Real-time Twitter search with hybrid fallback (Twitter API v2 + SerpAPI)
-- **Phase 10 & 11 Planned:** Web search and web fetch tools - see [WEB_TOOLS_IMPLEMENTATION.md](./WEB_TOOLS_IMPLEMENTATION.md)
+- **Phase 10 & 11 Complete:** Web search and web fetch tools with SSRF protection
+- **Phases 12-17 Complete:** Trading tools implemented
+  - `current_time` - Temporal awareness (timezone support)
+  - `place_bet` - Autonomous trading with exposure/spending limits, calibration tracking
+  - `get_portfolio` - View positions, balances, P&L (chain or paper mode)
+  - `get_predictions` - Betting history with stats (win rate, ROI)
+  - `get_order_book` - CLOB market depth with liquidity warnings
+  - `price_history` - Historical odds from Gamma API
 
 ---
 
