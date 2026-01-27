@@ -103,6 +103,16 @@ export const BIJAZ_TOOLS: Tool[] = [
     },
   },
   {
+    name: 'get_wallet_info',
+    description:
+      'Get wallet address, chain, and token for funding. Use when asking where to deposit funds.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: 'twitter_search',
     description:
       'Search recent tweets via Twitter API. Use to find real-time discussion on a topic.',

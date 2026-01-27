@@ -72,6 +72,9 @@ Get the user's prediction track record and calibration stats.
 ### current_time
 Get the current date/time. Use for time-sensitive markets or news.
 
+### get_wallet_info
+Get wallet address, chain, and token for funding.
+
 ### twitter_search
 Search recent tweets for a topic.
 

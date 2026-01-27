@@ -6,6 +6,7 @@ import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listRecentIntel, searchIntel, type StoredIntel } from '../intel/store.js';
 import { listOpenPositions, listPredictions, createPrediction } from '../memory/predictions.js';
 import { checkExposureLimits } from './exposure.js';
+import { loadKeystore } from '../execution/wallet/keystore.js';
 
 /** Minimal interface for spending limit enforcement used in tool execution */
 export interface ToolSpendingLimiter {
@@ -99,6 +100,10 @@ export async function executeToolCall(
             day_of_week: now.toLocaleDateString('en-US', { weekday: 'long' }),
           },
         };
+      }
+
+      case 'get_wallet_info': {
+        return getWalletInfo(ctx);
       }
 
       case 'twitter_search': {
@@ -365,6 +370,35 @@ function formatIntelForTool(items: StoredIntel[]): object[] {
     url: item.url,
     summary: item.content?.slice(0, 500) ?? null,
   }));
+}
+
+function getWalletInfo(ctx: ToolExecutorContext): ToolResult {
+  try {
+    const keystorePath =
+      ctx.config.wallet?.keystorePath ??
+      process.env.BIJAZ_KEYSTORE_PATH ??
+      `${process.env.HOME ?? ''}/.bijaz/keystore.json`;
+    const store = loadKeystore(keystorePath);
+    const address = store.address
+      ? store.address.startsWith('0x')
+        ? store.address
+        : `0x${store.address}`
+      : null;
+
+    return {
+      success: true,
+      data: {
+        address,
+        chain: 'polygon',
+        token: 'USDC',
+        rpc_url: ctx.config.polymarket?.rpcUrl ?? null,
+        keystore_path: keystorePath,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
 }
 
 async function getPortfolio(ctx: ToolExecutorContext): Promise<ToolResult> {

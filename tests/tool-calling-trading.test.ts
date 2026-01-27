@@ -64,6 +64,10 @@ vi.mock('../src/execution/wallet/manager.js', () => ({
   loadWallet: () => ({}),
 }));
 
+vi.mock('../src/execution/wallet/keystore.js', () => ({
+  loadKeystore: () => ({ address: '0x1234567890abcdef1234567890abcdef12345678' }),
+}));
+
 describe('trading tools (excluding place_bet)', () => {
   const originalFetch = globalThis.fetch;
 
@@ -117,6 +121,22 @@ describe('trading tools (excluding place_bet)', () => {
       const data = result.data as { balances: { usdc: number }; positions: Array<{ outcome: string }> };
       expect(data.balances.usdc).toBe(100);
       expect(data.positions[0].outcome).toBe('YES');
+    }
+  });
+
+  it('returns get_wallet_info with address', async () => {
+    const result = await executeToolCall(
+      'get_wallet_info',
+      {},
+      { config: { polymarket: { api: { gamma: '', clob: '' } } } as any, marketClient: {} as any }
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as { address: string; chain: string; token: string };
+      expect(data.address).toBe('0x1234567890abcdef1234567890abcdef12345678');
+      expect(data.chain).toBe('polygon');
+      expect(data.token).toBe('USDC');
     }
   });
 
