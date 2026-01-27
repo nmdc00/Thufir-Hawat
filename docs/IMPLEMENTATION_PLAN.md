@@ -2,6 +2,38 @@
 
 This document outlines the implementation phases for Bijaz, designed for handoff to developers.
 
+---
+
+## Current Progress
+
+**Last Updated:** 2026-01-27
+
+### Completed Phases
+- [x] Phase 1: Foundation - Project setup, structure, wallet security
+- [x] Phase 2: Polymarket Integration - Market data, order execution
+- [x] Phase 3: Memory & Predictions - Prediction storage, calibration
+- [x] Phase 4: Intelligence Layer - RSS, NewsAPI, vector storage
+- [x] Phase 5: Agent Reasoning (Partial) - LLM integration, basic prompts
+
+### In Progress
+- [ ] **Phase 5.5: Tool Calling** - CRITICAL BLOCKER
+  - See: [TOOL_CALLING_IMPLEMENTATION.md](./TOOL_CALLING_IMPLEMENTATION.md)
+  - Status: Planning complete, implementation needed
+  - Issue: LLM cannot invoke tools, only receives injected context
+
+### Blocked
+- [ ] Phase 6: Channel Integration - Blocked by tool calling
+
+### Known Issues
+1. **LLM says "I can't access tools"**
+   - Cause: No tool calling mechanism implemented
+   - Fix: Implement Phase 5.5 (Tool Calling)
+2. **`apiBaseUrl` ignored for Anthropic provider**
+   - Cause: `AnthropicClient` uses SDK directly, not custom base URL
+   - This is expected behavior for Anthropic
+
+---
+
 ## Overview
 
 Bijaz is built by combining:
@@ -457,6 +489,77 @@ Define tools the agent can call:
 - [ ] Tool definitions
 - [ ] Agent conversation loop
 - [ ] CLI: `bijaz chat`
+
+---
+
+## Phase 5.5: Tool Calling Implementation (CRITICAL)
+
+> **Full details:** [TOOL_CALLING_IMPLEMENTATION.md](./TOOL_CALLING_IMPLEMENTATION.md)
+
+This phase was added after discovering that the LLM cannot actually invoke tools.
+
+### 5.5.1 Problem
+
+The current implementation tells the LLM it has tools but doesn't implement Anthropic's tool calling API:
+
+```typescript
+// Current (broken)
+const response = await this.client.messages.create({
+  model, max_tokens, system, messages
+  // ❌ No 'tools' parameter
+});
+```
+
+### 5.5.2 Solution
+
+Implement native Anthropic tool calling with agentic loop:
+
+```typescript
+// Fixed
+const response = await this.client.messages.create({
+  model, max_tokens, system, messages,
+  tools: BIJAZ_TOOLS,  // ✅ Pass tool definitions
+});
+
+// Handle tool_use blocks
+if (response.stop_reason === 'tool_use') {
+  // Execute tools, send results back, loop
+}
+```
+
+### 5.5.3 New Files
+
+| File | Purpose |
+|------|---------|
+| `src/core/tool-schemas.ts` | Anthropic tool definitions |
+| `src/core/tool-executor.ts` | Tool execution logic |
+
+### 5.5.4 Modified Files
+
+| File | Changes |
+|------|---------|
+| `src/core/llm.ts` | Add `AgenticAnthropicClient` class |
+| `src/core/conversation.ts` | Use agentic client, update system prompt |
+| `src/core/agent.ts` | Pass tool context to conversation handler |
+
+### 5.5.5 Tools to Implement
+
+| Tool Name | Description |
+|-----------|-------------|
+| `market_search` | Search Polymarket for markets by query |
+| `market_get` | Get detailed market info by ID |
+| `intel_search` | Search news/intel database |
+| `intel_recent` | Get latest news items |
+| `calibration_stats` | Get user's prediction track record |
+
+### 5.5.6 Deliverables
+
+- [ ] Tool schema definitions
+- [ ] Tool executor with error handling
+- [ ] Agentic LLM client with tool loop
+- [ ] Updated system prompt
+- [ ] Unit and integration tests
+- [ ] Debug logging for tool calls
 
 ---
 

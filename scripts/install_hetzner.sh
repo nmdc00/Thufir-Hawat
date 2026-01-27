@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "Bijaz Hetzner Installer (Ubuntu/Debian)"
 echo "This script will:"
-echo "  - Install Node 22 + pnpm (via fnm)"
+echo "  - Install Node 22 + pnpm (via NodeSource + corepack)"
 echo "  - Clone/update Bijaz to /opt/bijaz (default)"
 echo "  - Create .env and ~/.bijaz/config.yaml"
 echo "  - Install a systemd service and start it"
@@ -60,18 +60,15 @@ if [[ "${EXEC_MODE}" == "live" ]]; then
 fi
 
 echo
+echo "Installing system dependencies..."
+sudo apt update
+sudo apt install -y curl unzip git build-essential
+
 echo "Installing Node 22 + pnpm..."
-if ! command -v fnm >/dev/null 2>&1; then
-  curl -fsSL https://fnm.vercel.app/install | bash
-  if [[ -f "${HOME}/.bashrc" ]]; then
-    # shellcheck disable=SC1090
-    source "${HOME}/.bashrc"
-  fi
-fi
-fnm install 22
-fnm use 22
-corepack enable
-corepack prepare pnpm@10.28.1 --activate
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo corepack enable
+sudo corepack prepare pnpm@10.28.1 --activate
 
 echo "Cloning/updating repo..."
 sudo mkdir -p "${INSTALL_PATH}"
@@ -83,6 +80,7 @@ else
 fi
 
 cd "${INSTALL_PATH}"
+printf "a\ny\n" | pnpm approve-builds
 pnpm install
 pnpm build
 
@@ -126,6 +124,19 @@ polymarket:
   api:
     gamma: https://gamma-api.polymarket.com
     clob: https://clob.polymarket.com
+
+memory:
+  dbPath: ~/.bijaz/bijaz.sqlite
+  sessionsPath: ~/.bijaz/sessions
+  maxHistoryMessages: 50
+  compactAfterTokens: 12000
+  keepRecentMessages: 12
+  retentionDays: 90
+  embeddings:
+    enabled: false
+    provider: openai
+    model: text-embedding-3-small
+    apiBaseUrl: https://api.openai.com
 
 channels:
   telegram:

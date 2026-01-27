@@ -23,6 +23,8 @@ import { join } from 'node:path';
 import yaml from 'yaml';
 import { createResearchPlan, runResearchPlan } from './research_planner.js';
 import { ToolRegistry } from './tools.js';
+import { AgenticAnthropicClient, AgenticOpenAiClient } from './llm.js';
+import type { ToolExecutorContext } from './tool-executor.js';
 
 export interface ConversationContext {
   userId: string;
@@ -50,10 +52,25 @@ const SYSTEM_PROMPT = `You are Bijaz, an AI prediction market companion. You hel
 - Reference relevant prediction markets when available
 - If you've been wrong in a domain before (shown in calibration data), acknowledge it
 
-## Available tools (use when relevant):
-- You can search for Polymarket markets on any topic
-- You have access to the user's watchlist and past predictions
-- You can see recent news/intel that's been collected
+## Tools available (use when helpful):
+
+### market_search
+Search for prediction markets by topic. Use when discussing events to find relevant markets.
+
+### market_get
+Get detailed info about a specific market by ID.
+
+### intel_search
+Search news/intel database for recent information about a topic.
+
+### intel_recent
+Get the most recent intel/news items.
+
+### calibration_stats
+Get the user's prediction track record and calibration stats.
+
+### twitter_search
+Search recent tweets for a topic.
 
 ## Response format:
 - Be conversational, not robotic
@@ -245,6 +262,8 @@ function extractSearchTopics(message: string): string[] {
 export class ConversationHandler {
   private llm: LlmClient;
   private infoLlm?: LlmClient;
+  private agenticLlm?: LlmClient;
+  private agenticOpenAi?: LlmClient;
   private marketClient: PolymarketMarketClient;
   private config: BijazConfig;
   private sessions: SessionStore;
@@ -254,7 +273,8 @@ export class ConversationHandler {
     llm: LlmClient,
     marketClient: PolymarketMarketClient,
     config: BijazConfig,
-    infoLlm?: LlmClient
+    infoLlm?: LlmClient,
+    toolContext?: ToolExecutorContext
   ) {
     this.llm = llm;
     this.infoLlm = infoLlm;
@@ -262,6 +282,14 @@ export class ConversationHandler {
     this.config = config;
     this.sessions = new SessionStore(config);
     this.chatVectorStore = new ChatVectorStore(config);
+    const context = toolContext ?? { config, marketClient };
+    if (config.agent.provider === 'anthropic') {
+      this.agenticLlm = new AgenticAnthropicClient(config, context);
+    }
+    if (config.agent.provider === 'openai') {
+      this.agenticLlm = new AgenticOpenAiClient(config, context);
+    }
+    this.agenticOpenAi = new AgenticOpenAiClient(config, context);
   }
 
   /**
@@ -294,32 +322,6 @@ export class ConversationHandler {
     const semanticIntelContext = await buildSemanticIntelContext(message, this.config);
     const semanticChatContext = await this.buildSemanticChatContext(message, userId);
 
-    // Check if we should search for markets
-    const searchTopics = extractSearchTopics(message);
-    let marketContext = '';
-
-    if (searchTopics.length > 0) {
-      const allMarkets: Market[] = [];
-      for (const topic of searchTopics.slice(0, 2)) {
-        // Limit to 2 searches
-        try {
-          const markets = await this.marketClient.searchMarkets(topic, 5);
-          allMarkets.push(...markets);
-        } catch {
-          // Ignore search failures
-        }
-      }
-
-      // Dedupe by ID
-      const uniqueMarkets = Array.from(
-        new Map(allMarkets.map((m) => [m.id, m])).values()
-      ).slice(0, 5);
-
-      if (uniqueMarkets.length > 0) {
-        marketContext = `\n## Relevant Prediction Markets\n${formatMarketsForChat(uniqueMarkets)}`;
-      }
-    }
-
     // Build the full context for this turn
     const contextBlock = [
       userContext,
@@ -327,7 +329,6 @@ export class ConversationHandler {
       intelContext,
       semanticIntelContext,
       semanticChatContext,
-      marketContext,
     ]
       .filter(Boolean)
       .join('\n');
@@ -345,7 +346,7 @@ export class ConversationHandler {
     ];
 
     // Call LLM
-    const response = await this.llm.complete(messages, { temperature: 0.7 });
+    const response = await this.completeWithFallback(messages, { temperature: 0.7 });
 
     const userEntry: ChatMessage = { role: 'user', content: message };
     const assistantEntry: ChatMessage = { role: 'assistant', content: response.content };
@@ -460,6 +461,31 @@ ${contextBlock}`.trim();
     } catch {
       return SYSTEM_PROMPT + `\n\n---\n\n${contextBlock}`;
     }
+  }
+
+  private async completeWithFallback(
+    messages: ChatMessage[],
+    options: { temperature?: number }
+  ): Promise<{ content: string; model: string }> {
+    try {
+      return await (this.agenticLlm ?? this.llm).complete(messages, options);
+    } catch (error) {
+      if (!this.shouldFallbackToOpenAi(error) || !this.agenticOpenAi) {
+        throw error;
+      }
+      return this.agenticOpenAi.complete(messages, options);
+    }
+  }
+
+  private shouldFallbackToOpenAi(error: unknown): boolean {
+    const err = error as { status?: number; message?: string };
+    if (err?.status === 429) return true;
+    const message = (err?.message ?? '').toLowerCase();
+    return (
+      message.includes('rate limit') ||
+      message.includes('too many requests') ||
+      message.includes('429')
+    );
   }
 
   private maybePromptIntelAlerts(userId: string): string | null {
@@ -712,7 +738,7 @@ Give me:
         userMessage: market.question ?? marketId,
       });
 
-      const response = await this.llm.complete(
+      const response = await this.completeWithFallback(
         [
           { role: 'system', content: systemMessage },
           { role: 'user', content: prompt },
@@ -796,7 +822,7 @@ Category: ${market.category ?? 'unknown'}
       userMessage: market.question ?? marketId,
     });
 
-    const response = await this.llm.complete(
+    const response = await this.completeWithFallback(
       [
         { role: 'system', content: systemMessage },
         { role: 'user', content: prompt },
@@ -875,7 +901,7 @@ ${marketContext}`;
       userMessage: topic,
     });
 
-    const response = await this.llm.complete(
+    const response = await this.completeWithFallback(
       [
         { role: 'system', content: systemMessage },
         { role: 'user', content: prompt },

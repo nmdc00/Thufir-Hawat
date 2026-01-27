@@ -18,6 +18,7 @@ import { AutonomousManager } from './autonomous.js';
 import { generateDailyReport, formatDailyReport } from './opportunities.js';
 import { explainPrediction } from './explain.js';
 import { checkExposureLimits } from './exposure.js';
+import type { ToolExecutorContext } from './tool-executor.js';
 
 export class BijazAgent {
   private llm: ReturnType<typeof createLlmClient>;
@@ -30,6 +31,7 @@ export class BijazAgent {
   private scanTimer: NodeJS.Timeout | null = null;
   private conversation: ConversationHandler;
   private autonomous: AutonomousManager;
+  private toolContext: ToolExecutorContext;
 
   constructor(private config: BijazConfig, logger?: Logger) {
     this.logger = logger ?? new Logger('info');
@@ -48,11 +50,17 @@ export class BijazAgent {
       confirmationThreshold: config.wallet?.limits?.confirmationThreshold ?? 10,
     });
 
+    this.toolContext = {
+      config: this.config,
+      marketClient: this.marketClient,
+    };
+
     this.conversation = new ConversationHandler(
       this.llm,
       this.marketClient,
       this.config,
-      this.infoLlm
+      this.infoLlm,
+      this.toolContext
     );
 
     this.autonomous = new AutonomousManager(

@@ -2,6 +2,14 @@ import Anthropic from '@anthropic-ai/sdk';
 import fetch from 'node-fetch';
 
 import type { BijazConfig } from './config.js';
+import { BIJAZ_TOOLS } from './tool-schemas.js';
+import { executeToolCall, type ToolExecutorContext } from './tool-executor.js';
+import type {
+  ContentBlock,
+  MessageParam,
+  ToolResultBlockParam,
+  ToolUseBlock,
+} from '@anthropic-ai/sdk/resources/messages';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -35,6 +43,214 @@ export function createOpenAiClient(
   modelOverride?: string
 ): LlmClient {
   return new OpenAiClient(config, modelOverride);
+}
+
+export interface AgenticLlmOptions {
+  maxToolCalls?: number;
+  temperature?: number;
+}
+
+export class AgenticAnthropicClient implements LlmClient {
+  private client: Anthropic;
+  private model: string;
+  private toolContext: ToolExecutorContext;
+
+  constructor(config: BijazConfig, toolContext: ToolExecutorContext) {
+    this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? '' });
+    this.model = config.agent.model;
+    this.toolContext = toolContext;
+  }
+
+  async complete(messages: ChatMessage[], options?: AgenticLlmOptions): Promise<LlmResponse> {
+    const maxIterations = options?.maxToolCalls ?? 6;
+    const temperature = options?.temperature ?? 0.2;
+
+    const system = messages.find((msg) => msg.role === 'system')?.content ?? '';
+    let anthropicMessages: MessageParam[] = messages
+      .filter((msg) => msg.role !== 'system')
+      .map((msg) => ({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+      }));
+
+    let iteration = 0;
+    while (iteration < maxIterations) {
+      iteration += 1;
+
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 4096,
+        temperature,
+        system,
+        messages: anthropicMessages,
+        tools: BIJAZ_TOOLS,
+      });
+
+      const toolUseBlocks = response.content.filter(
+        (block): block is ToolUseBlock => block.type === 'tool_use'
+      );
+
+      if (toolUseBlocks.length === 0) {
+        const text = response.content
+          .filter((block): block is ContentBlock & { type: 'text' } => block.type === 'text')
+          .map((block) => block.text)
+          .join('')
+          .trim();
+        return { content: text, model: this.model };
+      }
+
+      const toolResults: ToolResultBlockParam[] = [];
+      for (const toolUse of toolUseBlocks) {
+        const result = await executeToolCall(
+          toolUse.name,
+          toolUse.input as Record<string, unknown>,
+          this.toolContext
+        );
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: JSON.stringify(result.success ? result.data : { error: result.error }),
+          is_error: !result.success,
+        });
+      }
+
+      anthropicMessages.push({
+        role: 'assistant',
+        content: response.content,
+      });
+
+      anthropicMessages.push({
+        role: 'user',
+        content: toolResults,
+      });
+    }
+
+    return {
+      content: 'I was unable to complete the request within the allowed number of steps.',
+      model: this.model,
+    };
+  }
+}
+
+type OpenAiTool = {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
+type OpenAiToolCall = {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+type OpenAiMessage =
+  | { role: 'system' | 'user' | 'assistant'; content: string }
+  | { role: 'assistant'; content: string | null; tool_calls: OpenAiToolCall[] }
+  | { role: 'tool'; content: string; tool_call_id: string };
+
+export class AgenticOpenAiClient implements LlmClient {
+  private model: string;
+  private baseUrl: string;
+  private toolContext: ToolExecutorContext;
+
+  constructor(config: BijazConfig, toolContext: ToolExecutorContext) {
+    this.model = config.agent.openaiModel ?? config.agent.model;
+    this.baseUrl = config.agent.apiBaseUrl ?? 'https://api.openai.com';
+    this.toolContext = toolContext;
+  }
+
+  async complete(messages: ChatMessage[], options?: AgenticLlmOptions): Promise<LlmResponse> {
+    const maxIterations = options?.maxToolCalls ?? 6;
+    const temperature = options?.temperature ?? 0.2;
+
+    const openaiMessages: OpenAiMessage[] = messages.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+
+    const tools: OpenAiTool[] = BIJAZ_TOOLS.map((tool) => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.input_schema as Record<string, unknown>,
+      },
+    }));
+
+    let iteration = 0;
+    while (iteration < maxIterations) {
+      iteration += 1;
+      const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          temperature,
+          messages: openaiMessages,
+          tools,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`OpenAI request failed: ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        choices: Array<{
+          message: {
+            content: string | null;
+            tool_calls?: OpenAiToolCall[];
+          };
+        }>;
+      };
+
+      const message = data.choices?.[0]?.message;
+      if (!message) {
+        return { content: '', model: this.model };
+      }
+
+      const toolCalls = message.tool_calls ?? [];
+      if (toolCalls.length === 0) {
+        return { content: (message.content ?? '').trim(), model: this.model };
+      }
+
+      openaiMessages.push({
+        role: 'assistant',
+        content: message.content ?? null,
+        tool_calls: toolCalls,
+      });
+
+      for (const toolCall of toolCalls) {
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = JSON.parse(toolCall.function.arguments ?? '{}');
+        } catch {
+          parsed = {};
+        }
+        const result = await executeToolCall(toolCall.function.name, parsed, this.toolContext);
+        openaiMessages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify(result.success ? result.data : { error: result.error }),
+        });
+      }
+    }
+
+    return {
+      content: 'I was unable to complete the request within the allowed number of steps.',
+      model: this.model,
+    };
+  }
 }
 
 class AnthropicClient implements LlmClient {
