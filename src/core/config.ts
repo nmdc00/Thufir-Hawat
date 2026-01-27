@@ -302,6 +302,9 @@ const ConfigSchema = z.object({
           enabled: z.boolean().default(false),
           time: z.string().default('07:00'),
           limit: z.number().default(200),
+          maxPages: z.number().default(25),
+          intervalSeconds: z.number().optional(),
+          refreshLimit: z.number().default(500),
         })
         .default({}),
       proactiveSearch: z

@@ -13,7 +13,7 @@ import { listWatchlist } from '../memory/watchlist.js';
 import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { pruneIntel } from '../intel/store.js';
 import { rankIntelAlerts } from '../intel/alerts.js';
-import { syncMarketCache } from '../core/markets_sync.js';
+import { refreshMarketPrices, syncMarketCache } from '../core/markets_sync.js';
 import { runProactiveSearch } from '../core/proactive_search.js';
 import { buildAgentPeerSessionKey, resolveThreadSessionKeys } from './session_keys.js';
 import { PolymarketStreamClient } from '../execution/polymarket/stream.js';
@@ -223,28 +223,43 @@ if (intelFetchConfig?.enabled) {
 const marketSyncConfig = config.notifications?.marketSync;
 let lastMarketSyncDate = '';
 if (marketSyncConfig?.enabled) {
-  setInterval(async () => {
-    const now = new Date();
-    const [hours, minutes] = marketSyncConfig.time.split(':').map((part) => Number(part));
-    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-      return;
-    }
-    const today = now.toISOString().split('T')[0]!;
-    if (lastMarketSyncDate === today) {
-      return;
-    }
-    if (now.getHours() !== hours || now.getMinutes() !== minutes) {
-      return;
-    }
-
+  const runMarketSync = async () => {
     try {
-      const result = await syncMarketCache(config, marketSyncConfig.limit);
+      const result = await syncMarketCache(
+        config,
+        marketSyncConfig.limit,
+        marketSyncConfig.maxPages
+      );
       logger.info(`Market cache sync stored ${result.stored} market(s).`);
+      const refreshed = await refreshMarketPrices(config, marketSyncConfig.refreshLimit);
+      logger.info(`Market price refresh stored ${refreshed.stored} market(s).`);
     } catch (error) {
       logger.error('Market cache sync failed', error);
     }
-    lastMarketSyncDate = today;
-  }, 60_000);
+  };
+
+  if (marketSyncConfig.intervalSeconds && marketSyncConfig.intervalSeconds > 0) {
+    runMarketSync();
+    setInterval(runMarketSync, marketSyncConfig.intervalSeconds * 1000);
+  } else {
+    setInterval(async () => {
+      const now = new Date();
+      const [hours, minutes] = marketSyncConfig.time.split(':').map((part) => Number(part));
+      if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+        return;
+      }
+      const today = now.toISOString().split('T')[0]!;
+      if (lastMarketSyncDate === today) {
+        return;
+      }
+      if (now.getHours() !== hours || now.getMinutes() !== minutes) {
+        return;
+      }
+
+      await runMarketSync();
+      lastMarketSyncDate = today;
+    }, 60_000);
+  }
 }
 
 const proactiveConfig = config.notifications?.proactiveSearch;

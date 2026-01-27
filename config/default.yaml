@@ -155,6 +155,10 @@ notifications:
     enabled: false
     time: "07:00"
     limit: 200
+    maxPages: 25
+    refreshLimit: 500
+    # Set to run on a fixed interval instead of once per day
+    # intervalSeconds: 900
   proactiveSearch:
     enabled: false
     time: "07:30"

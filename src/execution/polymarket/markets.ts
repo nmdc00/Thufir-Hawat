@@ -2,6 +2,8 @@ import fetch from 'node-fetch';
 
 import type { BijazConfig } from '../../core/config.js';
 import { PolymarketCLOBClient } from './clob.js';
+import type { MarketCacheRecord } from '../../memory/market_cache.js';
+import { listMarketCache, searchMarketCache } from '../../memory/market_cache.js';
 
 export interface MarketToken {
   token_id: string;
@@ -14,6 +16,7 @@ export interface Market {
   id: string;
   conditionId: string;  // The condition ID used for order signing
   question: string;
+  description?: string;
   outcomes: string[];
   prices: Record<string, number>;
   tokens?: MarketToken[];  // Token IDs for each outcome (may need to fetch from CLOB)
@@ -27,6 +30,11 @@ export interface Market {
   negRisk?: boolean;  // Whether this is a negative risk market
 }
 
+export interface MarketPageResult {
+  markets: Market[];
+  nextOffset?: number;
+}
+
 export class PolymarketMarketClient {
   private gammaUrl: string;
 
@@ -35,37 +43,52 @@ export class PolymarketMarketClient {
   }
 
   async listMarkets(limit = 20): Promise<Market[]> {
-    const url = new URL(`${this.gammaUrl}/markets`);
-    url.searchParams.set('limit', String(limit));
-    url.searchParams.set('active', 'true');
-    url.searchParams.set('closed', 'false');
-    const response = await fetch(url.toString());
-    if (!response.ok) {
-      throw new Error(`Failed to fetch markets: ${response.status}`);
+    const cached = listMarketCache(limit);
+    if (cached.length > 0) {
+      return cached.map((record) => this.marketFromCache(record));
     }
-    const data = (await response.json()) as any;
-    const list = Array.isArray(data) ? data : data.markets ?? [];
-    return list.map((raw: any) => this.normalizeMarket(raw));
+    const page = await this.fetchMarketsPage({ limit, active: true, closed: false });
+    return page.markets;
   }
 
   async searchMarkets(query: string, limit = 10): Promise<Market[]> {
-    const url = new URL(`${this.gammaUrl}/markets`);
-    url.searchParams.set('limit', String(limit));
-    url.searchParams.set('active', 'true');
-    url.searchParams.set('closed', 'false');
-    url.searchParams.set('search', query);
-    const response = await fetch(url.toString());
-    if (!response.ok) {
-      // Fallback: fetch all and filter client-side
-      const all = await this.listMarkets(100);
-      const queryLower = query.toLowerCase();
-      return all
-        .filter((m) => m.question.toLowerCase().includes(queryLower))
-        .slice(0, limit);
+    const cached = searchMarketCache(query, limit);
+    if (cached.length > 0) {
+      return cached.map((record) => this.marketFromCache(record));
     }
-    const data = (await response.json()) as any;
-    const list = Array.isArray(data) ? data : data.markets ?? [];
-    return list.map((raw: any) => this.normalizeMarket(raw));
+    const results: Market[] = [];
+    let offset = 0;
+    const maxPages = 5;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.fetchMarketsPage({
+        limit,
+        offset,
+        search: query,
+        active: true,
+        closed: false,
+      });
+      results.push(...page.markets);
+      if (results.length >= limit) {
+        return results.slice(0, limit);
+      }
+      if (page.nextOffset != null) {
+        offset = page.nextOffset;
+      } else if (page.markets.length < limit) {
+        break;
+      } else {
+        offset += limit;
+      }
+    }
+
+    if (results.length > 0) {
+      return results.slice(0, limit);
+    }
+
+    const all = await this.listMarkets(100);
+    const queryLower = query.toLowerCase();
+    return all
+      .filter((m) => m.question.toLowerCase().includes(queryLower))
+      .slice(0, limit);
   }
 
   async getMarket(marketId: string): Promise<Market> {
@@ -148,6 +171,7 @@ export class PolymarketMarketClient {
       id: String(raw.id ?? raw.marketId ?? raw.condition_id ?? ''),
       conditionId: String(raw.conditionId ?? raw.condition_id ?? raw.id ?? ''),
       question: String(raw.question ?? raw.title ?? raw.marketTitle ?? ''),
+      description: raw.description ?? raw.rules ?? raw.marketDescription ?? undefined,
       outcomes: Array.isArray(outcomes) ? outcomes : [],
       prices: prices ?? {},
       tokens: tokens.length > 0 ? tokens : undefined,
@@ -159,6 +183,62 @@ export class PolymarketMarketClient {
       resolved: raw.resolved ?? raw.isResolved ?? false,
       resolution: raw.resolution ?? raw.resolvedOutcome ?? raw.outcome ?? undefined,
       negRisk: raw.negRisk ?? raw.neg_risk ?? (raw.enableOrderBook === false ? true : undefined),
+    };
+  }
+
+  normalizeRawMarket(raw: any): Market {
+    return this.normalizeMarket(raw);
+  }
+
+  private marketFromCache(record: MarketCacheRecord): Market {
+    return {
+      id: record.id,
+      conditionId: record.id,
+      question: record.question,
+      description: record.description ?? undefined,
+      outcomes: record.outcomes ?? [],
+      prices: record.prices ?? {},
+      volume: record.volume ?? undefined,
+      liquidity: record.liquidity ?? undefined,
+      endDate: record.endDate ?? undefined,
+      category: record.category ?? undefined,
+      resolved: record.resolved ?? undefined,
+      resolution: record.resolution ?? undefined,
+    };
+  }
+
+  async fetchMarketsPage(options: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    active?: boolean;
+    closed?: boolean;
+  }): Promise<MarketPageResult> {
+    const url = new URL(`${this.gammaUrl}/markets`);
+    if (options.limit != null) url.searchParams.set('limit', String(options.limit));
+    if (options.offset != null) url.searchParams.set('offset', String(options.offset));
+    if (options.search) url.searchParams.set('search', options.search);
+    if (options.active != null) url.searchParams.set('active', options.active ? 'true' : 'false');
+    if (options.closed != null) url.searchParams.set('closed', options.closed ? 'true' : 'false');
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      throw new Error(`Failed to fetch markets: ${response.status}`);
+    }
+    const data = (await response.json()) as any;
+    const list = Array.isArray(data) ? data : data.markets ?? data.results ?? [];
+    const nextOffset =
+      typeof data.next_offset === 'number'
+        ? data.next_offset
+        : typeof data.nextOffset === 'number'
+          ? data.nextOffset
+          : typeof data.next === 'number'
+            ? data.next
+            : undefined;
+
+    return {
+      markets: list.map((raw: any) => this.normalizeMarket(raw)),
+      nextOffset,
     };
   }
 

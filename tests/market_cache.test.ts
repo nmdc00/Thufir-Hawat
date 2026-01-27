@@ -22,6 +22,7 @@ vi.mock('../src/memory/db.js', () => {
               state.rows.set(String(params.id), {
                 id: String(params.id),
                 question: String(params.question),
+                description: (params.description as string | null) ?? null,
                 outcomes: (params.outcomes as string | null) ?? null,
                 prices: (params.prices as string | null) ?? null,
                 updatedAt: new Date().toISOString(),
@@ -38,6 +39,7 @@ vi.mock('../src/memory/db.js', () => {
               return {
                 id: row.id,
                 question: row.question,
+                description: row.description,
                 outcomes: row.outcomes,
                 prices: row.prices,
                 endDate: null,
@@ -48,6 +50,44 @@ vi.mock('../src/memory/db.js', () => {
                 updatedAt: row.updatedAt,
               };
             },
+          };
+        }
+        if (sql.includes('FROM market_cache') && sql.includes('ORDER BY volume DESC')) {
+          return {
+            all: (q: string | number, q2?: string | number, lim?: number) => {
+              const hasQuery = typeof q === 'string';
+              const limit = (typeof q2 === 'number' ? q2 : lim) ?? 50;
+              const needle = hasQuery ? String(q).replace(/%/g, '') : '';
+              const filtered = Array.from(state.rows.values()).filter((row) => {
+                if (!hasQuery) return true;
+                const hay = `${row.question} ${row.description ?? ''}`.toLowerCase();
+                return hay.includes(needle.toLowerCase());
+              });
+              return filtered.slice(0, limit).map((row) => ({
+                id: row.id,
+                question: row.question,
+                description: row.description,
+                outcomes: row.outcomes,
+                prices: row.prices,
+                endDate: null,
+                category: null,
+                resolved: 0,
+                resolution: null,
+                createdAt: null,
+                updatedAt: row.updatedAt,
+              }));
+            },
+          };
+        }
+        if (sql.includes('MAX(updated_at)')) {
+          return {
+            get: () => ({
+              count: state.rows.size,
+              latestUpdatedAt:
+                state.rows.size > 0
+                  ? Array.from(state.rows.values())[0]?.updatedAt ?? null
+                  : null,
+            }),
           };
         }
         return {
@@ -61,7 +101,13 @@ vi.mock('../src/memory/db.js', () => {
   };
 });
 
-import { getMarketCache, upsertMarketCache } from '../src/memory/market_cache.js';
+import {
+  getMarketCache,
+  getMarketCacheStats,
+  listMarketCache,
+  searchMarketCache,
+  upsertMarketCache,
+} from '../src/memory/market_cache.js';
 
 describe('market cache', () => {
   beforeEach(() => {
@@ -72,6 +118,7 @@ describe('market cache', () => {
     upsertMarketCache({
       id: 'm1',
       question: 'Test market',
+      description: 'Test description',
       outcomes: ['YES', 'NO'],
       prices: { YES: 0.42, NO: 0.58 },
     });
@@ -80,5 +127,27 @@ describe('market cache', () => {
     expect(cached?.question).toBe('Test market');
     expect(cached?.outcomes).toEqual(['YES', 'NO']);
     expect(cached?.prices).toEqual({ YES: 0.42, NO: 0.58 });
+  });
+
+  it('lists cached markets', () => {
+    upsertMarketCache({ id: 'm1', question: 'Alpha market' });
+    upsertMarketCache({ id: 'm2', question: 'Beta market' });
+    const list = listMarketCache(10);
+    expect(list.length).toBe(2);
+  });
+
+  it('searches cached markets', () => {
+    upsertMarketCache({ id: 'm1', question: 'Bitcoin price market' });
+    upsertMarketCache({ id: 'm2', question: 'Election market' });
+    const list = searchMarketCache('bitcoin', 10);
+    expect(list.length).toBe(1);
+    expect(list[0].id).toBe('m1');
+  });
+
+  it('returns cache stats', () => {
+    upsertMarketCache({ id: 'm1', question: 'Stats market' });
+    const stats = getMarketCacheStats();
+    expect(stats.count).toBe(1);
+    expect(stats.latestUpdatedAt).toBeTruthy();
   });
 });

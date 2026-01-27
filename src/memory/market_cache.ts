@@ -143,3 +143,110 @@ export function getMarketCache(id: string): MarketCacheRecord | null {
     updatedAt: (row.updatedAt as string | null) ?? null,
   };
 }
+
+export function listMarketCache(limit = 50): MarketCacheRecord[] {
+  const db = openDatabase();
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          id,
+          question,
+          description,
+          outcomes,
+          prices,
+          volume,
+          liquidity,
+          end_date as endDate,
+          category,
+          resolved,
+          resolution,
+          created_at as createdAt,
+          updated_at as updatedAt
+        FROM market_cache
+        WHERE resolved = 0
+        ORDER BY volume DESC
+        LIMIT ?
+      `
+    )
+    .all(limit) as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    question: String(row.question),
+    description: (row.description as string | null) ?? null,
+    outcomes: parseObject<string[]>((row.outcomes as string | null) ?? null),
+    prices: parseObject<Record<string, number>>((row.prices as string | null) ?? null),
+    volume: row.volume as number | null,
+    liquidity: row.liquidity as number | null,
+    endDate: (row.endDate as string | null) ?? null,
+    category: (row.category as string | null) ?? null,
+    resolved: row.resolved === null ? null : Boolean(row.resolved),
+    resolution: (row.resolution as string | null) ?? null,
+    createdAt: (row.createdAt as string | null) ?? null,
+    updatedAt: (row.updatedAt as string | null) ?? null,
+  }));
+}
+
+export function searchMarketCache(query: string, limit = 50): MarketCacheRecord[] {
+  const db = openDatabase();
+  const needle = `%${query.toLowerCase()}%`;
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          id,
+          question,
+          description,
+          outcomes,
+          prices,
+          volume,
+          liquidity,
+          end_date as endDate,
+          category,
+          resolved,
+          resolution,
+          created_at as createdAt,
+          updated_at as updatedAt
+        FROM market_cache
+        WHERE resolved = 0
+          AND (LOWER(question) LIKE ? OR LOWER(description) LIKE ?)
+        ORDER BY volume DESC
+        LIMIT ?
+      `
+    )
+    .all(needle, needle, limit) as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    question: String(row.question),
+    description: (row.description as string | null) ?? null,
+    outcomes: parseObject<string[]>((row.outcomes as string | null) ?? null),
+    prices: parseObject<Record<string, number>>((row.prices as string | null) ?? null),
+    volume: row.volume as number | null,
+    liquidity: row.liquidity as number | null,
+    endDate: (row.endDate as string | null) ?? null,
+    category: (row.category as string | null) ?? null,
+    resolved: row.resolved === null ? null : Boolean(row.resolved),
+    resolution: (row.resolution as string | null) ?? null,
+    createdAt: (row.createdAt as string | null) ?? null,
+    updatedAt: (row.updatedAt as string | null) ?? null,
+  }));
+}
+
+export function getMarketCacheStats(): { count: number; latestUpdatedAt: string | null } {
+  const db = openDatabase();
+  const row = db
+    .prepare(
+      `
+        SELECT COUNT(*) as count, MAX(updated_at) as latestUpdatedAt
+        FROM market_cache
+      `
+    )
+    .get() as Record<string, unknown> | undefined;
+
+  return {
+    count: Number(row?.count ?? 0),
+    latestUpdatedAt: (row?.latestUpdatedAt as string | null) ?? null,
+  };
+}
