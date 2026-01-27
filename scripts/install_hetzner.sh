@@ -170,6 +170,19 @@ sudo systemctl daemon-reload
 sudo systemctl enable bijaz
 sudo systemctl start bijaz
 
+echo "Installing update helper..."
+sudo tee /usr/local/bin/bijaz-update >/dev/null <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${INSTALL_PATH}"
+git pull
+pnpm install
+pnpm build
+sudo systemctl restart bijaz
+sudo systemctl status bijaz --no-pager
+EOF
+sudo chmod +x /usr/local/bin/bijaz-update
+
 echo
 echo "Done. Service status:"
 sudo systemctl status bijaz --no-pager
