@@ -282,7 +282,10 @@ export class ConversationHandler {
     const provider = config.agent?.provider ?? 'anthropic';
     const hasAgentModel = Boolean(config.agent?.model);
     if (provider === 'anthropic' && hasAgentModel) {
-      this.agenticLlm = wrapWithLimiter(new AgenticAnthropicClient(config, context));
+      const primary = new AgenticAnthropicClient(config, context);
+      const fallbackModel = config.agent?.openaiModel ?? config.agent?.fallbackModel ?? 'gpt-5.2';
+      const fallback = new AgenticOpenAiClient(config, context, fallbackModel);
+      this.agenticLlm = wrapWithLimiter(new FallbackLlmClient(primary, fallback, isRateLimitError));
     }
     if (provider === 'openai' && hasAgentModel) {
       this.agenticLlm = wrapWithLimiter(new AgenticOpenAiClient(config, context));
