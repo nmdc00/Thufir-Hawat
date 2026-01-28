@@ -2,7 +2,8 @@ import { ethers } from 'ethers';
 
 import type { Balance } from '../../types/index.js';
 
-const USDC_ADDRESS = '0x2791bca1f2de4661ed88a30c99a7a9449aa84174';
+const USDC_ADDRESS = '0x2791bca1f2de4661ed88a30c99a7a9449aa84174'; // USDC.e (legacy)
+const USDC_NATIVE_ADDRESS = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'; // USDC (native)
 
 const ERC20_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
@@ -14,15 +15,23 @@ export async function getWalletBalances(wallet: ethers.Wallet): Promise<Balance 
     return null;
   }
 
-  const [matic, usdc] = await Promise.all([
+  const [matic, usdcLegacy, usdcNative] = await Promise.all([
     wallet.provider.getBalance(wallet.address),
     getTokenBalance(wallet, USDC_ADDRESS),
+    getTokenBalance(wallet, USDC_NATIVE_ADDRESS),
   ]);
+  const totalUsdc = (usdcLegacy ?? 0) + (usdcNative ?? 0);
+  const primaryUsdcAddress =
+    usdcNative && usdcNative > 0
+      ? USDC_NATIVE_ADDRESS
+      : usdcLegacy && usdcLegacy > 0
+        ? USDC_ADDRESS
+        : USDC_NATIVE_ADDRESS;
 
   return {
     matic: Number(ethers.utils.formatEther(matic)),
-    usdc: usdc ?? 0,
-    usdcAddress: USDC_ADDRESS,
+    usdc: totalUsdc,
+    usdcAddress: primaryUsdcAddress,
   };
 }
 
