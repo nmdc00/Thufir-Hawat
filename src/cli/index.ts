@@ -44,6 +44,36 @@ import { pruneChatMessages } from '../memory/chat.js';
 import { SessionStore } from '../memory/session_store.js';
 import { checkExposureLimits } from '../core/exposure.js';
 import { explainPrediction } from '../core/explain.js';
+import type { ExecutionAdapter } from '../execution/executor.js';
+import type { BijazConfig } from '../core/config.js';
+
+/**
+ * Create the appropriate executor based on config execution mode.
+ * For live mode, requires password (from env or passed in).
+ */
+async function createExecutorForConfig(
+  config: BijazConfig,
+  password?: string
+): Promise<ExecutionAdapter> {
+  if (config.execution.mode === 'live') {
+    const { LiveExecutor } = await import('../execution/modes/live.js');
+    const pwd = password ?? process.env.BIJAZ_WALLET_PASSWORD;
+    if (!pwd) {
+      throw new Error(
+        'Live execution mode requires BIJAZ_WALLET_PASSWORD environment variable or --password option'
+      );
+    }
+    return new LiveExecutor({ config, password: pwd });
+  }
+
+  if (config.execution.mode === 'webhook' && config.execution.webhookUrl) {
+    const { WebhookExecutor } = await import('../execution/modes/webhook.js');
+    return new WebhookExecutor(config.execution.webhookUrl);
+  }
+
+  const { PaperExecutor } = await import('../execution/modes/paper.js');
+  return new PaperExecutor();
+}
 
 function getConfigPath(): string {
   return (
@@ -623,8 +653,6 @@ trade
   .option('-p, --price <price>', 'Limit price (0-1)')
   .option('--dry-run', 'Simulate without executing')
   .action(async (market, outcome, options) => {
-    const { PaperExecutor } = await import('../execution/modes/paper.js');
-    const { WebhookExecutor } = await import('../execution/modes/webhook.js');
     const { DbSpendingLimitEnforcer } = await import('../execution/wallet/limits_db.js');
 
     const amount = Number(options.amount);
@@ -645,10 +673,7 @@ trade
     }
 
     const marketClient = new PolymarketMarketClient(config);
-    const executor =
-      config.execution.mode === 'webhook' && config.execution.webhookUrl
-        ? new WebhookExecutor(config.execution.webhookUrl)
-        : new PaperExecutor();
+    const executor = await createExecutorForConfig(config);
     const limiter = new DbSpendingLimitEnforcer({
       daily: config.wallet?.limits?.daily ?? 100,
       perTrade: config.wallet?.limits?.perTrade ?? 25,
@@ -711,8 +736,6 @@ trade
   .option('-p, --price <price>', 'Limit price (0-1)')
   .option('--dry-run', 'Simulate without executing')
   .action(async (market, outcome, options) => {
-    const { PaperExecutor } = await import('../execution/modes/paper.js');
-    const { WebhookExecutor } = await import('../execution/modes/webhook.js');
     const { DbSpendingLimitEnforcer } = await import('../execution/wallet/limits_db.js');
 
     const amount = Number(options.amount);
@@ -733,10 +756,7 @@ trade
     }
 
     const marketClient = new PolymarketMarketClient(config);
-    const executor =
-      config.execution.mode === 'webhook' && config.execution.webhookUrl
-        ? new WebhookExecutor(config.execution.webhookUrl)
-        : new PaperExecutor();
+    const executor = await createExecutorForConfig(config);
     const limiter = new DbSpendingLimitEnforcer({
       daily: config.wallet?.limits?.daily ?? 100,
       perTrade: config.wallet?.limits?.perTrade ?? 25,
