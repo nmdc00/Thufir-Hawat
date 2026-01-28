@@ -20,20 +20,33 @@ export function loadBijazIdentity(config?: BijazConfig): string {
     return cachedIdentity;
   }
 
-  const workspacePath = config?.agent?.workspace?.replace('~', homedir()) ?? join(homedir(), '.bijaz');
+  // Check multiple paths in priority order:
+  // 1. Config workspace path
+  // 2. ~/.bijaz/
+  // 3. Repo workspace/ directory (for development)
+  const workspacePaths = [
+    config?.agent?.workspace?.replace('~', homedir()),
+    join(homedir(), '.bijaz'),
+    join(process.cwd(), 'workspace'),
+  ].filter(Boolean) as string[];
+
   const identityFiles = ['IDENTITY.md', 'SOUL.md'];
   const sections: string[] = [];
 
-  for (const filename of identityFiles) {
-    const filepath = join(workspacePath, filename);
-    if (existsSync(filepath)) {
-      try {
-        const content = readFileSync(filepath, 'utf-8').trim();
-        if (content) {
-          sections.push(content);
+  for (const workspacePath of workspacePaths) {
+    if (sections.length > 0) break; // Found files, stop looking
+
+    for (const filename of identityFiles) {
+      const filepath = join(workspacePath, filename);
+      if (existsSync(filepath)) {
+        try {
+          const content = readFileSync(filepath, 'utf-8').trim();
+          if (content) {
+            sections.push(content);
+          }
+        } catch {
+          // Skip unreadable files
         }
-      } catch {
-        // Skip unreadable files
       }
     }
   }
