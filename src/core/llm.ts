@@ -155,6 +155,29 @@ type OpenAiMessage =
   | { role: 'assistant'; content: string | null; tool_calls: OpenAiToolCall[] }
   | { role: 'tool'; content: string; tool_call_id: string };
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(
+  factory: () => Promise<Response>,
+  maxRetries = 3
+): Promise<Response> {
+  let attempt = 0;
+  while (true) {
+    const response = await factory();
+    if (response.ok || response.status !== 429 || attempt >= maxRetries) {
+      return response;
+    }
+
+    const retryAfter = Number(response.headers.get('retry-after') ?? '');
+    const baseDelay = Number.isFinite(retryAfter) ? retryAfter * 1000 : 500 * 2 ** attempt;
+    const jitter = Math.floor(Math.random() * 250);
+    await sleep(baseDelay + jitter);
+    attempt += 1;
+  }
+}
+
 export class AgenticOpenAiClient implements LlmClient {
   private model: string;
   private baseUrl: string;
@@ -187,19 +210,21 @@ export class AgenticOpenAiClient implements LlmClient {
     let iteration = 0;
     while (iteration < maxIterations) {
       iteration += 1;
-      const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          temperature,
-          messages: openaiMessages,
-          tools,
-        }),
-      });
+      const response = await fetchWithRetry(() =>
+        fetch(`${this.baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: this.model,
+            temperature,
+            messages: openaiMessages,
+            tools,
+          }),
+        })
+      );
 
       if (!response.ok) {
         throw new Error(`OpenAI request failed: ${response.status}`);
@@ -298,18 +323,20 @@ class OpenAiClient implements LlmClient {
   }
 
   async complete(messages: ChatMessage[], options?: { temperature?: number }): Promise<LlmResponse> {
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        temperature: options?.temperature ?? 0.2,
-        messages,
-      }),
-    });
+    const response = await fetchWithRetry(() =>
+      fetch(`${this.baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          temperature: options?.temperature ?? 0.2,
+          messages,
+        }),
+      })
+    );
 
     if (!response.ok) {
       throw new Error(`OpenAI request failed: ${response.status}`);
