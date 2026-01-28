@@ -150,6 +150,16 @@ export class BijazAgent {
   async handleMessage(sender: string, text: string): Promise<string> {
     const trimmed = text.trim();
 
+    const tradeIntent = /\b(bet|trade|buy|sell)\b/i.test(trimmed);
+    if (tradeIntent && !trimmed.startsWith('/trade ') && !trimmed.startsWith('/bet ')) {
+      const hasAmount = /\b\d+(?:\.\d+)?\b/.test(trimmed);
+      const hasOutcome = /\b(yes|no)\b/i.test(trimmed);
+      const hasId = /\b\d{4,}\b/.test(trimmed);
+      if (!hasAmount || !hasOutcome || !hasId) {
+        return 'To place a live trade, use `/trade <marketId> <YES|NO> <amount>` (example: `/trade 12345 YES 5`).';
+      }
+    }
+
     // Command: /watch <marketId>
     if (trimmed.startsWith('/watch ')) {
       const marketId = trimmed.replace('/watch ', '').trim();
