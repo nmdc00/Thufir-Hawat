@@ -201,7 +201,10 @@ export function createAgenticExecutorClient(
     config.agent.openaiModel ??
     config.agent.model;
   if (provider === 'anthropic') {
-    return wrapWithLimiter(new AgenticAnthropicClient(config, toolContext, model));
+    const primary = new AgenticAnthropicClient(config, toolContext, model);
+    const fallbackModel = config.agent.openaiModel ?? config.agent.fallbackModel ?? 'gpt-5.2';
+    const fallback = new AgenticOpenAiClient(config, toolContext, fallbackModel);
+    return wrapWithLimiter(new FallbackLlmClient(primary, fallback, isRateLimitError));
   }
   return wrapWithLimiter(new AgenticOpenAiClient(config, toolContext, model));
 }

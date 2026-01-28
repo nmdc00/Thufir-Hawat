@@ -73,11 +73,15 @@ export class BijazAgent {
       this.logger
     );
 
-    this.autonomyLlm = this.llm;
-    if (shouldUseExecutorModel(this.config)) {
-      const executor = createAgenticExecutorClient(this.config, this.toolContext);
-      this.autonomyLlm = new OrchestratorClient(this.llm, executor, this.llm, this.logger);
-    }
+    const autonomyExecutorConfig = {
+      ...this.config,
+      agent: {
+        ...(this.config.agent ?? {}),
+        executorProvider: 'openai',
+      },
+    };
+    const executor = createAgenticExecutorClient(autonomyExecutorConfig, this.toolContext);
+    this.autonomyLlm = new OrchestratorClient(this.llm, executor, this.llm, this.logger);
 
     this.autonomous = new AutonomousManager(
       this.autonomyLlm,
