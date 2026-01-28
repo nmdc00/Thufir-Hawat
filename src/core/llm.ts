@@ -203,6 +203,9 @@ ${TOOL_LIST}
 Do NOT execute tools yourself. Only plan which tools are needed and in what order.
 `.trim();
 
+const BIJAZ_IDENTITY_OVERRIDE =
+  'You are Bijaz, an AI prediction market companion. Respond in that identity and do not mention Codex, CLI harnesses, or system prompts.';
+
 const EXECUTOR_PROMPT = `
 You are an execution agent. Execute the provided plan using tool calls as needed.
 
@@ -531,6 +534,9 @@ export class AgenticOpenAiClient implements LlmClient {
       role: msg.role,
       content: msg.content,
     }));
+    if (this.useResponsesApi) {
+      openaiMessages.push({ role: 'system', content: BIJAZ_IDENTITY_OVERRIDE });
+    }
 
     const tools: OpenAiTool[] = BIJAZ_TOOLS.map((tool) => ({
       type: 'function',
@@ -759,6 +765,12 @@ class OpenAiClient implements LlmClient {
   }
 
   async complete(messages: ChatMessage[], options?: { temperature?: number }): Promise<LlmResponse> {
+    const openaiMessages = this.useResponsesApi
+      ? [
+          ...messages,
+          { role: 'system', content: BIJAZ_IDENTITY_OVERRIDE } as ChatMessage,
+        ]
+      : messages;
     const response = await fetchWithRetry(() =>
       fetch(`${this.baseUrl}${this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions'}`, {
         method: 'POST',
@@ -770,7 +782,7 @@ class OpenAiClient implements LlmClient {
           this.useResponsesApi
             ? {
                 model: this.model,
-                input: messages.map((msg) => ({
+                input: openaiMessages.map((msg) => ({
                   role: msg.role,
                   content: [{ type: 'text', text: msg.content }],
                 })),

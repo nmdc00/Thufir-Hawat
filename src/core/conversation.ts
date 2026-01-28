@@ -32,6 +32,7 @@ import {
   shouldUseExecutorModel,
 } from './llm.js';
 import type { ToolExecutorContext } from './tool-executor.js';
+import { executeToolCall } from './tool-executor.js';
 import { Logger } from './logger.js';
 
 export interface ConversationContext {
@@ -113,6 +114,7 @@ Place a bet on a prediction market. Use after researching and analyzing a market
 ## Trading rule
 - Never claim a bet was placed unless the place_bet tool returned success.
 - If the user wants to trade but you lack market_id/outcome/amount, ask for them or tell them to use /trade <marketId> <YES|NO> <amount>.
+- Do not say you lack wallet access without first using get_wallet_info and/or get_portfolio. If those tools succeed, answer using their results.
 
 ## Response format:
 - Be conversational, not robotic
@@ -302,6 +304,7 @@ export class ConversationHandler {
   private sessions: SessionStore;
   private chatVectorStore: ChatVectorStore;
   private logger?: Logger;
+  private toolContext: ToolExecutorContext;
 
   constructor(
     llm: LlmClient,
@@ -319,6 +322,7 @@ export class ConversationHandler {
     this.chatVectorStore = new ChatVectorStore(config);
     this.logger = logger;
     const context = toolContext ?? { config, marketClient };
+    this.toolContext = context;
     const provider = config.agent?.provider ?? 'anthropic';
     const hasAgentModel = Boolean(config.agent?.model);
     if (provider === 'anthropic' && hasAgentModel) {
@@ -346,6 +350,7 @@ export class ConversationHandler {
       return alertResponse;
     }
 
+    const forcedToolContext = await this.runForcedTooling(message);
     const summary = this.sessions.getSummary(userId);
     const maxHistory = this.config.memory?.maxHistoryMessages ?? 50;
     const compactAfterTokens = this.config.memory?.compactAfterTokens ?? 12000;
@@ -370,6 +375,7 @@ export class ConversationHandler {
     // Build the full context for this turn
     const contextBlock = [
       userContext,
+      forcedToolContext,
       summary ? `## Conversation Summary\n${summary}` : '',
       intelContext,
       semanticIntelContext,
@@ -438,6 +444,34 @@ export class ConversationHandler {
     }
 
     return reply;
+  }
+
+  private async runForcedTooling(message: string): Promise<string> {
+    const text = message.toLowerCase();
+    const wantsWallet = /\b(wallet|balance|funds|usdc|address|portfolio)\b/.test(text);
+    const wantsTrade = /\b(trade|bet|order|place|execute|polymarket|clob)\b/.test(text);
+    if (!wantsWallet && !wantsTrade) {
+      return '';
+    }
+
+    const lines: string[] = ['## Forced Tool Snapshot'];
+
+    if (wantsWallet || wantsTrade) {
+      const walletInfo = await executeToolCall('get_wallet_info', {}, this.toolContext);
+      lines.push(`Wallet info: ${JSON.stringify(walletInfo)}`);
+      const portfolio = await executeToolCall('get_portfolio', {}, this.toolContext);
+      lines.push(`Portfolio: ${JSON.stringify(portfolio)}`);
+    }
+
+    if (wantsTrade) {
+      lines.push(`Execution mode: ${this.config.execution?.mode ?? 'paper'}`);
+      lines.push(
+        `Trading enabled: ${this.toolContext.executor ? 'true' : 'false'}`
+      );
+    }
+
+    lines.push('');
+    return lines.join('\n');
   }
 
   /**
