@@ -381,8 +381,20 @@ class FallbackLlmClient implements LlmClient {
 function isRateLimitError(error: unknown): boolean {
   const err = error as { status?: number; message?: string };
   if (err?.status === 429) return true;
+  if (err?.status === 402) return true;
   const message = (err?.message ?? '').toLowerCase();
-  return message.includes('rate limit') || message.includes('too many requests') || message.includes('429');
+  return (
+    message.includes('rate limit') ||
+    message.includes('too many requests') ||
+    message.includes('429') ||
+    message.includes('credit balance') ||
+    message.includes('insufficient credit') ||
+    message.includes('billing') ||
+    message.includes('payment') ||
+    message.includes('quota') ||
+    message.includes('insufficient') ||
+    message.includes('balance is too low')
+  );
 }
 
 function createAnthropicClientWithFallback(config: BijazConfig): LlmClient {
