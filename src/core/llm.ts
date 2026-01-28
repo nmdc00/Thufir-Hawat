@@ -30,7 +30,8 @@ export function loadBijazIdentity(config?: BijazConfig): string {
     join(process.cwd(), 'workspace'),
   ].filter(Boolean) as string[];
 
-  const identityFiles = ['IDENTITY.md', 'SOUL.md'];
+  // AGENTS.md (bootstrap) MUST come first, then identity files
+  const identityFiles = ['AGENTS.md', 'IDENTITY.md', 'SOUL.md'];
   const sections: string[] = [];
 
   for (const workspacePath of workspacePaths) {
