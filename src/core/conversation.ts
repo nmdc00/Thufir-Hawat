@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import yaml from 'yaml';
 import { createResearchPlan, runResearchPlan } from './research_planner.js';
 import { ToolRegistry } from './tools.js';
-import { AgenticAnthropicClient, AgenticOpenAiClient } from './llm.js';
+import { AgenticAnthropicClient, AgenticOpenAiClient, wrapWithLimiter } from './llm.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 
 export interface ConversationContext {
@@ -304,13 +304,13 @@ export class ConversationHandler {
     const provider = config.agent?.provider ?? 'anthropic';
     const hasAgentModel = Boolean(config.agent?.model);
     if (provider === 'anthropic' && hasAgentModel) {
-      this.agenticLlm = new AgenticAnthropicClient(config, context);
+      this.agenticLlm = wrapWithLimiter(new AgenticAnthropicClient(config, context));
     }
     if (provider === 'openai' && hasAgentModel) {
-      this.agenticLlm = new AgenticOpenAiClient(config, context);
+      this.agenticLlm = wrapWithLimiter(new AgenticOpenAiClient(config, context));
     }
     if (config.agent?.model || config.agent?.openaiModel) {
-      this.agenticOpenAi = new AgenticOpenAiClient(config, context);
+      this.agenticOpenAi = wrapWithLimiter(new AgenticOpenAiClient(config, context));
     }
   }
 

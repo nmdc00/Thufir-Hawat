@@ -25,16 +25,75 @@ export interface LlmClient {
   complete(messages: ChatMessage[], options?: { temperature?: number }): Promise<LlmResponse>;
 }
 
+class LlmQueue {
+  private queue: Array<() => void> = [];
+  private inFlight = 0;
+
+  constructor(
+    private concurrency: number,
+    private minDelayMs: number
+  ) {}
+
+  async enqueue<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const run = async () => {
+        this.inFlight += 1;
+        try {
+          const result = await task();
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        } finally {
+          if (this.minDelayMs > 0) {
+            await sleep(this.minDelayMs);
+          }
+          this.inFlight = Math.max(0, this.inFlight - 1);
+          this.dequeue();
+        }
+      };
+
+      this.queue.push(run);
+      this.dequeue();
+    });
+  }
+
+  private dequeue(): void {
+    while (this.inFlight < this.concurrency && this.queue.length > 0) {
+      const next = this.queue.shift();
+      if (next) {
+        next();
+      }
+    }
+  }
+}
+
+class LimitedLlmClient implements LlmClient {
+  constructor(private inner: LlmClient, private limiter: LlmQueue) {}
+
+  complete(messages: ChatMessage[], options?: { temperature?: number }): Promise<LlmResponse> {
+    return this.limiter.enqueue(() => this.inner.complete(messages, options));
+  }
+}
+
+const globalLimiter = new LlmQueue(
+  Math.max(1, Number(process.env.BIJAZ_LLM_CONCURRENCY ?? 1)),
+  Math.max(0, Number(process.env.BIJAZ_LLM_MIN_DELAY_MS ?? 0))
+);
+
+export function wrapWithLimiter(client: LlmClient): LlmClient {
+  return new LimitedLlmClient(client, globalLimiter);
+}
+
 export function createLlmClient(config: BijazConfig): LlmClient {
   switch (config.agent.provider) {
     case 'anthropic':
-      return createAnthropicClientWithFallback(config);
+      return wrapWithLimiter(createAnthropicClientWithFallback(config));
     case 'openai':
-      return new OpenAiClient(config);
+      return wrapWithLimiter(new OpenAiClient(config));
     case 'local':
-      return new LocalClient(config);
+      return wrapWithLimiter(new LocalClient(config));
     default:
-      return createAnthropicClientWithFallback(config);
+      return wrapWithLimiter(createAnthropicClientWithFallback(config));
   }
 }
 
@@ -42,7 +101,7 @@ export function createOpenAiClient(
   config: BijazConfig,
   modelOverride?: string
 ): LlmClient {
-  return new OpenAiClient(config, modelOverride);
+  return wrapWithLimiter(new OpenAiClient(config, modelOverride));
 }
 
 export interface AgenticLlmOptions {
