@@ -155,14 +155,16 @@ type OpenAiMessage =
   | { role: 'assistant'; content: string | null; tool_calls: OpenAiToolCall[] }
   | { role: 'tool'; content: string; tool_call_id: string };
 
+type FetchResponse = Awaited<ReturnType<typeof fetch>>;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchWithRetry(
-  factory: () => Promise<Response>,
+  factory: () => Promise<FetchResponse>,
   maxRetries = 3
-): Promise<Response> {
+): Promise<FetchResponse> {
   let attempt = 0;
   while (true) {
     const response = await factory();
