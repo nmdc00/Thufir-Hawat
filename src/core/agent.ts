@@ -152,11 +152,16 @@ export class BijazAgent {
 
     const tradeIntent = /\b(bet|trade|buy|sell)\b/i.test(trimmed);
     if (tradeIntent && !trimmed.startsWith('/trade ') && !trimmed.startsWith('/bet ')) {
-      const hasAmount = /\b\d+(?:\.\d+)?\b/.test(trimmed);
-      const hasOutcome = /\b(yes|no)\b/i.test(trimmed);
-      const hasId = /\b\d{4,}\b/.test(trimmed);
-      if (!hasAmount || !hasOutcome || !hasId) {
-        return 'To place a live trade, use `/trade <marketId> <YES|NO> <amount>` (example: `/trade 12345 YES 5`).';
+      const autoEnabled =
+        (this.config.autonomy as any)?.enabled === true &&
+        (this.config.autonomy as any)?.fullAuto === true;
+      if (!autoEnabled) {
+        const hasAmount = /\b\d+(?:\.\d+)?\b/.test(trimmed);
+        const hasOutcome = /\b(yes|no)\b/i.test(trimmed);
+        const hasId = /\b\d{4,}\b/.test(trimmed);
+        if (!hasAmount || !hasOutcome || !hasId) {
+          return 'To place a live trade, use `/trade <marketId> <YES|NO> <amount>` (example: `/trade 12345 YES 5`).';
+        }
       }
     }
 
@@ -264,38 +269,13 @@ export class BijazAgent {
       if (!marketId || !outcome || Number.isNaN(amount)) {
         return 'Usage: /trade <marketId> <YES|NO> <amount>';
       }
-      const market = await this.marketClient.getMarket(marketId);
-      const decision = {
-        action: 'buy' as const,
+      return this.executeManualTrade({
+        marketId,
         outcome: outcome.toUpperCase() as 'YES' | 'NO',
         amount,
-        confidence: 'medium' as const,
-        reasoning: `Manual command from ${sender}`,
-      };
-
-      const exposureCheck = checkExposureLimits({
-        config: this.config,
-        market,
-        outcome: decision.outcome,
-        amount,
-        side: decision.action,
+        sender,
+        reason: `Manual command from ${sender}`,
       });
-      if (!exposureCheck.allowed) {
-        return `Trade blocked: ${exposureCheck.reason ?? 'exposure limit exceeded'}`;
-      }
-
-      const limitCheck = await this.limiter.checkAndReserve(amount);
-      if (!limitCheck.allowed) {
-        return `Trade blocked: ${limitCheck.reason ?? 'limit exceeded'}`;
-      }
-
-      const result = await this.executor.execute(market, decision);
-      if (result.executed) {
-        this.limiter.confirm(amount);
-      } else {
-        this.limiter.release(amount);
-      }
-      return result.message;
     }
 
     // Command: /analyze <marketId> - Deep analysis of a specific market
@@ -465,6 +445,10 @@ Just type naturally to chat about predictions, events, or markets.
     // No command matched - treat as conversational message
     // Route to the conversation handler for free-form chat
     this.logger.info(`Chat from ${sender}: ${trimmed.slice(0, 50)}...`);
+    const autoTradeResponse = await this.maybeHandleNaturalLanguageTrade(sender, trimmed);
+    if (autoTradeResponse) {
+      return autoTradeResponse;
+    }
     try {
       return await this.conversation.chat(sender, trimmed);
     } catch (error) {
@@ -539,5 +523,107 @@ Just type naturally to chat about predictions, events, or markets.
       return markets;
     }
     return this.marketClient.listMarkets(this.config.autonomy.maxMarketsPerScan);
+  }
+
+  private async maybeHandleNaturalLanguageTrade(
+    sender: string,
+    message: string
+  ): Promise<string | null> {
+    const autoEnabled =
+      (this.config.autonomy as any)?.enabled === true &&
+      (this.config.autonomy as any)?.fullAuto === true;
+    if (!autoEnabled) return null;
+
+    const hasTradeIntent = /\b(bet|trade|buy|sell)\b/i.test(message);
+    if (!hasTradeIntent) return null;
+
+    const amountMatch = message.match(/\$?\s?(\d+(?:\.\d+)?)/);
+    const amount = amountMatch ? Number(amountMatch[1]) : NaN;
+    const outcomeMatch = message.match(/\b(yes|no)\b/i);
+    const outcome = outcomeMatch ? (outcomeMatch[1]!.toUpperCase() as 'YES' | 'NO') : null;
+    const idMatch = message.match(/\b(\d{4,})\b/);
+    const marketId = idMatch?.[1];
+
+    if (!outcome || Number.isNaN(amount) || amount <= 0) {
+      return 'To place a live trade, include amount and outcome. Example: "Bet $5 on YES for market 12345".';
+    }
+
+    if (marketId) {
+      return this.executeManualTrade({
+        marketId,
+        outcome,
+        amount,
+        sender,
+        reason: `Autonomous NL trade from ${sender}`,
+      });
+    }
+
+    const query = message
+      .replace(/\$?\s?\d+(?:\.\d+)?/g, ' ')
+      .replace(/\b(yes|no|bet|trade|buy|sell|on|for|market)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!query) {
+      return 'Please include a market ID or a clear market description.';
+    }
+
+    const matches = await this.marketClient.searchMarkets(query, 5);
+    if (matches.length === 0) {
+      return `No markets found for "${query}". Try /markets <query> or provide a market ID.`;
+    }
+    if (matches.length === 1) {
+      return this.executeManualTrade({
+        marketId: matches[0]!.id,
+        outcome,
+        amount,
+        sender,
+        reason: `Autonomous NL trade from ${sender}`,
+      });
+    }
+
+    const lines = matches.map((m) => `- ${m.id}: ${m.question}`).join('\n');
+    return `Multiple markets match. Please choose an ID:\n${lines}`;
+  }
+
+  private async executeManualTrade(params: {
+    marketId: string;
+    outcome: 'YES' | 'NO';
+    amount: number;
+    sender: string;
+    reason: string;
+  }): Promise<string> {
+    const market = await this.marketClient.getMarket(params.marketId);
+    const decision = {
+      action: 'buy' as const,
+      outcome: params.outcome,
+      amount: params.amount,
+      confidence: 'medium' as const,
+      reasoning: params.reason,
+    };
+
+    const exposureCheck = checkExposureLimits({
+      config: this.config,
+      market,
+      outcome: decision.outcome,
+      amount: decision.amount,
+      side: decision.action,
+    });
+    if (!exposureCheck.allowed) {
+      return `Trade blocked: ${exposureCheck.reason ?? 'exposure limit exceeded'}`;
+    }
+
+    const limitCheck = await this.limiter.checkAndReserve(decision.amount);
+    if (!limitCheck.allowed) {
+      return `Trade blocked: ${limitCheck.reason ?? 'limit exceeded'}`;
+    }
+
+    const result = await this.executor.execute(market, decision);
+    if (result.executed) {
+      this.limiter.confirm(decision.amount);
+    } else {
+      this.limiter.release(decision.amount);
+    }
+    return result.message;
   }
 }
