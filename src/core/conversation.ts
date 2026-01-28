@@ -126,6 +126,35 @@ Place a bet on a prediction market. Use after researching and analyzing a market
 
 Remember: You're a companion for thinking about the future, not just a trading bot. Engage with ideas, challenge assumptions, and help the user become a better forecaster.`;
 
+/**
+ * Load workspace identity files (like Moltbot's IDENTITY.md, SOUL.md, etc.)
+ * These are injected into every prompt to maintain consistent identity.
+ */
+function loadWorkspaceIdentity(workspacePath: string): string {
+  const identityFiles = ['IDENTITY.md', 'SOUL.md', 'TOOLS.md', 'USER.md'];
+  const sections: string[] = [];
+
+  for (const filename of identityFiles) {
+    const filepath = join(workspacePath, filename);
+    if (existsSync(filepath)) {
+      try {
+        const content = readFileSync(filepath, 'utf-8').trim();
+        if (content) {
+          sections.push(`## ${filename}\n\n${content}`);
+        }
+      } catch {
+        // Skip unreadable files
+      }
+    }
+  }
+
+  if (sections.length === 0) {
+    return '';
+  }
+
+  return `\n\n---\n\n# Workspace Identity\n\n${sections.join('\n\n---\n\n')}`;
+}
+
 const BIJAZ_QUOTES = [
   "I don't speak... I operate a machine called language.",
   "I'm weak of muscle, but strong of mouth; cheap to feed, but costly to fill.",
@@ -549,15 +578,21 @@ ${contextBlock}`.trim();
   
 
   private getSystemPrompt(userId: string): string {
+    // Load workspace identity files (Moltbot-style identity injection)
+    const workspacePath = this.config.agent?.workspace?.replace('~', homedir()) ?? join(homedir(), '.bijaz');
+    const workspaceIdentity = loadWorkspaceIdentity(workspacePath);
+
+    let basePrompt = SYSTEM_PROMPT + workspaceIdentity;
+
     const personality = getUserContext(userId)?.preferences?.personality;
     if (typeof personality === 'string') {
       const mode = PERSONALITY_MODES[personality];
       if (mode) {
         const quotes = BIJAZ_QUOTES.map((quote) => `- "${quote}"`).join('\n');
-        return `${SYSTEM_PROMPT}\n\n## Personality\n${mode.instruction}\n\n## Quote Bank (optional)\n${quotes}`;
+        return `${basePrompt}\n\n## Personality\n${mode.instruction}\n\n## Quote Bank (optional)\n${quotes}`;
       }
     }
-    return SYSTEM_PROMPT;
+    return basePrompt;
   }
 
   private async completeWithFallback(
