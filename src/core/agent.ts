@@ -544,17 +544,14 @@ Just type naturally to chat about predictions, events, or markets.
     const idMatch = message.match(/\b(\d{4,})\b/);
     const marketId = idMatch?.[1];
 
-    if (!outcome || Number.isNaN(amount) || amount <= 0) {
-      return 'To place a live trade, include amount and outcome. Example: "Bet $5 on YES for market 12345".';
-    }
+    const amountValid = Number.isFinite(amount) && amount > 0;
 
     if (marketId) {
-      return this.executeManualTrade({
+      return this.executeAutonomousTrade({
         marketId,
-        outcome,
-        amount,
+        outcome: outcome ?? undefined,
+        amount: amountValid ? amount : undefined,
         sender,
-        reason: `Autonomous NL trade from ${sender}`,
       });
     }
 
@@ -573,17 +570,55 @@ Just type naturally to chat about predictions, events, or markets.
       return `No markets found for "${query}". Try /markets <query> or provide a market ID.`;
     }
     if (matches.length === 1) {
-      return this.executeManualTrade({
+      return this.executeAutonomousTrade({
         marketId: matches[0]!.id,
-        outcome,
-        amount,
+        outcome: outcome ?? undefined,
+        amount: amountValid ? amount : undefined,
         sender,
-        reason: `Autonomous NL trade from ${sender}`,
       });
     }
 
-    const lines = matches.map((m) => `- ${m.id}: ${m.question}`).join('\n');
-    return `Multiple markets match. Please choose an ID:\n${lines}`;
+    const chosen = matches[0]!;
+    const result = await this.executeAutonomousTrade({
+      marketId: chosen.id,
+      outcome: outcome ?? undefined,
+      amount: amountValid ? amount : undefined,
+      sender,
+    });
+    return `Multiple markets matched; auto-selected top result ${chosen.id}: ${chosen.question}\n${result}`;
+  }
+
+  private async executeAutonomousTrade(params: {
+    marketId: string;
+    outcome?: 'YES' | 'NO';
+    amount?: number;
+    sender: string;
+  }): Promise<string> {
+    const market = await this.marketClient.getMarket(params.marketId);
+    const remaining = this.limiter.getRemainingDaily();
+    let outcome = params.outcome;
+    let amount = params.amount;
+
+    if (!outcome || !amount) {
+      const decision = await decideTrade(this.llm, this.executorLlm, market, remaining);
+      if (decision.action === 'hold') {
+        return decision.reasoning ?? 'No clear edge; holding.';
+      }
+      outcome = outcome ?? decision.outcome ?? 'YES';
+      if (!amount || !Number.isFinite(amount) || amount <= 0) {
+        amount =
+          decision.amount ??
+          Math.min(this.config.wallet?.limits?.perTrade ?? 10, remaining);
+      }
+    }
+
+    return this.executeManualTrade({
+      marketId: params.marketId,
+      outcome,
+      amount,
+      sender: params.sender,
+      reason: `Autonomous NL trade from ${params.sender}`,
+    });
   }
 
   private async executeManualTrade(params: {
