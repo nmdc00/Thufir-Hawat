@@ -14,7 +14,7 @@ export interface DecisionAuditInput {
   confidence?: number | null;
   edge?: number | null;
   criticApproved?: boolean | null;
-  criticIssues?: string[];
+  criticIssues?: Array<string | { type: string; severity: string; description: string }>;
   fragilityScore?: number | null;
   toolCalls?: number | null;
   iterations?: number | null;

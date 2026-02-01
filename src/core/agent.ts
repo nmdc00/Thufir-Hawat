@@ -10,6 +10,7 @@ import {
   clearIdentityCache,
   OrchestratorClient,
 } from './llm.js';
+import type { LlmClient } from './llm.js';
 import { decideTrade, buildDecisionPrompts, parseDecisionFromText, EXECUTOR_PROMPT } from './decision.js';
 import { Logger } from './logger.js';
 import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
@@ -37,7 +38,7 @@ import { withExecutionContext } from './llm_infra.js';
 
 export class ThufirAgent {
   private llm: ReturnType<typeof createLlmClient>;
-  private infoLlm: ReturnType<typeof createTrivialTaskClient>;
+  private infoLlm?: LlmClient;
   private executorLlm: ReturnType<typeof createExecutorClient>;
   private autonomyLlm: ReturnType<typeof createLlmClient>;
   private marketClient: PolymarketMarketClient;
@@ -56,7 +57,7 @@ export class ThufirAgent {
     }
     bootstrapWorkspaceIdentity(this.config);
     this.llm = createLlmClient(this.config);
-    this.infoLlm = createTrivialTaskClient(this.config);
+    this.infoLlm = createTrivialTaskClient(this.config) ?? undefined;
     this.executorLlm = createExecutorClient(this.config);
     this.marketClient = new PolymarketMarketClient(this.config);
     this.executor = this.createExecutor(config);

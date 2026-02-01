@@ -1593,7 +1593,7 @@ program
   .command('chat')
   .description('Interactive chat with Thufir')
   .action(async () => {
-    const { createLlmClient, createTrivialTaskClient } = await import('../core/llm.js');
+    const { createLlmClient } = await import('../core/llm.js');
     const { ConversationHandler } = await import('../core/conversation.js');
     const { PolymarketMarketClient } = await import('../execution/polymarket/markets.js');
     const readline = await import('node:readline');

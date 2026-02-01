@@ -32,11 +32,23 @@ function mergeConfig(
     : base.memory?.sessionsPath;
 
   if (!override && !params.isolateSessions) return base;
+  const agentOverride = override?.agent;
+  const mergedAgent = {
+    ...base.agent,
+    ...(agentOverride ?? {}),
+    trivial: {
+      ...base.agent.trivial,
+      ...(agentOverride?.trivial ?? {}),
+    },
+    llmBudget: {
+      ...base.agent.llmBudget,
+      ...(agentOverride?.llmBudget ?? {}),
+    },
+  };
   return {
     ...base,
     agent: {
-      ...base.agent,
-      ...(override?.agent ?? {}),
+      ...mergedAgent,
     },
     memory: {
       ...base.memory,

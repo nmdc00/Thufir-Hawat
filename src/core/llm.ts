@@ -1027,11 +1027,13 @@ export class AgenticOpenAiClient implements LlmClient {
 }
 
 class AnthropicClient implements LlmClient {
+  private config: ThufirConfig;
   private client: Anthropic;
   private model: string;
   meta?: LlmClientMeta;
 
   constructor(config: ThufirConfig, modelOverride?: string, kind?: LlmClientMeta['kind']) {
+    this.config = config;
     this.client = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY ?? '',
       baseURL: resolveAnthropicBaseUrl(config),

@@ -629,7 +629,8 @@ export class ConversationHandler {
       return basePrompt;
     }
 
-    if (!this.infoLlm || contextBlock.length < 600) {
+    const infoLlm = this.infoLlm;
+    if (!infoLlm || contextBlock.length < 600) {
       return basePrompt + `\n\n---\n\n${contextBlock}`;
     }
 
@@ -653,7 +654,7 @@ ${contextBlock}`.trim();
       const response = await withExecutionContext(
         { mode: 'LIGHT_REASONING', critical: false, reason: 'info_digest', source: 'conversation' },
         () =>
-          this.infoLlm.complete(
+          infoLlm.complete(
             [
               { role: 'system', content: systemPrompt },
               { role: 'user', content: prompt },

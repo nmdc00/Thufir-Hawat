@@ -2,7 +2,22 @@
 
 This document provides everything needed to continue development on Thufir.
 
-## Latest Session (2026-02-01, Session 13)
+## Latest Session (2026-02-01, Session 14)
+
+### What Was Done
+1. **Build fixes after agentic/mentat changes**
+   - Decision audit accepts structured critic issues payloads
+   - Anthropic client stores config for identity prelude injection
+   - CLI imports corrected for trivial-task client usage
+   - Conversation info LLM null-guarded in planner digest
+   - Agent router merges nested agent overrides (trivial + llmBudget)
+
+### Status
+- `pnpm build` should now pass for the TypeScript errors listed in the cloud logs.
+
+---
+
+## Prior Session (2026-02-01, Session 13)
 
 ### What Was Done
 1. **Agentic UX + persistence**
