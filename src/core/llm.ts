@@ -1215,12 +1215,16 @@ class LocalClient implements LlmClient {
 
 export class FallbackLlmClient implements LlmClient {
   meta?: LlmClientMeta;
+  private logger: Logger;
   constructor(
     private primary: LlmClient,
     private fallback: LlmClient,
     private shouldFallback: (error: unknown) => boolean,
-    private config?: ThufirConfig
-  ) {}
+    private config?: ThufirConfig,
+    logger?: Logger
+  ) {
+    this.logger = logger ?? new Logger('info');
+  }
 
   async complete(
     messages: ChatMessage[],
