@@ -1593,7 +1593,7 @@ program
   .command('chat')
   .description('Interactive chat with Thufir')
   .action(async () => {
-    const { createLlmClient } = await import('../core/llm.js');
+    const { createLlmClient, createTrivialTaskClient } = await import('../core/llm.js');
     const { ConversationHandler } = await import('../core/conversation.js');
     const { PolymarketMarketClient } = await import('../execution/polymarket/markets.js');
     const readline = await import('node:readline');
@@ -1784,7 +1784,7 @@ program
   .description('Deep analysis of a market')
   .option('--json', 'Return structured JSON')
   .action(async (market, options) => {
-    const { createLlmClient, createTrivialTaskClient } = await import('../core/llm.js');
+    const { createLlmClient } = await import('../core/llm.js');
     const { ConversationHandler } = await import('../core/conversation.js');
     const { PolymarketMarketClient } = await import('../execution/polymarket/markets.js');
     const ora = await import('ora');
@@ -1914,7 +1914,7 @@ program
   .command('ask <topic...>')
   .description('Ask about a topic and find relevant markets')
   .action(async (topicParts) => {
-    const { createLlmClient } = await import('../core/llm.js');
+    const { createLlmClient, createTrivialTaskClient } = await import('../core/llm.js');
     const { ConversationHandler } = await import('../core/conversation.js');
     const { PolymarketMarketClient } = await import('../execution/polymarket/markets.js');
     const ora = await import('ora');
