@@ -26,6 +26,19 @@ const ConfigSchema = z.object({
     executorModel: z.string().optional(),
     executorProvider: z.enum(['anthropic', 'openai', 'local']).default('openai'),
     useExecutorModel: z.boolean().default(false),
+    useOrchestrator: z.boolean().default(false),
+    showToolTrace: z.boolean().default(false),
+    showCriticNotes: z.boolean().default(false),
+    showPlanTrace: z.boolean().default(false),
+    showFragilityTrace: z.boolean().default(false),
+    identityPromptMode: z.enum(['full', 'minimal', 'none']).default('full'),
+    internalPromptMode: z.enum(['full', 'minimal', 'none']).default('minimal'),
+    mentatAutoScan: z.boolean().default(false),
+    mentatSystem: z.string().default('Polymarket'),
+    mentatMarketQuery: z.string().optional(),
+    mentatMarketLimit: z.number().optional(),
+    mentatIntelLimit: z.number().optional(),
+    enablePreTradeFragility: z.boolean().default(true),
     provider: z.enum(['anthropic', 'openai', 'local']).default('anthropic'),
     apiBaseUrl: z.string().optional(),
     workspace: z.string().optional(),
@@ -320,12 +333,22 @@ const ConfigSchema = z.object({
       proactiveSearch: z
         .object({
           enabled: z.boolean().default(false),
+          mode: z.enum(['schedule', 'heartbeat', 'direct']).default('schedule'),
           time: z.string().default('07:30'),
           maxQueries: z.number().default(8),
           watchlistLimit: z.number().default(20),
           useLlm: z.boolean().default(true),
           recentIntelLimit: z.number().default(25),
           extraQueries: z.array(z.string()).default([]),
+          channels: z.array(z.string()).default([]),
+        })
+        .default({}),
+      heartbeat: z
+        .object({
+          enabled: z.boolean().default(false),
+          intervalMinutes: z.number().default(30),
+          channels: z.array(z.string()).default([]),
+          target: z.string().default('last'),
         })
         .default({}),
       intelAlerts: z
@@ -356,24 +379,64 @@ const ConfigSchema = z.object({
           entityAliases: z.record(z.array(z.string())).default({}),
         })
         .default({}),
+      mentat: z
+        .object({
+          enabled: z.boolean().default(false),
+          time: z.string().default('09:00'),
+          intervalMinutes: z.number().optional(),
+          channels: z.array(z.string()).default([]),
+          system: z.string().default('Polymarket'),
+          marketQuery: z.string().optional(),
+          marketLimit: z.number().default(25),
+          intelLimit: z.number().default(40),
+          minOverallScore: z.number().default(0.7),
+          minDeltaScore: z.number().default(0.15),
+        })
+        .default({}),
+    })
+    .default({}),
+  qmd: z
+    .object({
+      enabled: z.boolean().default(true),
+      knowledgePath: z.string().default('~/.thufir/knowledge'),
+      collections: z
+        .array(
+          z.object({
+            name: z.string(),
+            description: z.string().optional(),
+          })
+        )
+        .default([
+          { name: 'thufir-research', description: 'Web search results and articles' },
+          { name: 'thufir-intel', description: 'News and social intel' },
+          { name: 'thufir-markets', description: 'Market analysis and notes' },
+        ]),
+      autoIndexWebSearch: z.boolean().default(true),
+      autoIndexWebFetch: z.boolean().default(false),
+      embedSchedule: z
+        .object({
+          enabled: z.boolean().default(true),
+          intervalMinutes: z.number().default(60),
+        })
+        .default({}),
     })
     .default({}),
 });
 
-export type BijazConfig = z.infer<typeof ConfigSchema>;
+export type ThufirConfig = z.infer<typeof ConfigSchema>;
 
-export function loadConfig(configPath?: string): BijazConfig {
+export function loadConfig(configPath?: string): ThufirConfig {
   const path =
     configPath ??
-    process.env.BIJAZ_CONFIG_PATH ??
-    join(homedir(), '.bijaz', 'config.yaml');
+    process.env.THUFIR_CONFIG_PATH ??
+    join(homedir(), '.thufir', 'config.yaml');
 
   const raw = readFileSync(path, 'utf-8');
   const parsed = yaml.parse(raw) ?? {};
 
   const cfg = ConfigSchema.parse(parsed);
 
-  const envPort = process.env.BIJAZ_GATEWAY_PORT;
+  const envPort = process.env.THUFIR_GATEWAY_PORT;
   if (envPort) {
     const port = Number(envPort);
     if (!Number.isNaN(port)) {
@@ -402,6 +465,9 @@ export function loadConfig(configPath?: string): BijazConfig {
         override.memory.sessionsPath = expandHome(override.memory.sessionsPath);
       }
     }
+  }
+  if (cfg.qmd?.knowledgePath) {
+    cfg.qmd.knowledgePath = expandHome(cfg.qmd.knowledgePath);
   }
 
   return cfg;

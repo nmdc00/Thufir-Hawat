@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 import type { IncomingMessage, ChannelAdapter } from './channels.js';
 
 export class WhatsAppAdapter implements ChannelAdapter {
@@ -10,7 +10,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   private verifyToken: string;
   private allowedNumbers: Set<string>;
 
-  constructor(config: BijazConfig) {
+  constructor(config: ThufirConfig) {
     this.accessToken = config.channels.whatsapp.accessToken ?? '';
     this.phoneNumberId = config.channels.whatsapp.phoneNumberId ?? '';
     this.verifyToken = config.channels.whatsapp.verifyToken ?? '';

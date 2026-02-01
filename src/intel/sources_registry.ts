@@ -1,4 +1,4 @@
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 
 export type IntelSourceName =
   | 'rss'
@@ -27,7 +27,7 @@ const trustOrder: Record<IntelTrust, number> = {
   high: 2,
 };
 
-export function listIntelSources(config: BijazConfig): IntelSourceDescriptor[] {
+export function listIntelSources(config: ThufirConfig): IntelSourceDescriptor[] {
   const sources = config.intel?.sources ?? {};
   const rss = sources.rss as { enabled?: boolean; feeds?: Array<{ url: string }> } | undefined;
   const newsapi = sources.newsapi as { enabled?: boolean; apiKey?: string } | undefined;
@@ -91,14 +91,14 @@ export function listIntelSources(config: BijazConfig): IntelSourceDescriptor[] {
   return entries;
 }
 
-export function isSourceEnabled(config: BijazConfig, name: IntelSourceName): boolean {
+export function isSourceEnabled(config: ThufirConfig, name: IntelSourceName): boolean {
   const sources = config.intel?.sources ?? {};
   const entry = sources[name] as { enabled?: boolean } | undefined;
   return entry?.enabled ?? false;
 }
 
 export function isSourceAllowedForRoaming(
-  config: BijazConfig,
+  config: ThufirConfig,
   descriptor: IntelSourceDescriptor
 ): boolean {
   const roaming = config.intel?.roaming;
@@ -121,12 +121,12 @@ export function isSourceAllowedForRoaming(
   return true;
 }
 
-export function listRoamingSources(config: BijazConfig): IntelSourceDescriptor[] {
+export function listRoamingSources(config: ThufirConfig): IntelSourceDescriptor[] {
   return listIntelSources(config).filter(
     (entry) => entry.enabled && isSourceAllowedForRoaming(config, entry)
   );
 }
 
-export function listQueryCapableRoamingSources(config: BijazConfig): IntelSourceDescriptor[] {
+export function listQueryCapableRoamingSources(config: ThufirConfig): IntelSourceDescriptor[] {
   return listRoamingSources(config).filter((entry) => entry.queryCapable);
 }

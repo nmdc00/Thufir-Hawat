@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { BIJAZ_TOOLS } from '../src/core/tool-schemas.js';
+import { THUFIR_TOOLS } from '../src/core/tool-schemas.js';
 import { executeToolCall } from '../src/core/tool-executor.js';
 
 vi.mock('../src/intel/store.js', () => ({
@@ -14,7 +14,7 @@ vi.mock('../src/memory/calibration.js', () => ({
 
 describe('Tool schemas', () => {
   it('defines valid schemas for all tools', () => {
-    for (const tool of BIJAZ_TOOLS) {
+    for (const tool of THUFIR_TOOLS) {
       expect(tool.name).toBeTruthy();
       expect(tool.description).toBeTruthy();
       expect(tool.input_schema.type).toBe('object');

@@ -180,7 +180,7 @@ function suggestPositionSize(
   return { suggested: Math.round(suggested * 100) / 100, reasoning };
 }
 
-const EXECUTOR_PROMPT = `You are Bijaz, an autonomous prediction market trader.
+export const EXECUTOR_PROMPT = `You are Thufir, an autonomous prediction market trader.
 
 Your key principles:
 1. Be CALIBRATED - adjust confidence based on your historical accuracy
@@ -201,13 +201,15 @@ If you do not see edge ≥5%, return {"action":"hold","reasoning":"No clear edge
 If your calibration in this domain is poor, be extra conservative or hold.
 `;
 
-export async function decideTrade(
-  plannerLlm: LlmClient,
-  executorLlm: LlmClient,
+export function buildDecisionPrompts(
   market: Market,
   remainingDaily: number,
-  logger?: Logger
-): Promise<Decision> {
+  plannerGuidance?: string
+): {
+  plannerPrompt: string;
+  executorPrompt: string;
+  positionSuggestion: { suggested: number; reasoning: string };
+} {
   const domain = market.category ?? undefined;
 
   // Fetch calibration data
@@ -251,6 +253,34 @@ Provide a concise trade plan (max 120 words). Include:
 
 Do NOT return JSON. Do NOT include chain-of-thought. Keep it short and factual.`;
 
+  const executorPrompt = `${marketContext}
+
+## Planner Guidance
+${plannerGuidance?.trim() ? plannerGuidance.trim() : '(none)'}
+
+## Task
+Analyze this market. If you see edge ≥5% (your probability estimate differs from market price by ≥0.05), consider trading. Otherwise, hold.
+
+Remember: Your calibration data shows your historical accuracy. If you've been overconfident or wrong in this domain, adjust accordingly.`;
+
+  return { plannerPrompt, executorPrompt, positionSuggestion };
+}
+
+export function parseDecisionFromText(text: string): Decision | null {
+  return parseDecision(text);
+}
+
+export async function decideTrade(
+  plannerLlm: LlmClient,
+  executorLlm: LlmClient,
+  market: Market,
+  remainingDaily: number,
+  logger?: Logger
+): Promise<Decision> {
+  const { plannerPrompt, positionSuggestion } = buildDecisionPrompts(
+    market,
+    remainingDaily
+  );
   let plan = '';
   try {
     const plannerResponse = await plannerLlm.complete(
@@ -264,21 +294,16 @@ Do NOT return JSON. Do NOT include chain-of-thought. Keep it short and factual.`
   } catch {
     plan = '';
   }
-
-  const executorPrompt = `${marketContext}
-
-## Planner Guidance
-${plan || '(none)'}
-
-## Task
-Analyze this market. If you see edge ≥5% (your probability estimate differs from market price by ≥0.05), consider trading. Otherwise, hold.
-
-Remember: Your calibration data shows your historical accuracy. If you've been overconfident or wrong in this domain, adjust accordingly.`;
+  const { executorPrompt: finalExecutorPrompt } = buildDecisionPrompts(
+    market,
+    remainingDaily,
+    plan
+  );
 
   const response = await executorLlm.complete(
     [
       { role: 'system', content: EXECUTOR_PROMPT },
-      { role: 'user', content: executorPrompt },
+      { role: 'user', content: finalExecutorPrompt },
     ],
     { temperature: 0.1 }
   );

@@ -1,4 +1,4 @@
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import {
   clearIdentityCache,
   OrchestratorClient,
 } from './llm.js';
-import { decideTrade } from './decision.js';
+import { decideTrade, buildDecisionPrompts, parseDecisionFromText, EXECUTOR_PROMPT } from './decision.js';
 import { Logger } from './logger.js';
 import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { PaperExecutor } from '../execution/modes/paper.js';
@@ -28,8 +28,12 @@ import { generateDailyReport, formatDailyReport } from './opportunities.js';
 import { explainPrediction } from './explain.js';
 import { checkExposureLimits } from './exposure.js';
 import type { ToolExecutorContext } from './tool-executor.js';
+import { runOrchestrator } from '../agent/orchestrator/orchestrator.js';
+import { AgentToolRegistry } from '../agent/tools/registry.js';
+import { registerAllTools } from '../agent/tools/adapters/index.js';
+import { loadThufirIdentity } from '../agent/identity/identity.js';
 
-export class BijazAgent {
+export class ThufirAgent {
   private llm: ReturnType<typeof createLlmClient>;
   private infoLlm: ReturnType<typeof createExecutorClient>;
   private executorLlm: ReturnType<typeof createExecutorClient>;
@@ -43,10 +47,10 @@ export class BijazAgent {
   private autonomous: AutonomousManager;
   private toolContext: ToolExecutorContext;
 
-  constructor(private config: BijazConfig, logger?: Logger) {
+  constructor(private config: ThufirConfig, logger?: Logger) {
     this.logger = logger ?? new Logger('info');
     if (config.memory?.dbPath) {
-      process.env.BIJAZ_DB_PATH = config.memory.dbPath;
+      process.env.THUFIR_DB_PATH = config.memory.dbPath;
     }
     bootstrapWorkspaceIdentity(this.config);
     this.llm = createLlmClient(this.config);
@@ -83,7 +87,7 @@ export class BijazAgent {
         ...(this.config.agent ?? {}),
         executorProvider: 'openai' as const,
       },
-    } satisfies BijazConfig;
+    } satisfies ThufirConfig;
     const executor = createAgenticExecutorClient(autonomyExecutorConfig, this.toolContext);
     this.autonomyLlm = new OrchestratorClient(this.llm, executor, this.llm, this.logger);
 
@@ -97,12 +101,12 @@ export class BijazAgent {
     );
   }
 
-  private createExecutor(config: BijazConfig): ExecutionAdapter {
+  private createExecutor(config: ThufirConfig): ExecutionAdapter {
     if (config.execution.mode === 'live') {
-      const password = process.env.BIJAZ_WALLET_PASSWORD;
+      const password = process.env.THUFIR_WALLET_PASSWORD;
       if (!password) {
         throw new Error(
-          'Live execution mode requires BIJAZ_WALLET_PASSWORD environment variable'
+          'Live execution mode requires THUFIR_WALLET_PASSWORD environment variable'
         );
       }
       return new LiveExecutor({ config, password });
@@ -236,15 +240,15 @@ export class BijazAgent {
       const payload = trimmed.replace('/persona', '').trim();
       const current = getUserContext(sender)?.preferences?.personality as string | undefined;
       if (!payload || payload === 'list') {
-        return `Available personas: bijaz\nCurrent: ${current ?? 'default'}`;
+        return `Available personas: thufir\nCurrent: ${current ?? 'default'}`;
       }
       if (payload === 'off' || payload === 'default') {
         updateUserContext(sender, { preferences: { personality: undefined } });
         return 'Personality reset to default.';
       }
-      if (payload === 'bijaz') {
-        updateUserContext(sender, { preferences: { personality: 'bijaz' } });
-        return 'Personality set to bijaz.';
+      if (payload === 'thufir') {
+        updateUserContext(sender, { preferences: { personality: 'thufir' } });
+        return 'Personality set to thufir.';
       }
       return 'Unknown persona. Use /persona list to see options.';
     }
@@ -354,10 +358,10 @@ export class BijazAgent {
       const arg = trimmed.replace('/fullauto', '').trim().toLowerCase();
       if (arg === 'on' || arg === 'enable' || arg === 'true') {
         this.autonomous.setFullAuto(true);
-        return '🤖 Full autonomous mode ENABLED. Bijaz will now auto-execute trades when edge is detected.';
+        return '🤖 Full autonomous mode ENABLED. Thufir will now auto-execute trades when edge is detected.';
       } else if (arg === 'off' || arg === 'disable' || arg === 'false') {
         this.autonomous.setFullAuto(false);
-        return '🛑 Full autonomous mode DISABLED. Bijaz will only report opportunities.';
+        return '🛑 Full autonomous mode DISABLED. Thufir will only report opportunities.';
       } else {
         const status = this.autonomous.getStatus();
         return `Full auto mode is currently: ${status.fullAuto ? 'ON' : 'OFF'}\nUse \`/fullauto on\` or \`/fullauto off\` to toggle.`;
@@ -382,7 +386,7 @@ export class BijazAgent {
       const pnl = this.autonomous.getDailyPnL();
 
       const lines: string[] = [];
-      lines.push('**Bijaz Status**');
+      lines.push('**Thufir Status**');
       lines.push('');
       lines.push('**Autonomous Mode:**');
       lines.push(`• Enabled: ${status.enabled ? 'YES' : 'NO'}`);
@@ -411,7 +415,7 @@ export class BijazAgent {
 
     // Command: /help
     if (trimmed === '/help') {
-      return `**Bijaz Commands**
+      return `**Thufir Commands**
 
 **Conversation:**
 Just type naturally to chat about predictions, events, or markets.
@@ -481,6 +485,17 @@ Just type naturally to chat about predictions, events, or markets.
       return 'No markets found to scan.';
     }
 
+    const useOrchestrator = this.config.agent?.useOrchestrator === true;
+    let orchestratorRegistry: AgentToolRegistry | null = null;
+    let orchestratorIdentity: ReturnType<typeof loadThufirIdentity>['identity'] | null = null;
+    if (useOrchestrator) {
+      orchestratorRegistry = new AgentToolRegistry();
+      registerAllTools(orchestratorRegistry);
+      orchestratorIdentity = loadThufirIdentity({
+        workspacePath: this.config.agent?.workspace,
+      }).identity;
+    }
+
     const decisions: string[] = [];
     for (const market of markets) {
       const remaining = this.limiter.getRemainingDaily();
@@ -489,7 +504,47 @@ Just type naturally to chat about predictions, events, or markets.
         break;
       }
 
-      const decision = await decideTrade(this.llm, this.executorLlm, market, remaining, this.logger);
+      let decision: Awaited<ReturnType<typeof decideTrade>>;
+      if (useOrchestrator && orchestratorRegistry && orchestratorIdentity) {
+        const { plannerPrompt } = buildDecisionPrompts(market, remaining);
+        let plan = '';
+        try {
+          const plannerResponse = await this.llm.complete(
+            [
+              { role: 'system', content: 'You are a concise trading planner.' },
+              { role: 'user', content: plannerPrompt },
+            ],
+            { temperature: 0.2 }
+          );
+          plan = plannerResponse.content.trim();
+        } catch {
+          plan = '';
+        }
+
+        const { executorPrompt } = buildDecisionPrompts(market, remaining, plan);
+        const result = await runOrchestrator(
+          'Return a trade decision JSON for the provided market.',
+          {
+            llm: this.executorLlm,
+            toolRegistry: orchestratorRegistry,
+            identity: orchestratorIdentity,
+            toolContext: this.toolContext,
+          },
+          {
+            skipPlanning: true,
+            skipCritic: true,
+            maxIterations: 1,
+            synthesisSystemPrompt: `${EXECUTOR_PROMPT}\n\nUser Prompt:\n${executorPrompt}`,
+          }
+        );
+
+        decision = parseDecisionFromText(result.response) ?? {
+          action: 'hold',
+          reasoning: 'Failed to parse orchestrator decision JSON',
+        };
+      } else {
+        decision = await decideTrade(this.llm, this.executorLlm, market, remaining, this.logger);
+      }
       if (decision.action === 'hold') {
         decisions.push(`${market.id}: hold`);
         continue;
@@ -672,8 +727,8 @@ Just type naturally to chat about predictions, events, or markets.
   }
 }
 
-function bootstrapWorkspaceIdentity(config: BijazConfig): void {
-  const workspacePath = config.agent?.workspace ?? join(homedir(), '.bijaz');
+function bootstrapWorkspaceIdentity(config: ThufirConfig): void {
+  const workspacePath = config.agent?.workspace ?? join(homedir(), '.thufir');
   const repoWorkspacePath = join(process.cwd(), 'workspace');
   if (workspacePath === repoWorkspacePath) {
     return;

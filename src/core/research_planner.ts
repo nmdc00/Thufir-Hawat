@@ -1,5 +1,5 @@
 import type { LlmClient } from './llm.js';
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { Market, PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { listWatchlist } from '../memory/watchlist.js';
 import { listIntelByIds } from '../intel/store.js';
@@ -111,7 +111,7 @@ function formatIntelList(
 }
 
 export async function runResearchPlan(params: {
-  config: BijazConfig;
+  config: ThufirConfig;
   marketClient: PolymarketMarketClient;
   subject: { id?: string; question: string; category?: string };
   plan: ResearchPlan;

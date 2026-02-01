@@ -1,4 +1,4 @@
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { Market } from '../execution/polymarket/markets.js';
 import { listOpenPositionsFromTrades } from '../memory/trades.js';
 import { listOpenPositions } from '../memory/predictions.js';
@@ -82,7 +82,7 @@ function computeExposureTotals(): ExposureTotals {
 }
 
 export function checkExposureLimits(params: {
-  config: BijazConfig;
+  config: ThufirConfig;
   market: Market;
   outcome: 'YES' | 'NO';
   amount: number;

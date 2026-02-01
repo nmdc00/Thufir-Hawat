@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 
-import { Bijaz } from '../src/index.js';
+import { Thufir } from '../src/index.js';
 
 let openPositions: Array<{
   marketId: string;
@@ -81,8 +81,8 @@ vi.mock('../src/execution/modes/paper.js', () => ({
 }));
 
 function writeTempConfig(): { configPath: string; dbPath: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'bijaz-test-'));
-  const dbPath = join(dir, 'bijaz.sqlite');
+  const dir = mkdtempSync(join(tmpdir(), 'thufir-test-'));
+  const dbPath = join(dir, 'thufir.sqlite');
   const configPath = join(dir, 'config.yaml');
 
   const contents = `
@@ -110,7 +110,7 @@ memory:
   return { configPath, dbPath };
 }
 
-describe('Bijaz programmatic API', () => {
+describe('Thufir programmatic API', () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
@@ -124,16 +124,16 @@ describe('Bijaz programmatic API', () => {
 
   it('starts and stops cleanly, exposes calibration and portfolio', async () => {
     const { configPath, dbPath } = writeTempConfig();
-    process.env.BIJAZ_DB_PATH = dbPath;
+    process.env.THUFIR_DB_PATH = dbPath;
     openPositions = [];
 
-    const bijaz = new Bijaz({ configPath, userId: 'test-user' });
-    await bijaz.start();
+    const thufir = new Thufir({ configPath, userId: 'test-user' });
+    await thufir.start();
 
-    const calibration = await bijaz.getCalibration();
+    const calibration = await thufir.getCalibration();
     expect(calibration).toEqual([]);
 
-    const portfolio = await bijaz.getPortfolio();
+    const portfolio = await thufir.getPortfolio();
     expect(portfolio).toMatchObject({
       positions: [],
       totalValue: 0,
@@ -143,24 +143,24 @@ describe('Bijaz programmatic API', () => {
       cashBalance: 0,
     });
 
-    await bijaz.stop();
+    await thufir.stop();
 
-    await expect(bijaz.getCalibration()).rejects.toThrow('Bijaz not started');
+    await expect(thufir.getCalibration()).rejects.toThrow('Thufir not started');
   });
 
   it('throws when starting twice', async () => {
     const { configPath, dbPath } = writeTempConfig();
-    process.env.BIJAZ_DB_PATH = dbPath;
+    process.env.THUFIR_DB_PATH = dbPath;
 
-    const bijaz = new Bijaz({ configPath });
-    await bijaz.start();
+    const thufir = new Thufir({ configPath });
+    await thufir.start();
 
-    await expect(bijaz.start()).rejects.toThrow('Bijaz already started');
+    await expect(thufir.start()).rejects.toThrow('Thufir already started');
   });
 
   it('computes portfolio PnL from open positions', async () => {
     const { configPath, dbPath } = writeTempConfig();
-    process.env.BIJAZ_DB_PATH = dbPath;
+    process.env.THUFIR_DB_PATH = dbPath;
     openPositions = [
       {
         marketId: 'm1',
@@ -172,50 +172,50 @@ describe('Bijaz programmatic API', () => {
       },
     ];
 
-    const bijaz = new Bijaz({ configPath, userId: 'test-user' });
-    await bijaz.start();
+    const thufir = new Thufir({ configPath, userId: 'test-user' });
+    await thufir.start();
 
-    const portfolio = await bijaz.getPortfolio();
+    const portfolio = await thufir.getPortfolio();
     expect(portfolio.positions).toHaveLength(1);
     expect(portfolio.totalValue).toBeCloseTo(120, 6);
     expect(portfolio.totalPnl).toBeCloseTo(20, 6);
 
-    await bijaz.stop();
+    await thufir.stop();
   });
 
   it('analyze delegates to conversation handler', async () => {
     const { configPath, dbPath } = writeTempConfig();
-    process.env.BIJAZ_DB_PATH = dbPath;
-    const bijaz = new Bijaz({ configPath, userId: 'test-user' });
-    await bijaz.start();
+    process.env.THUFIR_DB_PATH = dbPath;
+    const thufir = new Thufir({ configPath, userId: 'test-user' });
+    await thufir.start();
 
-    const result = await bijaz.analyze('m1');
+    const result = await thufir.analyze('m1');
     expect(result).toBe('analysis');
 
-    await bijaz.stop();
+    await thufir.stop();
   });
 
   it('structured analyze delegates to conversation handler', async () => {
     const { configPath, dbPath } = writeTempConfig();
-    process.env.BIJAZ_DB_PATH = dbPath;
-    const bijaz = new Bijaz({ configPath, userId: 'test-user' });
-    await bijaz.start();
+    process.env.THUFIR_DB_PATH = dbPath;
+    const thufir = new Thufir({ configPath, userId: 'test-user' });
+    await thufir.start();
 
-    const result = await bijaz.analyzeStructured('m1');
+    const result = await thufir.analyzeStructured('m1');
     expect(result).toMatchObject({ marketId: 'm1', question: 'Test market' });
 
-    await bijaz.stop();
+    await thufir.stop();
   });
 
   it('trade executes and returns result', async () => {
     const { configPath, dbPath } = writeTempConfig();
-    process.env.BIJAZ_DB_PATH = dbPath;
-    const bijaz = new Bijaz({ configPath, userId: 'test-user' });
-    await bijaz.start();
+    process.env.THUFIR_DB_PATH = dbPath;
+    const thufir = new Thufir({ configPath, userId: 'test-user' });
+    await thufir.start();
 
-    const result = await bijaz.trade({ marketId: 'm1', outcome: 'YES', amount: 10 });
+    const result = await thufir.trade({ marketId: 'm1', outcome: 'YES', amount: 10 });
     expect(result).toEqual({ executed: true, message: 'ok' });
 
-    await bijaz.stop();
+    await thufir.stop();
   });
 });

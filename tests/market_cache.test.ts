@@ -54,16 +54,17 @@ vi.mock('../src/memory/db.js', () => {
         }
         if (sql.includes('FROM market_cache') && sql.includes('ORDER BY volume DESC')) {
           return {
-            all: (q: string | number, q2?: string | number, lim?: number) => {
-              const hasQuery = typeof q === 'string';
-              const limit = (typeof q2 === 'number' ? q2 : lim) ?? 50;
-              const needle = hasQuery ? String(q).replace(/%/g, '') : '';
+            all: (...args: Array<string | number>) => {
+              const limit = args.find((arg) => typeof arg === 'number') as number | undefined;
+              const stringArgs = args.filter((arg) => typeof arg === 'string') as string[];
+              const hasQuery = stringArgs.length > 0;
+              const needle = hasQuery ? String(stringArgs[0]).replace(/%/g, '') : '';
               const filtered = Array.from(state.rows.values()).filter((row) => {
                 if (!hasQuery) return true;
                 const hay = `${row.question} ${row.description ?? ''}`.toLowerCase();
                 return hay.includes(needle.toLowerCase());
               });
-              return filtered.slice(0, limit).map((row) => ({
+              return filtered.slice(0, limit ?? 50).map((row) => ({
                 id: row.id,
                 question: row.question,
                 description: row.description,

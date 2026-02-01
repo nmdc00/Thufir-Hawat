@@ -1,6 +1,6 @@
 # Handoff Document
 
-This document provides everything needed to continue development on Bijaz.
+This document provides everything needed to continue development on Thufir.
 
 ## Latest Session (2026-01-27, Session 7)
 
@@ -8,7 +8,7 @@ This document provides everything needed to continue development on Bijaz.
 1. **Polymarket CLOB execution adapter**
    - Token ID resolution via CLOB API
    - Live executor fetches token IDs and signs orders correctly
-   - New CLI commands: `bijaz markets tokens`, `bijaz markets clob-status`
+   - New CLI commands: `thufir markets tokens`, `thufir markets clob-status`
 
 2. **LLM orchestration pipeline**
    - Claude plans, OpenAI executes trade decisions
@@ -31,18 +31,23 @@ This document provides everything needed to continue development on Bijaz.
 - NewsAPI/Google News/Twitter/Polymarket comments intel
 - Conversational intel alert setup + preview
 - Paper trading works, real trading needs Polymarket adapter
-- Portfolio positions + cash balance tracking (CLI `bijaz portfolio --set-cash`)
+- Portfolio positions + cash balance tracking (CLI `thufir portfolio --set-cash`)
 - Trade ledger + realized PnL (FIFO) + market cache sync
-- Proactive search loop (Clawdbot-style, local) + CLI `bijaz intel proactive`
+- Proactive search loop (Clawdbot-style, local) + CLI `thufir intel proactive`
 - Clawdbot-style session routing (session keys per channel)
-- Research planner + prediction explanations (`bijaz predictions explain`)
+- Research planner + prediction explanations (`thufir predictions explain`)
 - Exposure limits enforced (per-market + per-domain)
-- Ledger vs on-chain balance reconciliation (`bijaz portfolio --reconcile`)
-- Daily PnL rollups (`bijaz pnl`)
+- Ledger vs on-chain balance reconciliation (`thufir portfolio --reconcile`)
+- Daily PnL rollups (`thufir pnl`)
 - Market data live subscriptions (watchlist-only + staleness fallback)
 - Intel source registry + roaming controls (trust thresholds, social opt-in)
-- Env setup + validation CLI (`bijaz env init`, `bijaz env check`) + `.env.example`
+- Env setup + validation CLI (`thufir env init`, `thufir env check`) + `.env.example`
 - Live trading adapter (CLOB) implemented; needs a live test trade
+- **QMD Knowledge Base** - Local hybrid search (BM25 + vector + LLM reranking)
+  - Auto-indexes web search/fetch results
+  - Mentat storage: assumptions, fragility cards
+  - Orchestrator memory-first integration
+  - Periodic embedding updates (hourly by default)
 
 ### Immediate Next Steps
 1. Execute a $1 live trade via CLOB (verify end-to-end)
@@ -62,9 +67,9 @@ This document provides everything needed to continue development on Bijaz.
 | [docs/INTEL_SOURCES.md](docs/INTEL_SOURCES.md) | Intelligence source configuration |
 | [docs/CALIBRATION.md](docs/CALIBRATION.md) | Prediction calibration system |
 
-## What Is Bijaz?
+## What Is Thufir?
 
-Bijaz is a **prediction market AI companion** - an AI assistant that helps you make better predictions on Polymarket. Unlike pure trading bots that optimize for speed/arbitrage, Bijaz:
+Thufir is a **prediction market AI companion** - an AI assistant that helps you make better predictions on Polymarket. Unlike pure trading bots that optimize for speed/arbitrage, Thufir:
 
 1. **Learns your interests** and curates relevant intel
 2. **Tracks calibration** - how accurate your predictions actually are
@@ -93,7 +98,7 @@ The wallet is the most critical component. Design principles:
 
 ### 3. Calibration as Core Feature
 
-The calibration system is what makes Bijaz valuable over time:
+The calibration system is what makes Thufir valuable over time:
 - Every prediction is recorded with reasoning
 - Outcomes are tracked when markets resolve
 - Brier scores calculated per domain
@@ -184,13 +189,13 @@ Security-critical code needs 100% test coverage:
 ### Minimal Config (Development)
 
 ```yaml
-# config/bijaz.yaml
+# config/thufir.yaml
 gateway:
   port: 18789
 
 agent:
   model: claude-sonnet-4-5-20251101
-  workspace: ~/bijaz
+  workspace: ~/thufir
 
 wallet:
   limits:
@@ -229,7 +234,7 @@ See `config/production.yaml.example` for full configuration.
 ## File Structure
 
 ```
-Bijaz/
+Thufir/
 ├── README.md                 # Project overview
 ├── HANDOFF.md               # This document
 ├── package.json             # Dependencies
@@ -262,45 +267,45 @@ Bijaz/
 
 ### Phase 1 (Foundation)
 ```bash
-bijaz wallet create          # Create new wallet
-bijaz wallet import          # Import existing wallet
-bijaz wallet status          # Show balance and address
-bijaz wallet limits set      # Configure spending limits
-bijaz wallet limits show     # Show current limits
+thufir wallet create          # Create new wallet
+thufir wallet import          # Import existing wallet
+thufir wallet status          # Show balance and address
+thufir wallet limits set      # Configure spending limits
+thufir wallet limits show     # Show current limits
 ```
 
 ### Phase 2 (Markets)
 ```bash
-bijaz markets list           # List active markets
-bijaz markets show <id>      # Show market details
-bijaz markets watch <id>     # Add to watchlist
-bijaz trade buy <market> <outcome> <price> --amount <usd>
-bijaz trade sell <market> <outcome> <price> --amount <usd>
-bijaz portfolio              # Show positions and P&L
+thufir markets list           # List active markets
+thufir markets show <id>      # Show market details
+thufir markets watch <id>     # Add to watchlist
+thufir trade buy <market> <outcome> <price> --amount <usd>
+thufir trade sell <market> <outcome> <price> --amount <usd>
+thufir portfolio              # Show positions and P&L
 ```
 
 ### Phase 3 (Predictions)
 ```bash
-bijaz predict <market>       # Analyze and record prediction
-bijaz predictions list       # List recent predictions
-bijaz predictions show <id>  # Show prediction details
-bijaz calibration show       # Show calibration stats
-bijaz calibration history    # Show prediction outcomes
+thufir predict <market>       # Analyze and record prediction
+thufir predictions list       # List recent predictions
+thufir predictions show <id>  # Show prediction details
+thufir calibration show       # Show calibration stats
+thufir calibration history    # Show prediction outcomes
 ```
 
 ### Phase 4 (Intel)
 ```bash
-bijaz intel status           # Show source status
-bijaz intel add <source>     # Add intel source
-bijaz intel search <query>   # Search intel
-bijaz intel recent           # Show recent intel
+thufir intel status           # Show source status
+thufir intel add <source>     # Add intel source
+thufir intel search <query>   # Search intel
+thufir intel recent           # Show recent intel
 ```
 
 ### Phase 5 (Agent)
 ```bash
-bijaz chat                   # Interactive chat
-bijaz briefing               # Generate daily briefing
-bijaz analyze <market>       # Deep market analysis
+thufir chat                   # Interactive chat
+thufir briefing               # Generate daily briefing
+thufir analyze <market>       # Deep market analysis
 ```
 
 ## Testing Strategy
@@ -347,7 +352,7 @@ Markets can take hours/days to resolve. Need:
 
 These need answers before building:
 
-1. **Autonomy levels** - How autonomous should Bijaz be by default?
+1. **Autonomy levels** - How autonomous should Thufir be by default?
    - Manual (requires confirmation for all trades)
    - Semi-auto (auto-execute small trades, confirm large)
    - Full auto (dangerous, not recommended)
@@ -385,6 +390,6 @@ If you have questions about this design, the key architectural decisions are doc
 
 ---
 
-**Good luck building Bijaz!**
+**Good luck building Thufir!**
 
 The hardest part is getting the wallet security right. After that, it's mostly plumbing and polish.

@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-Bijaz's LLM cannot invoke tools. The system prompt tells the agent it has tools, but:
+Thufir's LLM cannot invoke tools. The system prompt tells the agent it has tools, but:
 
 1. No `tools` parameter is passed to `messages.create()`
 2. No agentic loop handles `tool_use` → `tool_result` cycles
@@ -87,7 +87,7 @@ Define Anthropic-compatible tool schemas for each tool:
 ```typescript
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 
-export const BIJAZ_TOOLS: Tool[] = [
+export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'market_search',
     description: 'Search for prediction markets on Polymarket by query. Use this when the user asks about a topic and you want to find relevant markets.',
@@ -176,7 +176,7 @@ export const BIJAZ_TOOLS: Tool[] = [
 **Tasks:**
 - [x] Create `src/core/tool-schemas.ts`
 - [x] Define all 5 tool schemas with proper descriptions
-- [x] Export `BIJAZ_TOOLS` array
+- [x] Export `THUFIR_TOOLS` array
 
 ---
 
@@ -187,13 +187,13 @@ export const BIJAZ_TOOLS: Tool[] = [
 Create executor that maps tool names to handlers:
 
 ```typescript
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { PolymarketMarketClient, Market } from '../execution/polymarket/markets.js';
 import { searchIntel, listRecentIntel, type StoredIntel } from '../intel/store.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
 
 export interface ToolExecutorContext {
-  config: BijazConfig;
+  config: ThufirConfig;
   marketClient: PolymarketMarketClient;
 }
 
@@ -311,7 +311,7 @@ Add new `AgenticAnthropicClient` class:
 ```typescript
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam, ContentBlock, ToolUseBlock, ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages';
-import { BIJAZ_TOOLS } from './tool-schemas.js';
+import { THUFIR_TOOLS } from './tool-schemas.js';
 import { executeToolCall, type ToolExecutorContext } from './tool-executor.js';
 
 export interface AgenticLlmOptions {
@@ -324,7 +324,7 @@ export class AgenticAnthropicClient implements LlmClient {
   private model: string;
   private toolContext: ToolExecutorContext;
 
-  constructor(config: BijazConfig, toolContext: ToolExecutorContext) {
+  constructor(config: ThufirConfig, toolContext: ToolExecutorContext) {
     this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? '' });
     this.model = config.agent.model;
     this.toolContext = toolContext;
@@ -355,7 +355,7 @@ export class AgenticAnthropicClient implements LlmClient {
         temperature,
         system,
         messages: anthropicMessages,
-        tools: BIJAZ_TOOLS,
+        tools: THUFIR_TOOLS,
       });
 
       // Check if response contains tool use
@@ -434,7 +434,7 @@ Update to use agentic client:
 constructor(
   llm: LlmClient,
   marketClient: PolymarketMarketClient,
-  config: BijazConfig,
+  config: ThufirConfig,
   infoLlm?: LlmClient
 ) {
   // Create agentic client with tool context
@@ -475,7 +475,7 @@ async chat(userId: string, message: string): Promise<string> {
 Replace the misleading "Available tools" section:
 
 ```typescript
-const SYSTEM_PROMPT = `You are Bijaz, an AI prediction market companion...
+const SYSTEM_PROMPT = `You are Thufir, an AI prediction market companion...
 
 ## Tools Available
 
@@ -522,10 +522,10 @@ Get user's prediction track record. Use when discussing accuracy or past perform
 
 **File:** `src/core/agent.ts` (modify)
 
-Update `BijazAgent` to pass context to conversation handler:
+Update `ThufirAgent` to pass context to conversation handler:
 
 ```typescript
-constructor(private config: BijazConfig, logger?: Logger) {
+constructor(private config: ThufirConfig, logger?: Logger) {
   // ... existing setup ...
 
   // Create tool context
@@ -558,11 +558,11 @@ constructor(private config: BijazConfig, logger?: Logger) {
 ```typescript
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { executeToolCall } from '../src/core/tool-executor.js';
-import { BIJAZ_TOOLS } from '../src/core/tool-schemas.js';
+import { THUFIR_TOOLS } from '../src/core/tool-schemas.js';
 
 describe('Tool Schemas', () => {
   it('should have valid JSON schema for all tools', () => {
-    for (const tool of BIJAZ_TOOLS) {
+    for (const tool of THUFIR_TOOLS) {
       expect(tool.name).toBeTruthy();
       expect(tool.description).toBeTruthy();
       expect(tool.input_schema.type).toBe('object');

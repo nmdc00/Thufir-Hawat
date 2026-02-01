@@ -1,12 +1,12 @@
-# Bijaz - Prediction Market AI Companion
+# Thufir - Prediction Market AI Companion
 
-**Bijaz** (from Arabic بيجاز, meaning "concise oracle") is a personal AI assistant specialized in prediction markets. Unlike pure trading bots that optimize for speed and arbitrage, Bijaz is a **prediction companion** that learns your interests, curates intel, discusses reasoning, and executes trades on your behalf — **fully autonomous by default**.
+**Thufir** (from Arabic بيجاز, meaning "concise oracle") is a personal AI assistant specialized in prediction markets. Unlike pure trading bots that optimize for speed and arbitrage, Thufir is a **prediction companion** that learns your interests, curates intel, discusses reasoning, and executes trades on your behalf — **fully autonomous by default**.
 
 Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel architecture and [Polymarket Agents](https://github.com/Polymarket/agents)' execution framework.
 
-## Why Bijaz?
+## Why Thufir?
 
-| Existing Prediction Bots | Bijaz |
+| Existing Prediction Bots | Thufir |
 |--------------------------|-------|
 | Autonomous execution | Conversational + collaborative |
 | No memory | Learns your interests & tracks calibration |
@@ -100,13 +100,13 @@ Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel
 1. Install Node.js 22+ and pnpm.
 2. Clone and install:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/Bijaz.git
-   cd Bijaz
+   git clone https://github.com/YOUR_USERNAME/Thufir.git
+   cd Thufir
    pnpm install
    ```
 3. Copy config:
    ```bash
-   cp config/default.yaml ~/.bijaz/config.yaml
+   cp config/default.yaml ~/.thufir/config.yaml
    ```
 4. Set API keys:
    ```bash
@@ -115,7 +115,7 @@ Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel
    ```
 5. Start the gateway:
    ```bash
-   pnpm bijaz gateway
+   pnpm thufir gateway
    ```
 
 ### Option B: Low-cost cloud server (public webhook + 24/7 uptime)
@@ -135,8 +135,8 @@ Telegram can run anywhere (polling).
 2. Install Node.js 22+ and pnpm.
 3. Clone and install:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/Bijaz.git
-   cd Bijaz
+   git clone https://github.com/YOUR_USERNAME/Thufir.git
+   cd Thufir
    pnpm install
    ```
 4. Copy config and set secrets as env vars.
@@ -147,22 +147,22 @@ Telegram can run anywhere (polling).
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/Bijaz.git
-cd Bijaz
+git clone https://github.com/YOUR_USERNAME/Thufir.git
+cd Thufir
 
 # Install dependencies
 pnpm install
 
 # Run onboarding wizard
-pnpm bijaz onboard
+pnpm thufir onboard
 
 # Start the gateway
-pnpm bijaz gateway --port 18789
+pnpm thufir gateway --port 18789
 ```
 
 ### Configuration
 
-Copy `config/default.yaml` to `~/.bijaz/config.yaml` and edit.
+Copy `config/default.yaml` to `~/.thufir/config.yaml` and edit.
 
 #### LLM Providers
 ```yaml
@@ -183,17 +183,17 @@ execution:
 **Mode descriptions:**
 - `paper` (default): Simulates trades without real execution. Tracks positions and P&L for practice/testing.
 - `webhook`: Sends trade decisions to an external URL for execution (useful for external signing services).
-- `live`: Executes real trades on Polymarket via the CLOB API. Requires wallet setup and `BIJAZ_WALLET_PASSWORD` environment variable.
+- `live`: Executes real trades on Polymarket via the CLOB API. Requires wallet setup and `THUFIR_WALLET_PASSWORD` environment variable.
 
 **Live mode setup:**
 ```bash
 # 1. Create or import a wallet
-bijaz wallet create
+thufir wallet create
 # or
-bijaz wallet import
+thufir wallet import
 
 # 2. Set your wallet password as environment variable
-export BIJAZ_WALLET_PASSWORD="your-secure-password"
+export THUFIR_WALLET_PASSWORD="your-secure-password"
 
 # 3. Update config to use live mode
 # In config.yaml:
@@ -201,7 +201,7 @@ export BIJAZ_WALLET_PASSWORD="your-secure-password"
 #   mode: live
 
 # 4. Start the gateway
-pnpm bijaz gateway
+pnpm thufir gateway
 ```
 
 **Security note:** Live mode connects to real markets with real funds. Always:
@@ -213,7 +213,7 @@ pnpm bijaz gateway
 #### Wallet
 ```yaml
 wallet:
-  keystorePath: ~/.bijaz/keystore.json
+  keystorePath: ~/.thufir/keystore.json
   limits:
     daily: 100
     perTrade: 25
@@ -223,7 +223,7 @@ wallet:
 #### Memory & Embeddings
 ```yaml
 memory:
-  sessionsPath: ~/.bijaz/sessions
+  sessionsPath: ~/.thufir/sessions
   maxHistoryMessages: 50
   compactAfterTokens: 12000
   keepRecentMessages: 12
@@ -330,58 +330,58 @@ channels:
 
 ```bash
 # Set up your wallet (NEVER share your private key)
-bijaz wallet setup
+thufir wallet setup
 
 # Create a .env file and validate API keys
-bijaz env init
-bijaz env check
+thufir env init
+thufir env check
 
 # Configure prediction markets
-bijaz markets connect polymarket
+thufir markets connect polymarket
 
 # Set up intel sources
-bijaz intel add newsapi --key YOUR_KEY
-bijaz intel add twitter --bearer YOUR_BEARER
+thufir intel add newsapi --key YOUR_KEY
+thufir intel add twitter --bearer YOUR_BEARER
 
 # Configure channels
-bijaz channel add telegram --token YOUR_BOT_TOKEN
+thufir channel add telegram --token YOUR_BOT_TOKEN
 ```
 
 ### Usage
 
 ```bash
 # Start the gateway (Telegram polling + WhatsApp webhook)
-pnpm bijaz gateway
+pnpm thufir gateway
 
-# Chat with Bijaz via CLI
-bijaz chat "What's your take on the French election market?"
+# Chat with Thufir via CLI
+thufir chat "What's your take on the French election market?"
 
 # Get daily briefing
-bijaz briefing
+thufir briefing
 
 # View your calibration stats
-bijaz calibration show
+thufir calibration show
 
 # View portfolio
-bijaz portfolio
+thufir portfolio
 # Set or adjust cash balance
-bijaz portfolio --set-cash 1000
-bijaz portfolio --add-cash 250
-bijaz portfolio --withdraw-cash 100
+thufir portfolio --set-cash 1000
+thufir portfolio --add-cash 250
+thufir portfolio --withdraw-cash 100
 # Reconcile ledger cash vs on-chain USDC
-bijaz portfolio --reconcile
+thufir portfolio --reconcile
 
 # Sync market cache (improves portfolio pricing)
-bijaz markets sync --limit 200
+thufir markets sync --limit 200
 
 # Manual trade
-bijaz trade buy "French Election - Le Pen" YES 0.35 --amount 50
+thufir trade buy "French Election - Le Pen" YES 0.35 --amount 50
 ```
 
 ### Cloud Install (Hetzner / Ubuntu)
 
 Use the installer script to set up Node 22, install dependencies, generate config + .env,
-and register a systemd service that keeps Bijaz running.
+and register a systemd service that keeps Thufir running.
 
 ```bash
 bash scripts/install_hetzner.sh
@@ -389,46 +389,46 @@ bash scripts/install_hetzner.sh
 
 ### Wallet (CLI)
 ```bash
-bijaz wallet create
-bijaz wallet import
-bijaz wallet status
+thufir wallet create
+thufir wallet import
+thufir wallet status
 ```
 
 ### User Profile (CLI)
 ```bash
-bijaz user show <id>
-bijaz user set <id> --domains politics,crypto --risk moderate --pref timezone=EST
+thufir user show <id>
+thufir user set <id> --domains politics,crypto --risk moderate --pref timezone=EST
 ```
 
 ### Intel (CLI)
 ```bash
-bijaz intel status
-bijaz intel recent --limit 20
-bijaz intel alerts --limit 50
-bijaz intel proactive --max-queries 8
+thufir intel status
+thufir intel recent --limit 20
+thufir intel alerts --limit 50
+thufir intel proactive --max-queries 8
 ```
 
 ### Predictions (CLI)
 ```bash
-bijaz predictions add --market-id m1 --title "Example" --outcome YES --prob 0.6
-bijaz predictions list
-bijaz predictions show <id>
-bijaz predictions explain <id>
-bijaz predictions resolve
+thufir predictions add --market-id m1 --title "Example" --outcome YES --prob 0.6
+thufir predictions list
+thufir predictions show <id>
+thufir predictions explain <id>
+thufir predictions resolve
 ```
 
 ### PnL (CLI)
 ```bash
-bijaz pnl
-bijaz pnl --date 2026-01-26
+thufir pnl
+thufir pnl --date 2026-01-26
 ```
 
 ### Memory (CLI)
 ```bash
-bijaz memory sessions
-bijaz memory show <userId> -l 50
-bijaz memory compact <userId>
-bijaz memory prune --days 90
+thufir memory sessions
+thufir memory show <userId> -l 50
+thufir memory compact <userId>
+thufir memory prune --days 90
 ```
 
 ### Telegram/WhatsApp Commands
@@ -464,7 +464,7 @@ bijaz memory prune --days 90
 
 **You:** "What do you think about AI causing mass unemployment?"
 
-**Bijaz:** "This is one of the most debated questions in forecasting. Let me break it down:
+**Thufir:** "This is one of the most debated questions in forecasting. Let me break it down:
 
 **My probability estimate:** 25-35% chance of >10% unemployment directly attributable to AI by 2030.
 
@@ -489,7 +489,7 @@ Want me to dig deeper into any aspect?"
 
 **You:** "What markets look interesting today?"
 
-**Bijaz:** "Based on recent news and current prices, here are 3 markets where I see edge:
+**Thufir:** "Based on recent news and current prices, here are 3 markets where I see edge:
 
 1. **Fed Rate Decision (Mar 2026)** - 72% YES (hold)
    - My estimate: 65% | Edge: -7%
@@ -511,7 +511,7 @@ Your calibration note: You're 71% accurate on Fed predictions but only 52% on po
 
 **You:** "Buy $50 on Tesla deliveries"
 
-**Bijaz:** "Executing: BUY $50 on 'Tesla Q1 Deliveries > 500k' at YES 0.38
+**Thufir:** "Executing: BUY $50 on 'Tesla Q1 Deliveries > 500k' at YES 0.38
 
 **Reasoning:**
 - Q4 2025 beat by 8%
@@ -525,7 +525,7 @@ Trade executed (paper mode). Position recorded for calibration tracking."
 ## Project Structure
 
 ```
-Bijaz/
+Thufir/
 ├── src/
 │   ├── core/           # Agent logic, LLM integration
 │   ├── intel/          # News aggregation, vectorization
@@ -610,7 +610,7 @@ Bijaz/
 ## Planned Feature: Proactive Daily Intelligence
 
 ### Daily Top 10 Trades Report
-Bijaz will automatically:
+Thufir will automatically:
 1. Fetch current events from news sources
 2. Cross-reference with all active Polymarket markets
 3. Use LLM to identify markets where news creates edge
@@ -634,7 +634,7 @@ Bijaz will automatically:
 ```
 
 ### Full Autonomous Mode (Toggle)
-When enabled, Bijaz will:
+When enabled, Thufir will:
 - Execute trades automatically based on detected edge
 - Respect all spending limits and risk controls
 - Send daily summary of trades executed and P&L
@@ -670,13 +670,13 @@ MIT License - See [LICENSE](LICENSE)
 
 ## Clawdbot Integration Plan
 
-Bijaz is designed to eventually fork [Clawdbot](https://github.com/clawdbot/clawdbot) for its:
+Thufir is designed to eventually fork [Clawdbot](https://github.com/clawdbot/clawdbot) for its:
 - **Proactive search capabilities** - implemented locally, but Clawdbot offers a mature foundation
 - **Multi-step reasoning** - Complex task decomposition
 - **Session management** - Robust conversation state
 - **Skills system** - Modular capabilities
 
-Currently, Bijaz uses a lightweight gateway with Clawdbot-style session routing plus per-agent session isolation.
+Currently, Thufir uses a lightweight gateway with Clawdbot-style session routing plus per-agent session isolation.
 The plan is to integrate more of Clawdbot's gateway core to enable:
 1. Proactive news monitoring and market scanning
 2. Multi-step research before making predictions
@@ -684,7 +684,7 @@ The plan is to integrate more of Clawdbot's gateway core to enable:
 4. More sophisticated autonomous reasoning
 
 ### Market Data Live Subscriptions
-Bijaz can optionally use a WebSocket feed to keep market prices fresh (watchlist-only by default). If you have a
+Thufir can optionally use a WebSocket feed to keep market prices fresh (watchlist-only by default). If you have a
 market data WebSocket endpoint, configure:
 
 ```yaml
@@ -699,7 +699,7 @@ polymarket:
 ```
 
 ### Proactive Search (Clawdbot-Style, Local)
-Bijaz now runs a Clawdbot-style proactive search loop locally. It generates queries from your watchlist
+Thufir now runs a Clawdbot-style proactive search loop locally. It generates queries from your watchlist
 and recent intel, optionally refines them with the LLM, then runs the intel pipeline using those queries.
 
 Config example:
@@ -723,4 +723,4 @@ notifications:
 ---
 
 **Disclaimer:** This software is for educational and research purposes. Prediction market trading involves financial risk. Never trade more than you can afford to lose. Check local regulations before using prediction markets.
-# Bijaz
+# Thufir

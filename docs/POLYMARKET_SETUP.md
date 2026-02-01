@@ -1,6 +1,6 @@
 # Polymarket Setup Guide
 
-This guide walks you through setting up Bijaz to trade on Polymarket.
+This guide walks you through setting up Thufir to trade on Polymarket.
 
 ## Prerequisites
 
@@ -15,14 +15,14 @@ This guide walks you through setting up Bijaz to trade on Polymarket.
 
 ## Step 1: Create a Dedicated Wallet
 
-**Important:** Use a separate "hot wallet" for Bijaz. Never use your main wallet.
+**Important:** Use a separate "hot wallet" for Thufir. Never use your main wallet.
 
 ```bash
-# Option A: Let Bijaz create a new wallet
-bijaz wallet create
+# Option A: Let Thufir create a new wallet
+thufir wallet create
 
 # Option B: Import an existing wallet (for advanced users)
-bijaz wallet import
+thufir wallet import
 ```
 
 When creating, you'll be prompted for a password. This password:
@@ -30,13 +30,13 @@ When creating, you'll be prompted for a password. This password:
 - Is required every time you start live mode
 - Should be strong and unique (16+ characters)
 
-The wallet is saved to `~/.bijaz/keystore.json` (encrypted).
+The wallet is saved to `~/.thufir/keystore.json` (encrypted).
 
 ## Step 2: Fund Your Wallet
 
 1. Get your wallet address:
    ```bash
-   bijaz wallet status
+   thufir wallet status
    ```
 
 2. Send funds to this address on **Polygon network**:
@@ -45,16 +45,16 @@ The wallet is saved to `~/.bijaz/keystore.json` (encrypted).
 
 3. Verify the balance:
    ```bash
-   bijaz wallet status
+   thufir wallet status
    ```
 
 ## Step 3: Configure Spending Limits
 
-Edit `~/.bijaz/config.yaml`:
+Edit `~/.thufir/config.yaml`:
 
 ```yaml
 wallet:
-  keystorePath: ~/.bijaz/keystore.json
+  keystorePath: ~/.thufir/keystore.json
   limits:
     daily: 100           # Max $100/day
     perTrade: 25         # Max $25 per trade
@@ -63,8 +63,8 @@ wallet:
 
 Or use CLI:
 ```bash
-bijaz wallet limits set --daily 100 --per-trade 25 --confirmation-threshold 10
-bijaz wallet limits show
+thufir wallet limits set --daily 100 --per-trade 25 --confirmation-threshold 10
+thufir wallet limits show
 ```
 
 ## Step 4: Set Environment Variables
@@ -73,7 +73,7 @@ Add to your `.env` file or export:
 
 ```bash
 # Required for live mode
-export BIJAZ_WALLET_PASSWORD="your-strong-password"
+export THUFIR_WALLET_PASSWORD="your-strong-password"
 
 # Optional: Custom RPC (faster/more reliable)
 export POLYGON_RPC_URL="https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY"
@@ -81,7 +81,7 @@ export POLYGON_RPC_URL="https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY"
 
 ## Step 5: Enable Live Execution Mode
 
-Edit `~/.bijaz/config.yaml`:
+Edit `~/.thufir/config.yaml`:
 
 ```yaml
 execution:
@@ -92,13 +92,13 @@ execution:
 
 ```bash
 # 1. Verify wallet and connection
-bijaz wallet status
+thufir wallet status
 
 # 2. Test with paper mode first (change mode back to 'paper')
-bijaz trade buy "Some Market" YES --amount 5
+thufir trade buy "Some Market" YES --amount 5
 
 # 3. When ready, switch to live mode and test small
-bijaz trade buy "Some Market" YES --amount 1
+thufir trade buy "Some Market" YES --amount 1
 ```
 
 ## Polymarket API Details
@@ -112,7 +112,7 @@ bijaz trade buy "Some Market" YES --amount 1
 
 ### Authentication
 
-Bijaz handles authentication automatically:
+Thufir handles authentication automatically:
 
 1. **First trade**: Derives API credentials from your wallet signature
 2. **Subsequent trades**: Uses cached credentials
@@ -123,7 +123,7 @@ You don't need to manually create API keys on Polymarket.
 ### Order Flow
 
 ```
-1. Bijaz decides to trade (autonomous or manual)
+1. Thufir decides to trade (autonomous or manual)
          │
          ▼
 2. Spending limits checked (daily, per-trade)
@@ -144,7 +144,7 @@ You don't need to manually create API keys on Polymarket.
 7. Polymarket matches order on-chain
          │
          ▼
-8. Position recorded in Bijaz memory
+8. Position recorded in Thufir memory
 ```
 
 ## Execution Modes Comparison
@@ -159,7 +159,7 @@ You don't need to manually create API keys on Polymarket.
 
 ### Whitelisted Addresses
 
-Bijaz can **only** interact with these addresses (hardcoded):
+Thufir can **only** interact with these addresses (hardcoded):
 
 ```
 0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E  # CTF Exchange
@@ -185,10 +185,10 @@ See [WALLET_SECURITY.md](./WALLET_SECURITY.md) for full details.
 
 ```bash
 # Check keystore exists
-ls -la ~/.bijaz/keystore.json
+ls -la ~/.thufir/keystore.json
 
 # Create if missing
-bijaz wallet create
+thufir wallet create
 ```
 
 ### "Invalid password"
@@ -205,7 +205,7 @@ Wait for the next day (UTC reset) or increase limits in config.
 
 ### "CLOB error: Unauthorized"
 
-API credentials expired. Bijaz will auto-renew on next trade.
+API credentials expired. Thufir will auto-renew on next trade.
 
 ### "Transaction failed"
 

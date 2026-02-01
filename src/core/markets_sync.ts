@@ -1,11 +1,11 @@
 import fetch from 'node-fetch';
 
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { upsertMarketCacheBatch } from '../memory/market_cache.js';
 
 export async function syncMarketCache(
-  config: BijazConfig,
+  config: ThufirConfig,
   limit = 200,
   maxPages = 25
 ): Promise<{ stored: number }> {
@@ -54,7 +54,7 @@ export async function syncMarketCache(
 }
 
 export async function refreshMarketPrices(
-  config: BijazConfig,
+  config: ThufirConfig,
   limit = 500
 ): Promise<{ stored: number }> {
   const gammaUrl = config.polymarket.api.gamma.replace(/\/$/, '');

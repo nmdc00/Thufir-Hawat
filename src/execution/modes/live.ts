@@ -17,7 +17,7 @@ import { ethers } from 'ethers';
 
 import type { ExecutionAdapter, TradeDecision, TradeResult } from '../executor.js';
 import type { Market } from '../polymarket/markets.js';
-import type { BijazConfig } from '../../core/config.js';
+import type { ThufirConfig } from '../../core/config.js';
 import type { ApiKeyCredentials } from '../polymarket/clob.js';
 
 import { PolymarketCLOBClient, CLOBError } from '../polymarket/clob.js';
@@ -34,7 +34,7 @@ import { logWalletOperation } from '../../memory/audit.js';
 // ============================================================================
 
 export interface LiveExecutorOptions {
-  config: BijazConfig;
+  config: ThufirConfig;
   password: string;
   credentials?: ApiKeyCredentials;
 }

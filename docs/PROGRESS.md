@@ -1,10 +1,10 @@
-# Bijaz Development Progress
+# Thufir Development Progress
 
-**Last Updated:** 2026-01-27
+**Last Updated:** 2026-02-01
 
 ---
 
-## Current Status: Trading Tools Complete
+## Current Status: Trading Tools + Agentic Orchestration Complete
 
 All trading tools implemented (Phases 12-17). Tool calling works with Anthropic and OpenAI fallback.
 
@@ -20,6 +20,8 @@ All trading tools implemented (Phases 12-17). Tool calling works with Anthropic 
 | 4. Intelligence Layer | COMPLETE | RSS, NewsAPI, vector storage |
 | 5. Agent Reasoning | COMPLETE | LLM works with tool calling |
 | 5.5. Tool Calling | COMPLETE | See [TOOL_CALLING_IMPLEMENTATION.md](./TOOL_CALLING_IMPLEMENTATION.md) |
+| Agentic Orchestration | COMPLETE | Planner/reflect/critic loop integrated |
+| Mentat / Black Swan | PARTIAL | Scan/report + storage done; roles/alerts pending |
 | 9. Twitter Search | COMPLETE | Real-time Twitter + SerpAPI fallback |
 | 10. Web Search | COMPLETE | SerpAPI + Brave fallback |
 | 11. Web Fetch | COMPLETE | Readability + SSRF protection |
@@ -34,21 +36,18 @@ All trading tools implemented (Phases 12-17). Tool calling works with Anthropic 
 
 ---
 
-## Current Sprint: Trading Tools (COMPLETE)
+## Current Sprint: Agentic + Mentat (PARTIAL)
 
 ### Tasks
 
-- [x] Create `src/core/tool-schemas.ts` - Anthropic tool definitions (14 tools)
-- [x] Create `src/core/tool-executor.ts` - Tool execution logic
-- [x] Modify `src/core/llm.ts` - Add `AgenticAnthropicClient`
-- [x] Modify `src/core/conversation.ts` - Use agentic client
-- [x] Modify `src/core/agent.ts` - Pass tool context (executor, limiter)
-- [x] Create `tests/tool-calling.test.ts` - Test suite
-- [x] Update system prompt with accurate tool descriptions
-- [x] Add OpenAI tool-calling tests
-- [x] Implement trading tools (Phases 12-17)
-- [ ] E2E testing with deployed agent
-- [ ] Deploy and verify all tools work
+- [x] Agentic orchestrator loop (plan -> tool -> reflect -> critic)
+- [x] Integrations for chat/opportunities/autonomy (agent.useOrchestrator)
+- [x] Mentat storage + detectors + scan/report generators
+- [x] CLI commands: `thufir mentat scan`, `thufir mentat report`
+- [x] Surface plan/tool trace/critic notes to users (config flags)
+- [x] Wire mentat reports into agentic runtime (config flags, chat + daily report + autonomous P&L)
+- [x] Mentat role loop + monitoring alerts (gateway scheduler)
+- [ ] E2E testing + deploy verification
 
 ### Phase 9 - Real-Time Twitter Search (Complete)
 
@@ -62,14 +61,14 @@ All trading tools implemented (Phases 12-17). Tool calling works with Anthropic 
 
 See [WEB_TOOLS_IMPLEMENTATION.md](./WEB_TOOLS_IMPLEMENTATION.md)
 
-**Phase 10: Web Search**
-- [ ] Add `web_search` tool schema
-- [ ] Implement SerpAPI search (primary)
-- [ ] Implement Brave Search fallback
-- [ ] Update system prompt
-- [ ] Add tests
+**Phase 10: Web Search** (COMPLETE)
+- [x] Add `web_search` tool schema
+- [x] Implement SerpAPI search (primary)
+- [x] Implement Brave Search fallback
+- [x] Update system prompt
+- [x] Add tests
 
-**Phase 11: Web Fetch**
+**Phase 11: Web Fetch** (COMPLETE)
 - [x] Add `web_fetch` tool schema
 - [x] Install `@mozilla/readability`, `jsdom`
 - [x] Implement `fetchAndExtract()` with Readability
@@ -111,6 +110,20 @@ See [TRADING_TOOLS_IMPLEMENTATION.md](./TRADING_TOOLS_IMPLEMENTATION.md)
 ---
 
 ## Recent Changes
+
+### 2026-02-01
+- Agentic orchestrator (planner/reflect/critic) integrated behind `agent.useOrchestrator`
+- Mentat scan/report + storage + detectors implemented; CLI commands added
+- QMD memory retrieval added to orchestrator planning (when enabled)
+- Optional tool trace + critic notes appended to chat responses (config flags)
+- Optional mentat auto-scan/report appended in chat, daily reports, and autonomous P&L report (config flags)
+- Optional plan trace appended to chat responses (config flag)
+- Identity prompt modes added for token control (default: full; internal: minimal)
+- Mentat monitoring scheduler + alerts (config flags)
+- Clawdbot-style heartbeat scheduler + HEARTBEAT.md
+- Proactive search can run via heartbeat mode (config)
+- Proactive search can send direct summaries without LLM (config)
+- CLI `intel proactive --send` sends direct summaries to channels
 
 ### 2026-01-27
 - Tool calling implemented for Anthropic + OpenAI fallback

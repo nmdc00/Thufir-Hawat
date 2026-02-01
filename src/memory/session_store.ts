@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import type { ChatMessage } from '../core/llm.js';
 import type { LlmClient } from '../core/llm.js';
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 
 export interface SessionMeta {
   sessionId: string;
@@ -27,9 +27,9 @@ export class SessionStore {
   private transcriptsDir: string;
   private meta: Record<string, SessionMeta> = {};
 
-  constructor(_config: BijazConfig) {
+  constructor(_config: ThufirConfig) {
     const base =
-      _config.memory?.sessionsPath ?? join(homedir(), '.bijaz', 'sessions');
+      _config.memory?.sessionsPath ?? join(homedir(), '.thufir', 'sessions');
     this.baseDir = base;
     this.sessionsPath = join(base, 'sessions.json');
     this.transcriptsDir = join(base, 'transcripts');

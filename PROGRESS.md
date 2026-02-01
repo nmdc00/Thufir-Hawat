@@ -1,6 +1,6 @@
-# Bijaz Progress
+# Thufir Progress
 
-Last updated: 2026-01-27
+Last updated: 2026-02-01
 
 ## North Star
 Autonomous trading assistant for prediction markets with strong guardrails:
@@ -9,6 +9,27 @@ Autonomous trading assistant for prediction markets with strong guardrails:
 - Wallet safety and limits enforced at every step
 - Every prediction and trade logged for calibration
 - Full conversational interface for discussing predictions
+
+## New Design Docs (2026-01-30)
+
+These docs formalize Thufir’s next evolution: from “autonomous trader + chat” into an **agentic system** and a **fragility/black-swan detector** (mentat framing).
+
+- `BLACK_SWAN_DETECTOR.md`
+  - Mentat loop: detect **fragility and tail-risk exposure** instead of predicting events.
+  - First-class objects: `Assumption`, `Mechanism`, `FragilityCard`.
+  - `FragilityScore` and four structural detectors: leverage, coupling, illiquidity, consensus.
+  - Standard output: Mentat Report + monitoring checklist.
+
+- `AGENTIC_THUFIR.md`
+  - Agentic-first architecture: **Reason → Plan → Tool → Observe → Update → Decide**.
+  - Plan objects, tool registry, memory-before-reasoning, reflection + critic pass.
+  - Provider independence: agent loop sits above `llm-mux`.
+  - Execution modes: Chat Mode vs Agent Mode (`thufir agent run <goal>`).
+
+- `AGENT_ORCHESTRATION.md`
+  - Implementation contract / alias for the agentic-first transformation.
+  - Defines orchestration rules, tool invocation contract, multi-agent roles, and loop semantics.
+  - Should be kept in sync with `AGENTIC_THUFIR.md` (same design, implementation-focused framing).
 
 ## Plan (from Claude feedback, adjusted for autonomous trading)
 
@@ -50,7 +71,77 @@ Autonomous trading assistant for prediction markets with strong guardrails:
 - [ ] Deep prompts + specialized data sources
 - [ ] Trade only where edge exists
 
+### V7: Mentat + Agentic-First (NEW PRIORITY)
+- [x] **Agentic-first orchestration layer** (`AGENT_ORCHESTRATION.md`)
+  - Tool registry + tool invocation contract (no guessing when fetch is required)
+  - Plan objects + loop runner (Reason → Plan → Tool → Observe → Update → Decide)
+  - Reflection step after tool results
+  - Critic/self-audit pass before final output
+  - CLI agent mode: `thufir agent run <goal>`
+
+- [x] **Fragility / Black Swan Detector** (`BLACK_SWAN_DETECTOR.md`)
+  - Implemented: `Assumption`/`Mechanism`/`FragilityCard` storage + delta tracking
+  - Implemented: detector bundle + fragility score + mentat scan/report CLI
+  - Implemented: multi-agent mentat loop (Cartographer/Skeptic/Risk Officer) with merged outputs
+  - Implemented: mentat auto-scan/report appended in chat, daily reports, and autonomous P&L report (config-gated)
+  - Implemented: scheduled mentat monitoring + alerts (gateway)
+  - **Implemented: pre-trade fragility analysis + fragility-aware critic**
+  - Remaining: continuous multi-timescale monitoring beyond scheduled scans
+
+- [~] **Identity invariance enforcement**
+  - Guarantee identity injection on every LLM call regardless of provider/path
+  - Ensure tool calls and multi-agent flows cannot bypass identity prelude
+  - Remaining: audit non-user-facing LLM paths (e.g., info digest) for identity injection
+
 ## Current Work Log
+
+### 2026-02-01 (Session 11)
+- **Pre-Trade Fragility Integration**
+  - Added `runQuickFragilityScan()` for fast market-specific fragility analysis
+  - Integrated fragility scan into orchestrator trade flow (runs before `place_bet`/`trade.place`)
+  - Updated critic with fragility-aware review:
+    - New issue types: `fragility_ignored`, `tail_risk_ignored`
+    - Auto-reject high-fragility trades (>0.7) with any risk issues
+    - Stricter review for moderate fragility (>0.5)
+  - Added `TradeFragilityContext` to critic context
+  - Added `FragilitySummary` to orchestrator result
+  - Auto-display fragility trace for high-fragility trades (>0.6)
+  - Config options: `enablePreTradeFragility` (default: true), `showFragilityTrace` (default: false)
+  - Fixed pre-existing bugs: duplicate import in conversation.ts, missing `join` import in gateway/index.ts
+
+### 2026-01-31 (Session 9)
+- **Thufir rename + agentic integration**
+  - Project renamed to Thufir (bin/script/envs/config paths)
+  - Identity prelude loader + injector (THUFIR_HAWAT marker)
+  - Workspace identity updated for Thufir Hawat (AGENTS/IDENTITY/SOUL/USER)
+  - Added dot-notation tool aliases + new tools (`comments.get`, `memory.query`, `calculator`)
+  - Conversation, opportunities, autonomous scan, and autonomous manager wired to orchestrator when enabled
+  - Mentat storage tables + delta tracking implemented (assumptions/mechanisms/fragility cards)
+  - Debug enforcement added in orchestrator (identity marker + tool/iteration logging)
+
+### 2026-02-01 (Session 10)
+- **Docs + status reconciliation**
+  - Updated progress/docs to reflect agentic + mentat implementation reality
+  - Added AGENT_ORCHESTRATION.md contract doc
+  - Added optional tool trace + critic notes in chat responses (config flags)
+  - Added optional mentat auto-scan/report in chat, daily reports, and autonomous P&L report (config flags)
+  - Added optional plan trace in chat responses (config flag)
+  - Added identity prompt modes to reduce token usage (default: full; internal: minimal)
+  - Added mentat monitoring scheduler + alert channels (config flags)
+  - Implemented mentat role loop (Cartographer/Skeptic/Risk Officer)
+  - Added Clawdbot-style heartbeat scheduler + HEARTBEAT.md
+  - Wired proactive search into heartbeat mode (config `notifications.proactiveSearch.mode: heartbeat`)
+  - Added direct proactive search summaries (no LLM) to save tokens
+  - Added CLI `intel proactive --send` for direct summaries
+
+### 2026-01-30 (Session 8)
+- **Mentat + Agentic-first design formalized**
+  - Added `BLACK_SWAN_DETECTOR.md` (fragility detection + tail-risk exposure)
+  - Added `AGENTIC_THUFIR.md` (agent loop, planning, tools, reflection, critic pass)
+  - Added `AGENT_ORCHESTRATION.md` (implementation contract / alias)
+- **Next implementation target**
+  - Convert Thufir from chat-first to agentic-first: centralized tool registry + plan loop + memory retrieval before reasoning
+  - Implement fragility objects + scoring and emit Mentat reports
 
 ### 2026-01-27 (Session 7)
 - **LLM orchestration pipeline**
@@ -78,8 +169,8 @@ Autonomous trading assistant for prediction markets with strong guardrails:
   - Market normalization extracts token IDs from various API formats
   - Added `enrichWithTokenIds()` convenience method on market client
   - **New CLI commands**:
-    - `bijaz markets tokens <id>` - Fetch token IDs from CLOB for a market
-    - `bijaz markets clob-status` - Test CLOB API connectivity
+    - `thufir markets tokens <id>` - Fetch token IDs from CLOB for a market
+    - `thufir markets clob-status` - Test CLOB API connectivity
   - Fixed TypeScript errors in `stream.ts` (EventEmitter super() call)
   - All execution tests passing (8/8)
 
@@ -89,7 +180,7 @@ Autonomous trading assistant for prediction markets with strong guardrails:
 - **Intel retention pruning** + CLI preview
 - **Docs/config alignment**
 - **Intel source registry + roaming controls** (trust thresholds, social opt-in)
-- **Env setup + validation CLI** (`bijaz env init`, `bijaz env check`) + `.env.example`
+- **Env setup + validation CLI** (`thufir env init`, `thufir env check`) + `.env.example`
 
 ### 2026-01-26 (Session 4)
 - **Persistent chat memory (Clawdbot-style)** with JSONL transcripts + summaries
@@ -127,114 +218,3 @@ Autonomous trading assistant for prediction markets with strong guardrails:
     pauseOnLossStreak: 3     # Pause after N losses
     dailyReportTime: "20:00" # P&L report time
     maxTradesPerScan: 3
-  ```
-
-- **New Commands**:
-  - `/top10` or `/opportunities` - Get daily top 10 trades
-  - `/fullauto [on|off]` - Toggle autonomous execution
-  - `/pause` - Pause autonomous trading
-  - `/resume` - Resume autonomous trading
-  - `/status` - Show status and today's P&L
-  - `/report` - Full daily report
-
-- **New CLI Commands**:
-  - `bijaz top10` - Get opportunities
-  - `bijaz auto status` - Show autonomous status
-  - `bijaz auto report` - Generate daily report
-
-- Updated agent to integrate AutonomousManager
-- Updated PredictionInput to include executed/executionPrice/positionSize
-- Added autonomous_trades table for tracking auto trades
-- TypeScript compiles clean
-
-### 2026-01-26 (Session 2)
-- **Added conversational chat capability** (`src/core/conversation.ts`)
-  - Free-form discussion about future events and predictions
-  - Automatic market search when discussing topics
-  - LLM gives probability estimates with reasoning
-  - Conversation history per user
-- Added market search to Polymarket client (`searchMarkets()`)
-- Updated agent to route non-command messages to conversation handler
-- Added new commands: `/ask`, `/analyze`, `/markets`, `/clear`, `/help`
-- Updated CLI with working `bijaz chat` and `bijaz ask` commands
-- Updated README with new conversational features and planned proactive intelligence
-
-### 2026-01-26 (Session 1)
-- Implemented local SQLite initialization and schema loading.
-- Added prediction recording + listing + detail view via CLI.
-- Added config loader + logger.
-- Implemented LLM provider selection (Anthropic/OpenAI/local).
-- Added Polymarket market data client (Gamma API).
-- Added autonomous agent loop + decision engine.
-- Added Telegram polling adapter + WhatsApp Cloud API webhook adapter.
-- Added gateway server and execution adapters (paper + webhook).
-- Added watchlist helpers and wallet audit logging.
-- Updated README with autonomy, execution modes, channels, and provider options.
-- Added RSS intel pipeline + storage, CLI intel fetch/recent, and `/intel` + `/briefing` chat commands.
-- Added calibration summaries, outcome resolver, and daily briefing scheduler.
-- Implemented intel search, richer briefings, and user profile memory.
-- Added wallet keystore encryption, wallet CLI commands, and wallet loading helper.
-
-## What's Working (as of 2026-01-27)
-- [x] Conversational chat about events/markets
-- [x] Market search and analysis (`/ask`, `/analyze`, `/markets`)
-- [x] **Daily Top 10 Opportunities** (`/top10`)
-- [x] **Full autonomous mode with toggle** (`/fullauto on|off`)
-- [x] **P&L tracking and daily reports** (`/status`, `/report`)
-- [x] **Auto-pause on loss streaks**
-- [x] Autonomous scanning with LLM decisions
-- [x] Paper trading mode
-- [x] Prediction recording and calibration
-- [x] RSS intel pipeline
-- [x] NewsAPI / Twitter / Google News / Polymarket comments intel
-- [x] Semantic intel retrieval (embeddings)
-- [x] Persistent chat memory with automatic compaction
-- [x] Semantic chat memory recall
-- [x] Telegram and WhatsApp adapters
-- [x] Daily reports pushed to channels
-- [x] Scheduled outcome resolver
-- [x] Scheduled intel fetch
-- [x] Conversational intel alert setup
-- [x] Alert scoring + ranking
-- [x] Intel alerts for watchlist-related news
-- [x] Wallet keystore encryption
-- [x] CLI commands
-- [x] Portfolio/position tracking + balance reporting
-- [x] Trade ledger with realized PnL
-- [x] Market cache sync job + CLI
-- [x] Proactive search (Clawdbot-style local loop)
-- [x] Clawdbot-style session key routing (gateway + session keys)
-- [x] Agent intelligence: research planner + decision explanations
-- [x] Exposure limits enforced (per-market + per-domain)
-- [x] Ledger vs on-chain balance reconciliation (CLI)
-- [x] Daily PnL rollups (CLI)
-- [x] Market data live subscriptions (watchlist-only + staleness fallback)
-- [x] Live execution adapter (CLOB) implemented (requires live test trade)
-- [x] Multi-agent routing with per-agent session isolation (chat)
-- [x] LLM plan/execute pipeline (Claude plans, OpenAI executes)
-
-## What's Missing
-- [ ] **Live trading test** - Execute real trade on Polymarket (adapter code complete, needs testing)
-- [ ] **Position tracking from CLOB** - Query positions from CLOB API (local ledger exists)
-- [ ] Full Clawdbot fork (gateway + sessions + channels beyond Telegram/WhatsApp)
-- [ ] ChromaDB vector search (optional; SQLite embeddings now exist)
-
-## Next Steps (Priority Order)
-1) **Test live execution with real Polymarket trade**
-   - CLOB API integration: DONE
-   - Token ID resolution: DONE
-   - Order signing: DONE
-   - Next: Execute $1 test trade on testnet/mainnet
-
-2) **Add position tracking from CLOB API**
-   - Query user positions from CLOB
-   - Reconcile with local ledger
-   - Display in CLI and chat
-
-3) **Evaluate Clawdbot fork scope**
-   - Keep lightweight routing + partial isolation
-   - Decide on skills/plugin lifecycle + extra channels
-
-3) **Fork Clawdbot for proactive search**
-   - Multi-step reasoning
-   - Autonomous news monitoring

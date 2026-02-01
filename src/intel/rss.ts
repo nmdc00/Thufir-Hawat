@@ -1,6 +1,6 @@
 import Parser from 'rss-parser';
 
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 
 export interface RssItem {
   title: string;
@@ -14,7 +14,7 @@ export interface RssItem {
 export class RssFetcher {
   private parser = new Parser();
 
-  constructor(private config: BijazConfig) {}
+  constructor(private config: ThufirConfig) {}
 
   async fetch(): Promise<RssItem[]> {
     const feeds = this.config.intel?.sources?.rss?.feeds ?? [];

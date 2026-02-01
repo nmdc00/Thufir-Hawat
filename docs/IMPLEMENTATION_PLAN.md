@@ -1,34 +1,31 @@
 # Implementation Plan
 
-This document outlines the implementation phases for Bijaz, designed for handoff to developers.
+This document outlines the implementation phases for Thufir, designed for handoff to developers.
 
 ---
 
 ## Current Progress
 
-**Last Updated:** 2026-01-27
+**Last Updated:** 2026-02-01
 
 ### Completed Phases
 - [x] Phase 1: Foundation - Project setup, structure, wallet security
 - [x] Phase 2: Polymarket Integration - Market data, order execution
 - [x] Phase 3: Memory & Predictions - Prediction storage, calibration
 - [x] Phase 4: Intelligence Layer - RSS, NewsAPI, vector storage
-- [x] Phase 5: Agent Reasoning (Partial) - LLM integration, basic prompts
+- [x] Phase 5: Agent Reasoning - LLM integration, tool calling, orchestration
+- [x] Phase 5.5: Tool Calling - Implemented and live
 
 ### In Progress
-- [ ] **Phase 5.5: Tool Calling** - CRITICAL BLOCKER
-  - See: [TOOL_CALLING_IMPLEMENTATION.md](./TOOL_CALLING_IMPLEMENTATION.md)
-  - Status: Planning complete, implementation needed
-  - Issue: LLM cannot invoke tools, only receives injected context
+- [ ] **Phase 6: Channel Integration** - Telegram working, other channels pending
+- [ ] **Agentic Orchestration UX** - plan/tool trace visibility (config) + E2E verification
+- [ ] **Mentat / Black Swan Integration** - wire reports into agentic flows (config; chat + daily report + autonomous P&L) + monitoring alerts
 
 ### Blocked
-- [ ] Phase 6: Channel Integration - Blocked by tool calling
+- [ ] None
 
 ### Known Issues
-1. **LLM says "I can't access tools"**
-   - Cause: No tool calling mechanism implemented
-   - Fix: Implement Phase 5.5 (Tool Calling)
-2. **`apiBaseUrl` ignored for Anthropic provider**
+1. **`apiBaseUrl` ignored for Anthropic provider**
    - Cause: `AnthropicClient` uses SDK directly, not custom base URL
    - This is expected behavior for Anthropic
 
@@ -36,7 +33,7 @@ This document outlines the implementation phases for Bijaz, designed for handoff
 
 ## Overview
 
-Bijaz is built by combining:
+Thufir is built by combining:
 1. **Clawdbot** - Multi-channel gateway and session management
 2. **Polymarket Agents** - Market data and trade execution
 3. **Custom layers** - Memory, calibration, and intel aggregation
@@ -47,8 +44,8 @@ Bijaz is built by combining:
 
 ```bash
 # Fork Clawdbot
-gh repo fork clawdbot/clawdbot --clone bijaz
-cd bijaz
+gh repo fork clawdbot/clawdbot --clone thufir
+cd thufir
 
 # Rename and rebrand
 # Update package.json, README, etc.
@@ -116,7 +113,7 @@ src/
 │       ├── market.ts
 │       └── portfolio.ts
 │
-└── skills/                  # Bijaz-specific skills
+└── skills/                  # Thufir-specific skills
     ├── market-analysis.ts
     ├── daily-briefing.ts
     └── trade-execution.ts
@@ -181,7 +178,7 @@ Implement in order:
 - [ ] Layer structure created
 - [ ] Database schema implemented
 - [ ] Wallet security layer with full test coverage
-- [ ] Basic CLI: `bijaz wallet create`, `bijaz wallet status`
+- [ ] Basic CLI: `thufir wallet create`, `thufir wallet status`
 
 ---
 
@@ -272,9 +269,9 @@ export class PortfolioManager {
 - [ ] Polymarket API integration (read)
 - [ ] Order execution with all security checks
 - [ ] Portfolio tracking
-- [ ] CLI: `bijaz markets list`, `bijaz markets show <id>`
-- [ ] CLI: `bijaz trade buy/sell` (with confirmation)
-- [ ] CLI: `bijaz portfolio`
+- [ ] CLI: `thufir markets list`, `thufir markets show <id>`
+- [ ] CLI: `thufir trade buy/sell` (with confirmation)
+- [ ] CLI: `thufir portfolio`
 
 ---
 
@@ -336,8 +333,8 @@ export class ResolutionChecker {
 - [ ] Prediction storage and retrieval
 - [ ] Calibration calculation and storage
 - [ ] Automatic outcome resolution
-- [ ] CLI: `bijaz calibration show`
-- [ ] CLI: `bijaz predictions list`
+- [ ] CLI: `thufir calibration show`
+- [ ] CLI: `thufir predictions list`
 
 ---
 
@@ -418,7 +415,7 @@ export class IntelRetriever {
 - [ ] NewsAPI source (requires API key)
 - [ ] Vector storage with ChromaDB
 - [ ] Retrieval for market context
-- [ ] CLI: `bijaz intel status`, `bijaz intel search`
+- [ ] CLI: `thufir intel status`, `thufir intel search`
 
 ---
 
@@ -488,7 +485,7 @@ Define tools the agent can call:
 - [ ] Market analysis prompts
 - [ ] Tool definitions
 - [ ] Agent conversation loop
-- [ ] CLI: `bijaz chat`
+- [ ] CLI: `thufir chat`
 
 ---
 
@@ -518,7 +515,7 @@ Implement native Anthropic tool calling with agentic loop:
 // Fixed
 const response = await this.client.messages.create({
   model, max_tokens, system, messages,
-  tools: BIJAZ_TOOLS,  // ✅ Pass tool definitions
+  tools: THUFIR_TOOLS,  // ✅ Pass tool definitions
 });
 
 // Handle tool_use blocks
@@ -573,7 +570,7 @@ Clawdbot already supports:
 - Discord
 - Slack
 
-Bijaz-specific additions:
+Thufir-specific additions:
 - Prediction-specific commands
 - Rich market data formatting
 - Trade confirmation dialogs
@@ -620,7 +617,7 @@ intelPipeline.on('high-relevance', async (intel, markets) => {
 
 ### 6.4 Deliverables
 
-- [ ] Bijaz commands in Clawdbot gateway
+- [ ] Thufir commands in Clawdbot gateway
 - [ ] Rich message formatting
 - [ ] Trade confirmation flow
 - [ ] Daily briefing cron
@@ -723,10 +720,10 @@ pnpm install
 pnpm build
 
 # Run gateway
-pnpm bijaz gateway --verbose
+pnpm thufir gateway --verbose
 
 # In another terminal, chat
-pnpm bijaz chat
+pnpm thufir chat
 ```
 
 ---

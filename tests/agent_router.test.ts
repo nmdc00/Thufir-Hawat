@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createAgentRegistry } from '../src/gateway/agent_router.js';
 
 vi.mock('../src/core/agent.js', () => ({
-  BijazAgent: class {
+  ThufirAgent: class {
     config: unknown;
     constructor(config: unknown) {
       this.config = config;
@@ -20,7 +20,7 @@ const baseConfig = {
   wallet: { limits: { daily: 100, perTrade: 25, confirmationThreshold: 10 }, exposure: { maxPositionPercent: 20, maxDomainPercent: 40 } },
   polymarket: { api: { gamma: 'https://example.com', clob: 'https://example.com' } },
   intel: { embeddings: { enabled: false, provider: 'openai', model: 'text-embedding-3-small' }, sources: {}, roaming: { enabled: true, allowSources: [], allowTypes: [], minTrust: 'medium', socialOptIn: false }, retentionDays: 30 },
-  memory: { dbPath: '/tmp/bijaz.sqlite', sessionsPath: '/tmp/bijaz/sessions', maxHistoryMessages: 50, compactAfterTokens: 12000, keepRecentMessages: 12, retentionDays: 90, embeddings: { enabled: false, provider: 'openai', model: 'text-embedding-3-small' } },
+  memory: { dbPath: '/tmp/thufir.sqlite', sessionsPath: '/tmp/thufir/sessions', maxHistoryMessages: 50, compactAfterTokens: 12000, keepRecentMessages: 12, retentionDays: 90, embeddings: { enabled: false, provider: 'openai', model: 'text-embedding-3-small' } },
   session: { mainKey: 'main', dmScope: 'per-channel-peer', identityLinks: {} },
   channels: { telegram: { enabled: false, token: '', allowedChatIds: [], pollingInterval: 5 }, whatsapp: { enabled: false, verifyToken: '', accessToken: '', phoneNumberId: '', allowedNumbers: [] } },
   autonomy: { enabled: false, scanIntervalSeconds: 900, maxMarketsPerScan: 10, watchlistOnly: true, eventDriven: false, eventDrivenMinItems: 1, fullAuto: false, minEdge: 0.05, requireHighConfidence: false, pauseOnLossStreak: 3, dailyReportTime: '20:00', maxTradesPerScan: 3 },
@@ -44,10 +44,10 @@ describe('agent routing session isolation', () => {
     const researchAgent = registry.agents.get('research') as any;
 
     expect(mainAgent.config.memory.sessionsPath).toBe(
-      join('/tmp/bijaz/sessions', 'agents', 'main')
+      join('/tmp/thufir/sessions', 'agents', 'main')
     );
     expect(researchAgent.config.memory.sessionsPath).toBe(
-      join('/tmp/bijaz/sessions', 'agents', 'research')
+      join('/tmp/thufir/sessions', 'agents', 'research')
     );
   });
 
@@ -65,6 +65,6 @@ describe('agent routing session isolation', () => {
     const registry = createAgentRegistry(config as any, {} as any);
     const mainAgent = registry.agents.get('main') as any;
 
-    expect(mainAgent.config.memory.sessionsPath).toBe('/tmp/bijaz/sessions');
+    expect(mainAgent.config.memory.sessionsPath).toBe('/tmp/thufir/sessions');
   });
 });

@@ -1,4 +1,4 @@
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { LlmClient } from './llm.js';
 import { createLlmClient } from './llm.js';
 import { getPrediction } from '../memory/predictions.js';
@@ -7,7 +7,7 @@ import { listCalibrationSummaries } from '../memory/calibration.js';
 
 export async function explainPrediction(params: {
   predictionId: string;
-  config: BijazConfig;
+  config: ThufirConfig;
   llm?: LlmClient;
 }): Promise<string> {
   const prediction = getPrediction(params.predictionId);

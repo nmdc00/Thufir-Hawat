@@ -1,4 +1,4 @@
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 
 export interface Embedder {
   embed(texts: string[]): Promise<number[][]>;
@@ -11,7 +11,7 @@ interface EmbedderOptions {
 
 type EmbeddingScope = 'intel' | 'memory';
 
-export function createEmbedder(config: BijazConfig, scope: EmbeddingScope): Embedder {
+export function createEmbedder(config: ThufirConfig, scope: EmbeddingScope): Embedder {
   const settings = scope === 'intel' ? config.intel?.embeddings : config.memory?.embeddings;
   const provider = settings?.provider ?? 'openai';
   const model = settings?.model;
@@ -28,7 +28,7 @@ export class OpenAiEmbedder implements Embedder {
   private model: string;
   private baseUrl: string;
 
-  constructor(config: BijazConfig, options?: EmbedderOptions) {
+  constructor(config: ThufirConfig, options?: EmbedderOptions) {
     this.apiKey = process.env.OPENAI_API_KEY ?? '';
     const fallbackModel =
       config.intel?.embeddings?.model ??
@@ -76,7 +76,7 @@ export class GoogleGeminiEmbedder implements Embedder {
   private model: string;
   private baseUrl: string;
 
-  constructor(config: BijazConfig, options?: EmbedderOptions) {
+  constructor(config: ThufirConfig, options?: EmbedderOptions) {
     this.apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? '';
     this.model =
       options?.model ??

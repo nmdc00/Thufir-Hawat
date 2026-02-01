@@ -8,7 +8,7 @@
 
 ## Overview
 
-Add two web tools to give Bijaz real-time internet access:
+Add two web tools to give Thufir real-time internet access:
 
 | Tool | Purpose | Provider |
 |------|---------|----------|
@@ -284,7 +284,7 @@ async function fetchAndExtract(
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Bijaz/1.0; +https://github.com/bijaz)',
+        'User-Agent': 'Mozilla/5.0 (compatible; Thufir/1.0; +https://github.com/thufir)',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
       redirect: 'follow',
@@ -449,7 +449,7 @@ LLM: [calls web_search for "AI regulation 2026"]
 
 ## After Implementation
 
-Bijaz will have **8 tools**:
+Thufir will have **8 tools**:
 
 | Tool | Purpose |
 |------|---------|

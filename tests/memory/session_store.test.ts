@@ -7,7 +7,7 @@ import { SessionStore } from '../../src/memory/session_store.js';
 
 describe('SessionStore', () => {
   it('creates sessions and stores summaries', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'bijaz-sessions-'));
+    const dir = mkdtempSync(join(tmpdir(), 'thufir-sessions-'));
     const config = {
       memory: { sessionsPath: dir, maxHistoryMessages: 2, compactAfterTokens: 10, keepRecentMessages: 1 },
     } as any;
@@ -51,7 +51,7 @@ describe('SessionStore', () => {
   });
 
   it('lists sessions', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'bijaz-sessions-'));
+    const dir = mkdtempSync(join(tmpdir(), 'thufir-sessions-'));
     const config = { memory: { sessionsPath: dir } } as any;
     const store = new SessionStore(config);
     store.getSessionId('user-a');

@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 
-import type { BijazConfig } from '../../core/config.js';
+import type { ThufirConfig } from '../../core/config.js';
 import { PolymarketCLOBClient } from './clob.js';
 import type { MarketCacheRecord } from '../../memory/market_cache.js';
 import { listMarketCache, searchMarketCache } from '../../memory/market_cache.js';
@@ -38,7 +38,7 @@ export interface MarketPageResult {
 export class PolymarketMarketClient {
   private gammaUrl: string;
 
-  constructor(config: BijazConfig) {
+  constructor(config: ThufirConfig) {
     this.gammaUrl = config.polymarket.api.gamma.replace(/\/$/, '');
   }
 

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
 
-const DEFAULT_DB_PATH = join(homedir(), '.bijaz', 'bijaz.sqlite');
+const DEFAULT_DB_PATH = join(homedir(), '.thufir', 'thufir.sqlite');
 const INSTANCES = new Map<string, Database.Database>();
 
 function getSchemaSql(): string {
@@ -24,7 +24,7 @@ function applySchema(db: Database.Database): void {
 }
 
 export function openDatabase(dbPath?: string): Database.Database {
-  const resolvedPath = dbPath ?? process.env.BIJAZ_DB_PATH ?? DEFAULT_DB_PATH;
+  const resolvedPath = dbPath ?? process.env.THUFIR_DB_PATH ?? DEFAULT_DB_PATH;
 
   const existing = INSTANCES.get(resolvedPath);
   if (existing) {

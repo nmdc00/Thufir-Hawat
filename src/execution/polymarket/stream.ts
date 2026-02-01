@@ -1,7 +1,7 @@
 import { EventEmitter } from 'eventemitter3';
 import WebSocket from 'ws';
 
-import type { BijazConfig } from '../../core/config.js';
+import type { ThufirConfig } from '../../core/config.js';
 
 export interface MarketUpdate {
   marketId: string;
@@ -58,7 +58,7 @@ export class PolymarketStreamClient extends EventEmitter<StreamEvents> {
   private subscribedMarkets: string[] = [];
   private lastUpdate = new Map<string, number>();
 
-  constructor(config: BijazConfig) {
+  constructor(config: ThufirConfig) {
     super();
     const url =
       config.polymarket?.stream?.wsUrl ??

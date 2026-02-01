@@ -1,12 +1,12 @@
 /**
  * Conversational Chat Handler
  *
- * Enables free-form conversation with Bijaz about prediction markets,
+ * Enables free-form conversation with Thufir about prediction markets,
  * future events, opinions, and market analysis.
  */
 
 import type { LlmClient, ChatMessage } from './llm.js';
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { Market, PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listPredictions } from '../memory/predictions.js';
@@ -30,10 +30,18 @@ import {
   OrchestratorClient,
   createAgenticExecutorClient,
   isRateLimitError,
-  loadBijazIdentity,
   wrapWithLimiter,
   shouldUseExecutorModel,
 } from './llm.js';
+import { loadIdentityPrelude } from '../agent/identity/identity.js';
+import { runOrchestrator } from '../agent/orchestrator/orchestrator.js';
+import { AgentToolRegistry } from '../agent/tools/registry.js';
+import { registerAllTools } from '../agent/tools/adapters/index.js';
+import { loadThufirIdentity } from '../agent/identity/identity.js';
+import type { AgentIdentity } from '../agent/identity/types.js';
+import type { CriticResult } from '../agent/critic/types.js';
+import type { ToolExecution } from '../agent/tools/types.js';
+import type { AgentPlan } from '../agent/planning/types.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 import { executeToolCall } from './tool-executor.js';
 import { Logger } from './logger.js';
@@ -53,7 +61,7 @@ const SYSTEM_PROMPT_BASE = `## Operating Rules
 - Be conversational, not robotic - use markdown when helpful`;
 
 
-const BIJAZ_QUOTES = [
+const THUFIR_QUOTES = [
   "I don't speak... I operate a machine called language.",
   "I'm weak of muscle, but strong of mouth; cheap to feed, but costly to fill.",
   "There's but a thin line between many an enemy and many a friend.",
@@ -65,8 +73,8 @@ const BIJAZ_QUOTES = [
 ];
 
 const PERSONALITY_MODES: Record<string, { label: string; instruction: string }> = {
-  bijaz: {
-    label: 'Bijaz (Dune oracle)',
+  thufir: {
+    label: 'Thufir (Dune oracle)',
     instruction:
       'Adopt a Dune-inspired oracle voice: concise, calm, prescient, and cryptic. Use occasional riddling phrasing or light rhyme, but keep the answer clear and actionable. Sound incisive and worldly, with measured certainty. Avoid slang and avoid roleplay. Ground claims in evidence. You may use at most one short quote per reply, and only if it fits.',
   },
@@ -75,7 +83,7 @@ const PERSONALITY_MODES: Record<string, { label: string; instruction: string }> 
 /**
  * Build context about the user and their prediction history
  */
-function buildUserContext(userId: string, _config: BijazConfig): string {
+function buildUserContext(userId: string, _config: ThufirConfig): string {
   const lines: string[] = [];
 
   // User profile
@@ -164,7 +172,7 @@ function buildIntelContext(): string {
   return lines.join('\n');
 }
 
-async function buildSemanticIntelContext(message: string, config: BijazConfig): Promise<string> {
+async function buildSemanticIntelContext(message: string, config: ThufirConfig): Promise<string> {
   if (!config.intel?.embeddings?.enabled) {
     return '';
   }
@@ -229,16 +237,18 @@ export class ConversationHandler {
   private agenticLlm?: LlmClient;
   private agenticOpenAi?: LlmClient;
   private marketClient: PolymarketMarketClient;
-  private config: BijazConfig;
+  private config: ThufirConfig;
   private sessions: SessionStore;
   private chatVectorStore: ChatVectorStore;
   private logger?: Logger;
   private toolContext: ToolExecutorContext;
+  private orchestratorRegistry?: AgentToolRegistry;
+  private orchestratorIdentity?: AgentIdentity;
 
   constructor(
     llm: LlmClient,
     marketClient: PolymarketMarketClient,
-    config: BijazConfig,
+    config: ThufirConfig,
     infoLlm?: LlmClient,
     toolContext?: ToolExecutorContext,
     logger?: Logger
@@ -271,6 +281,25 @@ export class ConversationHandler {
       const fallback = this.agenticLlm ?? this.agenticOpenAi;
       this.agenticLlm = new OrchestratorClient(this.llm, executor, fallback, this.logger);
     }
+
+    if (config.agent?.useOrchestrator) {
+      const registry = new AgentToolRegistry();
+      registerAllTools(registry);
+      this.orchestratorRegistry = registry;
+      this.orchestratorIdentity = loadThufirIdentity({
+        workspacePath: config.agent?.workspace,
+      }).identity;
+    }
+  }
+
+  private async getMemoryContextForOrchestrator(userId: string, message: string): Promise<string | null> {
+    const summary = this.sessions.getSummary(userId);
+    const semanticChatContext = await this.buildSemanticChatContext(message, userId);
+    const sections = [
+      summary ? `## Conversation Summary\n${summary}` : '',
+      semanticChatContext,
+    ].filter(Boolean);
+    return sections.length > 0 ? sections.join('\n') : null;
   }
 
   /**
@@ -280,6 +309,78 @@ export class ConversationHandler {
     const alertResponse = await this.handleIntelAlertSetup(userId, message);
     if (alertResponse) {
       return alertResponse;
+    }
+
+    if (this.config.agent?.useOrchestrator && this.orchestratorRegistry && this.orchestratorIdentity) {
+      const memorySystem = {
+        getRelevantContext: (query: string) => this.getMemoryContextForOrchestrator(userId, query),
+      };
+
+      const tradeToolNames = new Set(['place_bet', 'trade.place']);
+      const autoApproveTrades = Boolean(this.config.autonomy?.fullAuto);
+
+      const result = await runOrchestrator(message, {
+        llm: this.llm,
+        toolRegistry: this.orchestratorRegistry,
+        identity: this.orchestratorIdentity,
+        toolContext: this.toolContext,
+        memorySystem,
+        onConfirmation: async (_prompt, toolName) => {
+          if (tradeToolNames.has(toolName)) {
+            return autoApproveTrades;
+          }
+          return false;
+        },
+      });
+
+      let response = this.maybeAttachOrchestratorNotes(
+        result.response,
+        result.state.toolExecutions,
+        result.state.criticResult,
+        result.state.plan,
+        result.summary.fragility
+      );
+      response = await this.maybeAttachMentatReport(response, result.state.mode);
+
+      if (!response || response.trim() === '') {
+        throw new Error('Orchestrator returned empty response');
+      }
+
+      this.sessions.appendEntry(userId, {
+        type: 'message',
+        role: 'user',
+        content: message,
+        timestamp: new Date().toISOString(),
+      });
+      this.sessions.appendEntry(userId, {
+        type: 'message',
+        role: 'assistant',
+        content: response,
+        timestamp: new Date().toISOString(),
+      });
+
+      const sessionId = this.sessions.getSessionId(userId);
+      const userMessageId = storeChatMessage({
+        sessionId,
+        role: 'user',
+        content: message,
+      });
+      const assistantMessageId = storeChatMessage({
+        sessionId,
+        role: 'assistant',
+        content: response,
+      });
+
+      await this.chatVectorStore.add({
+        id: userMessageId,
+        text: message,
+      });
+      await this.chatVectorStore.add({
+        id: assistantMessageId,
+        text: response,
+      });
+
+      return response;
     }
 
     const forcedToolContext = await this.runForcedTooling(message);
@@ -464,9 +565,16 @@ Context:
 ${contextBlock}`.trim();
 
     try {
+      const identityPrelude = loadIdentityPrelude({
+        workspacePath: this.config.agent?.workspace,
+        promptMode: this.config.agent?.internalPromptMode ?? 'minimal',
+      }).prelude;
+      const systemPrompt = identityPrelude
+        ? `${identityPrelude}\n\n---\n\nYou are a concise information gatherer.`
+        : 'You are a concise information gatherer.';
       const response = await this.infoLlm.complete(
         [
-          { role: 'system', content: 'You are a concise information gatherer.' },
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: prompt },
         ],
         { temperature: 0.1 }
@@ -486,7 +594,10 @@ ${contextBlock}`.trim();
   private getSystemPrompt(userId: string): string {
     // Moltbot pattern: Identity FIRST, then rules
     // This ensures identity anchors the context before anything else
-    const workspaceIdentity = loadBijazIdentity(this.config);
+    const workspaceIdentity = loadIdentityPrelude({
+      workspacePath: this.config.agent?.workspace,
+      promptMode: this.config.agent?.identityPromptMode ?? 'full',
+    }).prelude;
 
     // Identity comes FIRST - this is the critical difference from before
     let systemPrompt = workspaceIdentity
@@ -497,7 +608,7 @@ ${contextBlock}`.trim();
     if (typeof personality === 'string') {
       const mode = PERSONALITY_MODES[personality];
       if (mode) {
-        const quotes = BIJAZ_QUOTES.map((quote) => `- "${quote}"`).join('\n');
+        const quotes = THUFIR_QUOTES.map((quote) => `- "${quote}"`).join('\n');
         return `${systemPrompt}\n\n## Personality\n${mode.instruction}\n\n## Quote Bank (optional)\n${quotes}`;
       }
     }
@@ -689,6 +800,156 @@ ${contextBlock}`.trim();
     return null;
   }
 
+  private formatToolTrace(toolExecutions: ToolExecution[]): string {
+    if (toolExecutions.length === 0) {
+      return 'No tools called.';
+    }
+
+    const lines = toolExecutions.map((exec) => {
+      const status = exec.result.success ? 'ok' : 'error';
+      const cached = exec.cached ? 'cached' : 'live';
+      return `- ${exec.toolName} (${status}, ${cached}, ${exec.durationMs}ms)`;
+    });
+
+    return lines.join('\n');
+  }
+
+  private formatCriticNotes(criticResult: CriticResult | null): string {
+    if (!criticResult) {
+      return 'Critic not run.';
+    }
+
+    const lines: string[] = [];
+    lines.push(`Approved: ${criticResult.approved ? 'yes' : 'no'}`);
+    lines.push(`Assessment: ${criticResult.assessment}`);
+    if (criticResult.issues.length === 0) {
+      lines.push('Issues: none');
+      return lines.join('\n');
+    }
+
+    lines.push('Issues:');
+    for (const issue of criticResult.issues) {
+      const detail = issue.suggestion ? ` (fix: ${issue.suggestion})` : '';
+      lines.push(`- [${issue.severity}] ${issue.type}: ${issue.description}${detail}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  private formatPlanTrace(plan: AgentPlan | null): string {
+    if (!plan) {
+      return 'No plan available.';
+    }
+
+    const lines: string[] = [];
+    lines.push(`Goal: ${plan.goal}`);
+    lines.push(`Confidence: ${(plan.confidence * 100).toFixed(0)}%`);
+    lines.push(`Revisions: ${plan.revisionCount}`);
+    if (plan.blockers.length > 0) {
+      lines.push(`Blockers: ${plan.blockers.join('; ')}`);
+    }
+    lines.push('Steps:');
+    for (const step of plan.steps) {
+      const tool = step.requiresTool ? ` tool=${step.toolName ?? 'unknown'}` : '';
+      lines.push(`- [${step.status}] ${step.description}${tool}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  private maybeAttachOrchestratorNotes(
+    response: string,
+    toolExecutions: ToolExecution[],
+    criticResult: CriticResult | null,
+    plan: AgentPlan | null,
+    fragility?: {
+      fragilityScore: number;
+      riskSignalCount: number;
+      fragilityCardCount: number;
+      topRiskSignals: string[];
+      highFragility: boolean;
+    }
+  ): string {
+    const sections: string[] = [];
+    if (this.config.agent?.showPlanTrace) {
+      sections.push(`## Plan Trace\n${this.formatPlanTrace(plan)}`);
+    }
+    if (this.config.agent?.showToolTrace) {
+      sections.push(`## Tool Trace\n${this.formatToolTrace(toolExecutions)}`);
+    }
+    if (this.config.agent?.showCriticNotes) {
+      sections.push(`## Critic Notes\n${this.formatCriticNotes(criticResult)}`);
+    }
+    // Always show fragility for high-fragility trades, or if showFragilityTrace is enabled
+    if (fragility && (fragility.highFragility || this.config.agent?.showFragilityTrace)) {
+      sections.push(`## Fragility Analysis\n${this.formatFragilityTrace(fragility)}`);
+    }
+    if (sections.length === 0) {
+      return response;
+    }
+    return `${response}\n\n---\n\n${sections.join('\n\n')}`;
+  }
+
+  private formatFragilityTrace(fragility: {
+    fragilityScore: number;
+    riskSignalCount: number;
+    fragilityCardCount: number;
+    topRiskSignals: string[];
+    highFragility: boolean;
+  }): string {
+    const lines: string[] = [];
+    const scorePercent = (fragility.fragilityScore * 100).toFixed(0);
+    const warning = fragility.highFragility ? ' ⚠️ HIGH' : '';
+    lines.push(`Fragility Score: ${scorePercent}%${warning}`);
+    lines.push(`Risk Signals: ${fragility.riskSignalCount}`);
+    lines.push(`Fragility Cards: ${fragility.fragilityCardCount}`);
+
+    if (fragility.topRiskSignals.length > 0) {
+      lines.push('');
+      lines.push('Top Risks:');
+      for (const signal of fragility.topRiskSignals) {
+        lines.push(`- ${signal}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  private async maybeAttachMentatReport(
+    response: string,
+    mode: string
+  ): Promise<string> {
+    if (!this.config.agent?.mentatAutoScan || mode !== 'mentat') {
+      return response;
+    }
+
+    try {
+      const { runMentatScan } = await import('../mentat/scan.js');
+      const { generateMentatReport, formatMentatReport } = await import('../mentat/report.js');
+
+      const scan = await runMentatScan({
+        system: this.config.agent?.mentatSystem ?? 'Polymarket',
+        llm: this.llm,
+        marketClient: this.marketClient,
+        marketQuery: this.config.agent?.mentatMarketQuery,
+        limit: this.config.agent?.mentatMarketLimit,
+        intelLimit: this.config.agent?.mentatIntelLimit,
+      });
+
+      const report = generateMentatReport({
+        system: scan.system,
+        detectors: scan.detectors,
+      });
+
+      return `${response}\n\n---\n\n${formatMentatReport(report)}`;
+    } catch (error) {
+      this.logger?.warn(
+        `Mentat auto-scan failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+      return response;
+    }
+  }
+
   private applyIntelAlertConfig(settings: {
     watchlistOnly: boolean;
     includeKeywords: string[];
@@ -697,7 +958,7 @@ ${contextBlock}`.trim();
   }): boolean {
     try {
       const path =
-        process.env.BIJAZ_CONFIG_PATH ?? join(homedir(), '.bijaz', 'config.yaml');
+        process.env.THUFIR_CONFIG_PATH ?? join(homedir(), '.thufir', 'config.yaml');
       if (!existsSync(path)) {
         return false;
       }

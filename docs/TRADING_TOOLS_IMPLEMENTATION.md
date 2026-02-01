@@ -8,7 +8,7 @@
 
 ## Overview
 
-Add tools to transform Bijaz from a research assistant into an autonomous trader:
+Add tools to transform Thufir from a research assistant into an autonomous trader:
 
 | Tool | Purpose | Risk Level |
 |------|---------|------------|
@@ -306,7 +306,7 @@ Update `ToolExecutorContext` to include executor:
 
 ```typescript
 export interface ToolExecutorContext {
-  config: BijazConfig;
+  config: ThufirConfig;
   marketClient: PolymarketMarketClient;
   executor?: ExecutionAdapter;  // Add this
 }
@@ -829,7 +829,7 @@ You have access to real money. Treat it with respect:
 
 ## After Implementation
 
-Bijaz will have **14 tools**:
+Thufir will have **14 tools**:
 
 | Category | Tools |
 |----------|-------|

@@ -1,4 +1,4 @@
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 import { openDatabase } from './db.js';
 import { createEmbedder, type Embedder } from '../intel/embeddings.js';
 
@@ -11,7 +11,7 @@ export class ChatVectorStore {
   private enabled: boolean;
   private embedder: Embedder;
 
-  constructor(config: BijazConfig, embedder?: Embedder) {
+  constructor(config: ThufirConfig, embedder?: Embedder) {
     this.enabled = config.memory?.embeddings?.enabled ?? false;
     this.embedder = embedder ?? createEmbedder(config, 'memory');
   }

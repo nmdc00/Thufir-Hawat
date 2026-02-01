@@ -1,5 +1,5 @@
-# Bijaz Default Configuration
-# Copy to ~/.bijaz/config.yaml and customize
+# Thufir Default Configuration
+# Copy to ~/.thufir/config.yaml and customize
 
 # Gateway settings (inherited from Clawdbot)
 gateway:
@@ -18,6 +18,18 @@ agent:
   executorModel: gpt-5.2
   executorProvider: openai
   useExecutorModel: false
+  useOrchestrator: false
+  showToolTrace: false
+  showCriticNotes: false
+  showPlanTrace: false
+  identityPromptMode: full
+  internalPromptMode: minimal
+  mentatAutoScan: false
+  mentatSystem: Polymarket
+  # Optional filters for mentat auto-scan
+  # mentatMarketQuery: "macro"
+  # mentatMarketLimit: 25
+  # mentatIntelLimit: 40
   # Fallback model (faster, cheaper)
   fallbackModel: claude-3-5-haiku-20241022
   # Model provider: anthropic | openai | local
@@ -28,14 +40,14 @@ agent:
   useProxy: false
   proxyBaseUrl: http://localhost:8317
   # Workspace directory
-  workspace: ~/.bijaz
+  workspace: ~/.thufir
   # Maximum thinking level
   thinkingLevel: high
 
 # Wallet configuration
 wallet:
   # Encrypted keystore location
-  keystorePath: ~/.bijaz/keystore.json
+  keystorePath: ~/.thufir/keystore.json
 
   # Spending limits (USD)
   limits:
@@ -109,8 +121,8 @@ autonomy:
 
 # Memory persistence
 memory:
-  dbPath: ~/.bijaz/bijaz.sqlite
-  sessionsPath: ~/.bijaz/sessions
+  dbPath: ~/.thufir/thufir.sqlite
+  sessionsPath: ~/.thufir/sessions
   maxHistoryMessages: 50
   compactAfterTokens: 12000
   keepRecentMessages: 12
@@ -168,12 +180,19 @@ notifications:
     # intervalSeconds: 900
   proactiveSearch:
     enabled: false
+    mode: schedule
     time: "07:30"
     maxQueries: 8
     watchlistLimit: 20
     useLlm: true
     recentIntelLimit: 25
     extraQueries: []
+    channels: []
+  heartbeat:
+    enabled: false
+    intervalMinutes: 30
+    channels: []
+    target: last
   intelAlerts:
     enabled: false
     channels: []
@@ -201,6 +220,38 @@ notifications:
     showScore: false
     showReasons: false
     entityAliases: {}
+  mentat:
+    enabled: false
+    time: "09:00"
+    # intervalMinutes: 60
+    channels: []
+    system: Polymarket
+    # marketQuery: "macro"
+    marketLimit: 25
+    intelLimit: 40
+    minOverallScore: 0.7
+    minDeltaScore: 0.15
+
+# QMD local knowledge search
+# QMD provides hybrid search (BM25 + vector + LLM reranking) for local knowledge
+qmd:
+  enabled: true
+  knowledgePath: ~/.thufir/knowledge
+  collections:
+    - name: thufir-research
+      description: Web search results and articles for prediction market research
+    - name: thufir-intel
+      description: News, social media intel, market commentary
+    - name: thufir-markets
+      description: Market analysis and trading notes
+  # Auto-index web search results
+  autoIndexWebSearch: true
+  # Auto-index fetched web pages
+  autoIndexWebFetch: false
+  # Periodic embedding update schedule
+  embedSchedule:
+    enabled: true
+    intervalMinutes: 60  # Run qmd embed every hour
 
 # Intel sources
 intel:
