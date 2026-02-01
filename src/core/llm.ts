@@ -1249,12 +1249,29 @@ export class FallbackLlmClient implements LlmClient {
   }
 }
 
+function extractErrorMessage(error: unknown): string {
+  if (!error) return '';
+  const err = error as {
+    message?: string;
+    error?: { message?: string; error?: { message?: string } };
+    response?: { data?: { error?: { message?: string } } };
+  };
+  return [
+    err.message,
+    err.error?.message,
+    err.error?.error?.message,
+    err.response?.data?.error?.message,
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .join(' ');
+}
+
 export function isRateLimitError(error: unknown): boolean {
   const err = error as { status?: number; message?: string };
   if (err?.status && err.status >= 500 && err.status <= 599) return true;
   if (err?.status === 429) return true;
   if (err?.status === 402) return true;
-  const message = (err?.message ?? '').toLowerCase();
+  const message = extractErrorMessage(error).toLowerCase();
   return (
     message.includes('rate limit') ||
     message.includes('too many requests') ||
