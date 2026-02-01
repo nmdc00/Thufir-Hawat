@@ -1,72 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk';
 import fetch from 'node-fetch';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 
-import type { BijazConfig } from './config.js';
-import { BIJAZ_TOOLS } from './tool-schemas.js';
+import type { ThufirConfig } from './config.js';
+import { THUFIR_TOOLS } from './tool-schemas.js';
 import { executeToolCall, type ToolExecutorContext } from './tool-executor.js';
 import { Logger } from './logger.js';
+import {
+  loadIdentityPrelude,
+  injectIdentity,
+  clearIdentityCache as clearIdentityPreludeCache,
+} from '../agent/identity/identity.js';
 
-/**
- * Centralized identity loader - used by ALL LLM code paths.
- * This is the Moltbot pattern: identity is injected everywhere, not just conversation.
- */
-let cachedIdentity: string | null = null;
-
-export function loadBijazIdentity(config?: BijazConfig): string {
-  if (cachedIdentity !== null) {
-    return cachedIdentity;
-  }
-
-  // Check multiple paths in priority order:
-  // 1. Config workspace path
-  // 2. ~/.bijaz/
-  // 3. Repo workspace/ directory (for development)
-  const workspacePaths = [
-    config?.agent?.workspace?.replace('~', homedir()),
-    join(homedir(), '.bijaz'),
-    join(process.cwd(), 'workspace'),
-  ].filter(Boolean) as string[];
-
-  // AGENTS.md (bootstrap) MUST come first, then identity files
-  const identityFiles = ['AGENTS.md', 'IDENTITY.md', 'SOUL.md'];
-  const sections: string[] = [];
-
-  for (const workspacePath of workspacePaths) {
-    if (sections.length > 0) break; // Found files, stop looking
-
-    for (const filename of identityFiles) {
-      const filepath = join(workspacePath, filename);
-      if (existsSync(filepath)) {
-        try {
-          const content = readFileSync(filepath, 'utf-8').trim();
-          if (content) {
-            sections.push(content);
-          }
-        } catch {
-          // Skip unreadable files
-        }
-      }
-    }
-  }
-
-  // Fallback if no workspace files exist
-  if (sections.length === 0) {
-    cachedIdentity = `# Bijaz
-
-I am Bijaz, an AI prediction market companion. When asked who I am, I always identify as Bijaz - never as Claude, GPT, Codex, or any other AI assistant name.`;
-    return cachedIdentity;
-  }
-
-  cachedIdentity = sections.join('\n\n---\n\n');
-  return cachedIdentity;
-}
-
-export function clearIdentityCache(): void {
-  cachedIdentity = null;
-}
+export const clearIdentityCache = clearIdentityPreludeCache;
 import type {
   ContentBlock,
   MessageParam,
@@ -139,15 +84,15 @@ class LimitedLlmClient implements LlmClient {
 }
 
 const globalLimiter = new LlmQueue(
-  Math.max(1, Number(process.env.BIJAZ_LLM_CONCURRENCY ?? 1)),
-  Math.max(0, Number(process.env.BIJAZ_LLM_MIN_DELAY_MS ?? 0))
+  Math.max(1, Number(process.env.THUFIR_LLM_CONCURRENCY ?? 1)),
+  Math.max(0, Number(process.env.THUFIR_LLM_MIN_DELAY_MS ?? 0))
 );
 
 export function wrapWithLimiter(client: LlmClient): LlmClient {
   return new LimitedLlmClient(client, globalLimiter);
 }
 
-export function createLlmClient(config: BijazConfig): LlmClient {
+export function createLlmClient(config: ThufirConfig): LlmClient {
   switch (config.agent.provider) {
     case 'anthropic':
       return wrapWithLimiter(createAnthropicClientWithFallback(config));
@@ -161,14 +106,14 @@ export function createLlmClient(config: BijazConfig): LlmClient {
 }
 
 export function createOpenAiClient(
-  config: BijazConfig,
+  config: ThufirConfig,
   modelOverride?: string
 ): LlmClient {
   return wrapWithLimiter(new OpenAiClient(config, modelOverride));
 }
 
 export function createExecutorClient(
-  config: BijazConfig,
+  config: ThufirConfig,
   modelOverride?: string,
   providerOverride?: 'anthropic' | 'openai' | 'local'
 ): LlmClient {
@@ -190,7 +135,7 @@ export function createExecutorClient(
 }
 
 export function createAgenticExecutorClient(
-  config: BijazConfig,
+  config: ThufirConfig,
   toolContext: ToolExecutorContext,
   modelOverride?: string
 ): LlmClient {
@@ -209,8 +154,8 @@ export function createAgenticExecutorClient(
   return wrapWithLimiter(new AgenticOpenAiClient(config, toolContext, model));
 }
 
-export function shouldUseExecutorModel(config: BijazConfig): boolean {
-  if (!config.agent.useExecutorModel) {
+export function shouldUseExecutorModel(config: ThufirConfig): boolean {
+  if (!config.agent || !config.agent.useExecutorModel) {
     return false;
   }
 
@@ -226,14 +171,14 @@ export function shouldUseExecutorModel(config: BijazConfig): boolean {
   return baseProvider !== executorProvider || baseModel !== executorModel;
 }
 
-function resolveOpenAiBaseUrl(config: BijazConfig): string {
+function resolveOpenAiBaseUrl(config: ThufirConfig): string {
   if (config.agent.useProxy) {
     return config.agent.proxyBaseUrl;
   }
   return config.agent.apiBaseUrl ?? 'https://api.openai.com';
 }
 
-function resolveAnthropicBaseUrl(config: BijazConfig): string | undefined {
+function resolveAnthropicBaseUrl(config: ThufirConfig): string | undefined {
   if (config.agent.useProxy) {
     return config.agent.proxyBaseUrl;
   }
@@ -250,7 +195,7 @@ type ExecutionPlan = {
   context?: Record<string, unknown>;
 };
 
-const TOOL_LIST = BIJAZ_TOOLS.map((tool) => `- ${tool.name}: ${tool.description}`).join(
+const TOOL_LIST = THUFIR_TOOLS.map((tool) => `- ${tool.name}: ${tool.description}`).join(
   '\n'
 );
 
@@ -268,7 +213,7 @@ ${TOOL_LIST}
 Do NOT execute tools yourself. Only plan which tools are needed and in what order.
 `.trim();
 
-// BIJAZ_IDENTITY_OVERRIDE removed - now using loadBijazIdentity() for all code paths
+// THUFIR_IDENTITY_OVERRIDE removed - now using identity prelude for all code paths
 
 const EXECUTOR_PROMPT = `
 You are an execution agent. Execute the provided plan using tool calls as needed.
@@ -439,7 +384,7 @@ export class AgenticAnthropicClient implements LlmClient {
   private toolContext: ToolExecutorContext;
 
   constructor(
-    config: BijazConfig,
+    config: ThufirConfig,
     toolContext: ToolExecutorContext,
     modelOverride?: string
   ) {
@@ -474,7 +419,7 @@ export class AgenticAnthropicClient implements LlmClient {
         temperature,
         system,
         messages: anthropicMessages,
-        tools: BIJAZ_TOOLS,
+        tools: THUFIR_TOOLS,
       });
 
       const toolUseBlocks = response.content.filter(
@@ -600,7 +545,7 @@ export class AgenticOpenAiClient implements LlmClient {
   private useResponsesApi: boolean;
 
   constructor(
-    config: BijazConfig,
+    config: ThufirConfig,
     toolContext: ToolExecutorContext,
     modelOverride?: string
   ) {
@@ -615,16 +560,20 @@ export class AgenticOpenAiClient implements LlmClient {
     const maxIterations = options?.maxToolCalls ?? 6;
     const temperature = options?.temperature ?? 0.2;
 
-    const openaiMessages: OpenAiMessage[] = messages.map((msg) => ({
+    let openaiMessages: OpenAiMessage[] = messages.map((msg) => ({
       role: msg.role,
       content: msg.content,
     }));
     if (this.useResponsesApi) {
+      const prelude = loadIdentityPrelude({
+        workspacePath: this.toolContext.config.agent?.workspace,
+        promptMode: this.toolContext.config.agent?.identityPromptMode ?? 'full',
+      }).prelude;
       // Inject workspace identity at the start (Moltbot pattern)
-      openaiMessages.unshift({ role: 'system', content: loadBijazIdentity() });
+      openaiMessages = injectIdentity(openaiMessages, prelude);
     }
 
-    const tools: OpenAiTool[] = BIJAZ_TOOLS.map((tool) => ({
+    const tools: OpenAiTool[] = THUFIR_TOOLS.map((tool) => ({
       type: 'function',
       function: {
         name: tool.name,
@@ -658,7 +607,7 @@ export class AgenticOpenAiClient implements LlmClient {
                           }))
                         : [{ type: 'text', text: msg.content ?? '' }],
                   })),
-                  tools: BIJAZ_TOOLS.map((tool) => ({
+                  tools: THUFIR_TOOLS.map((tool) => ({
                     type: 'function',
                     name: tool.name,
                     description: tool.description,
@@ -802,7 +751,7 @@ class AnthropicClient implements LlmClient {
   private client: Anthropic;
   private model: string;
 
-  constructor(config: BijazConfig, modelOverride?: string) {
+  constructor(config: ThufirConfig, modelOverride?: string) {
     this.client = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY ?? '',
       baseURL: resolveAnthropicBaseUrl(config),
@@ -837,12 +786,14 @@ class AnthropicClient implements LlmClient {
 }
 
 class OpenAiClient implements LlmClient {
+  private config: ThufirConfig;
   private model: string;
   private baseUrl: string;
   private includeTemperature: boolean;
   private useResponsesApi: boolean;
 
-  constructor(config: BijazConfig, modelOverride?: string) {
+  constructor(config: ThufirConfig, modelOverride?: string) {
+    this.config = config;
     this.model = modelOverride ?? config.agent.model;
     this.baseUrl = resolveOpenAiBaseUrl(config);
     this.includeTemperature = !config.agent.useProxy;
@@ -850,13 +801,15 @@ class OpenAiClient implements LlmClient {
   }
 
   async complete(messages: ChatMessage[], options?: { temperature?: number }): Promise<LlmResponse> {
-    const openaiMessages = this.useResponsesApi
-      ? [
-          // Inject workspace identity at the start (Moltbot pattern)
-          { role: 'system', content: loadBijazIdentity() } as ChatMessage,
-          ...messages,
-        ]
-      : messages;
+    let openaiMessages = messages;
+    if (this.useResponsesApi) {
+      const prelude = loadIdentityPrelude({
+        workspacePath: this.config.agent?.workspace,
+        promptMode: this.config.agent?.identityPromptMode ?? 'full',
+      }).prelude;
+      // Inject workspace identity at the start (Moltbot pattern)
+      openaiMessages = injectIdentity(openaiMessages, prelude);
+    }
     const response = await fetchWithRetry(() =>
       fetch(`${this.baseUrl}${this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions'}`, {
         method: 'POST',
@@ -917,7 +870,7 @@ class LocalClient implements LlmClient {
   private model: string;
   private baseUrl: string;
 
-  constructor(config: BijazConfig, modelOverride?: string) {
+  constructor(config: ThufirConfig, modelOverride?: string) {
     this.model = modelOverride ?? config.agent.model;
     this.baseUrl = config.agent.apiBaseUrl ?? 'http://localhost:11434';
   }
@@ -990,7 +943,7 @@ export function isRateLimitError(error: unknown): boolean {
   );
 }
 
-function createAnthropicClientWithFallback(config: BijazConfig): LlmClient {
+function createAnthropicClientWithFallback(config: ThufirConfig): LlmClient {
   const primary = new AnthropicClient(config);
   const fallbackModel = config.agent.openaiModel ?? config.agent.fallbackModel ?? 'gpt-5.2';
   const fallback = new OpenAiClient(config, fallbackModel);

@@ -1,5 +1,5 @@
 /**
- * Core type definitions for Bijaz
+ * Core type definitions for Thufir
  */
 
 // ============================================================================
@@ -280,7 +280,7 @@ export interface Briefing {
 // Config Types
 // ============================================================================
 
-export interface BijazConfig {
+export interface ThufirConfig {
   gateway: {
     port: number;
     bind: string;

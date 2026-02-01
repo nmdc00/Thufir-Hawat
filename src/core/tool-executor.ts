@@ -1,4 +1,4 @@
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { Market, PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import type { LimitCheckResult } from '../execution/wallet/limits.js';
@@ -6,6 +6,7 @@ import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listRecentIntel, searchIntel, type StoredIntel } from '../intel/store.js';
 import { listOpenPositions, listPredictions, createPrediction } from '../memory/predictions.js';
 import { listMarketCategories } from '../memory/market_cache.js';
+import { upsertAssumption, upsertFragilityCard, upsertMechanism } from '../memory/mentat.js';
 import { checkExposureLimits } from './exposure.js';
 import { loadKeystore } from '../execution/wallet/keystore.js';
 
@@ -22,9 +23,17 @@ import { loadWallet } from '../execution/wallet/manager.js';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import { isIP } from 'node:net';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+const execAsync = promisify(exec);
 
 export interface ToolExecutorContext {
-  config: BijazConfig;
+  config: ThufirConfig;
   marketClient: PolymarketMarketClient;
   executor?: ExecutionAdapter;
   limiter?: ToolSpendingLimiter;
@@ -148,11 +157,19 @@ export async function executeToolCall(
 
         const serpResult = await searchWebViaSerpApi(query, limit);
         if (serpResult.success) {
+          // Auto-index to QMD if enabled (fire-and-forget)
+          if (ctx.config.qmd?.enabled && ctx.config.qmd?.autoIndexWebSearch) {
+            autoIndexWebSearchResults(query, serpResult.data, ctx).catch(() => {});
+          }
           return serpResult;
         }
 
         const braveResult = await searchWebViaBrave(query, limit);
         if (braveResult.success) {
+          // Auto-index to QMD if enabled (fire-and-forget)
+          if (ctx.config.qmd?.enabled && ctx.config.qmd?.autoIndexWebSearch) {
+            autoIndexWebSearchResults(query, braveResult.data, ctx).catch(() => {});
+          }
           return braveResult;
         }
 
@@ -200,7 +217,12 @@ export async function executeToolCall(
         if (!isSafeUrl(url)) {
           return { success: false, error: 'URL is not allowed' };
         }
-        return fetchAndExtract(url, maxChars);
+        const fetchResult = await fetchAndExtract(url, maxChars);
+        // Auto-index to QMD if enabled (fire-and-forget)
+        if (fetchResult.success && ctx.config.qmd?.enabled && ctx.config.qmd?.autoIndexWebFetch) {
+          autoIndexWebFetchResult(fetchResult.data, ctx).catch(() => {});
+        }
+        return fetchResult;
       }
 
       case 'place_bet': {
@@ -316,6 +338,30 @@ export async function executeToolCall(
         }
       }
 
+      case 'qmd_query': {
+        return qmdQuery(toolInput, ctx);
+      }
+
+      case 'qmd_index': {
+        return qmdIndex(toolInput, ctx);
+      }
+
+      case 'mentat_store_assumption': {
+        return mentatStoreAssumption(toolInput, ctx);
+      }
+
+      case 'mentat_store_fragility': {
+        return mentatStoreFragility(toolInput, ctx);
+      }
+
+      case 'mentat_store_mechanism': {
+        return mentatStoreMechanism(toolInput, ctx);
+      }
+
+      case 'mentat_query': {
+        return mentatQuery(toolInput, ctx);
+      }
+
       default:
         return { success: false, error: `Unknown tool: ${toolName}` };
     }
@@ -406,8 +452,8 @@ function getWalletInfo(ctx: ToolExecutorContext): ToolResult {
   try {
     const keystorePath =
       ctx.config.wallet?.keystorePath ??
-      process.env.BIJAZ_KEYSTORE_PATH ??
-      `${process.env.HOME ?? ''}/.bijaz/keystore.json`;
+      process.env.THUFIR_KEYSTORE_PATH ??
+      `${process.env.HOME ?? ''}/.thufir/keystore.json`;
     const store = loadKeystore(keystorePath);
     const address = store.address
       ? store.address.startsWith('0x')
@@ -556,7 +602,7 @@ async function getBalances(ctx: ToolExecutorContext): Promise<{
     return { usdc: getCashBalance(), matic: 0, source: 'paper' };
   }
 
-  const password = process.env.BIJAZ_WALLET_PASSWORD;
+  const password = process.env.THUFIR_WALLET_PASSWORD;
   if (!password) {
     return { usdc: getCashBalance(), matic: 0, source: 'memory' };
   }
@@ -1081,7 +1127,7 @@ async function fetchAndExtract(url: string, maxChars: number): Promise<ToolResul
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Bijaz/1.0; +https://github.com/bijaz)',
+        'User-Agent': 'Mozilla/5.0 (compatible; Thufir/1.0; +https://github.com/thufir)',
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
       redirect: 'follow',
@@ -1155,4 +1201,678 @@ async function fetchAndExtract(url: string, maxChars: number): Promise<ToolResul
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Check if QMD is available on the system.
+ */
+async function isQmdAvailable(): Promise<boolean> {
+  try {
+    await execAsync('qmd --version');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get QMD knowledge base path from config or default.
+ */
+function getQmdKnowledgePath(ctx: ToolExecutorContext): string {
+  return ctx.config.qmd?.knowledgePath ?? join(homedir(), '.thufir', 'knowledge');
+}
+
+/**
+ * Search the local knowledge base using QMD hybrid search.
+ */
+async function qmdQuery(
+  toolInput: Record<string, unknown>,
+  ctx: ToolExecutorContext
+): Promise<ToolResult> {
+  const query = String(toolInput.query ?? '').trim();
+  const mode = String(toolInput.mode ?? 'query');
+  const limit = Math.min(Math.max(Number(toolInput.limit ?? 10), 1), 50);
+  const collection = toolInput.collection ? String(toolInput.collection) : undefined;
+
+  if (!query) {
+    return { success: false, error: 'Missing query' };
+  }
+
+  if (!['query', 'search', 'vsearch'].includes(mode)) {
+    return { success: false, error: 'Invalid mode. Use: query, search, or vsearch' };
+  }
+
+  if (!ctx.config.qmd?.enabled) {
+    return { success: false, error: 'QMD is not enabled in config' };
+  }
+
+  const available = await isQmdAvailable();
+  if (!available) {
+    return { success: false, error: 'QMD is not installed. Run: bun install -g github:tobi/qmd' };
+  }
+
+  try {
+    const args = [mode, JSON.stringify(query), '--format', 'json', '--limit', String(limit)];
+    if (collection) {
+      args.push('--collection', collection);
+    }
+
+    const { stdout, stderr } = await execAsync(`qmd ${args.join(' ')}`, {
+      timeout: 30000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    if (stderr && !stdout) {
+      return { success: false, error: stderr.trim() };
+    }
+
+    let results: unknown;
+    try {
+      results = JSON.parse(stdout);
+    } catch {
+      // QMD might return non-JSON for some outputs
+      results = { raw: stdout.trim() };
+    }
+
+    return {
+      success: true,
+      data: {
+        query,
+        mode,
+        collection: collection ?? 'all',
+        results,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: `QMD query failed: ${message}` };
+  }
+}
+
+/**
+ * Index content into the QMD knowledge base.
+ */
+async function qmdIndex(
+  toolInput: Record<string, unknown>,
+  ctx: ToolExecutorContext
+): Promise<ToolResult> {
+  const content = String(toolInput.content ?? '').trim();
+  const title = String(toolInput.title ?? 'Untitled');
+  const collection = String(toolInput.collection ?? 'thufir-research');
+  const source = toolInput.source ? String(toolInput.source) : undefined;
+
+  if (!content) {
+    return { success: false, error: 'Missing content' };
+  }
+
+  if (!ctx.config.qmd?.enabled) {
+    return { success: false, error: 'QMD is not enabled in config' };
+  }
+
+  const available = await isQmdAvailable();
+  if (!available) {
+    return { success: false, error: 'QMD is not installed. Run: bun install -g github:tobi/qmd' };
+  }
+
+  const knowledgePath = getQmdKnowledgePath(ctx);
+
+  try {
+    // Create a temporary markdown file for QMD to index
+    const filename = `${Date.now()}-${randomUUID().slice(0, 8)}.md`;
+    const collectionPath = join(knowledgePath, collection.replace('thufir-', ''));
+    await mkdir(collectionPath, { recursive: true });
+    const filepath = join(collectionPath, filename);
+
+    // Build markdown content with frontmatter
+    const frontmatter = [
+      '---',
+      `title: "${title.replace(/"/g, '\\"')}"`,
+      `indexed: ${new Date().toISOString()}`,
+    ];
+    if (source) {
+      frontmatter.push(`source: "${source.replace(/"/g, '\\"')}"`);
+    }
+    frontmatter.push('---', '', content);
+
+    await writeFile(filepath, frontmatter.join('\n'), 'utf-8');
+
+    // Run qmd embed to update embeddings
+    try {
+      await execAsync(`qmd embed --collection ${collection}`, {
+        timeout: 60000,
+      });
+    } catch {
+      // Embedding failure is non-fatal, content is still indexed for BM25 search
+    }
+
+    return {
+      success: true,
+      data: {
+        indexed: true,
+        title,
+        collection,
+        filepath,
+        source: source ?? null,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: `QMD index failed: ${message}` };
+  }
+}
+
+/**
+ * Auto-index web search results into QMD (fire-and-forget).
+ * Combines all search results into a single document for efficient storage.
+ */
+async function autoIndexWebSearchResults(
+  query: string,
+  data: unknown,
+  ctx: ToolExecutorContext
+): Promise<void> {
+  const available = await isQmdAvailable();
+  if (!available) return;
+
+  const searchData = data as {
+    query?: string;
+    provider?: string;
+    results?: Array<{
+      title?: string;
+      url?: string;
+      snippet?: string;
+      date?: string;
+      source?: string;
+    }>;
+  };
+
+  const results = searchData.results ?? [];
+  if (results.length === 0) return;
+
+  // Build markdown content from search results
+  const lines: string[] = [
+    `# Web Search: ${query}`,
+    '',
+    `**Provider:** ${searchData.provider ?? 'unknown'}`,
+    `**Date:** ${new Date().toISOString()}`,
+    `**Results:** ${results.length}`,
+    '',
+    '---',
+    '',
+  ];
+
+  for (const result of results) {
+    lines.push(`## ${result.title ?? 'Untitled'}`);
+    if (result.url) {
+      lines.push(`**URL:** ${result.url}`);
+    }
+    if (result.date) {
+      lines.push(`**Date:** ${result.date}`);
+    }
+    if (result.snippet) {
+      lines.push('', result.snippet);
+    }
+    lines.push('', '---', '');
+  }
+
+  const content = lines.join('\n');
+  const title = `Web Search: ${query}`;
+
+  // Index using qmdIndex internally
+  await qmdIndex(
+    {
+      content,
+      title,
+      collection: 'thufir-research',
+      source: `web_search:${searchData.provider ?? 'unknown'}`,
+    },
+    ctx
+  );
+}
+
+/**
+ * Auto-index web fetch result into QMD (fire-and-forget).
+ */
+async function autoIndexWebFetchResult(
+  data: unknown,
+  ctx: ToolExecutorContext
+): Promise<void> {
+  const available = await isQmdAvailable();
+  if (!available) return;
+
+  const fetchData = data as {
+    url?: string;
+    title?: string;
+    byline?: string;
+    content?: string;
+    truncated?: boolean;
+  };
+
+  const content = fetchData.content;
+  if (!content || content.length < 100) return; // Skip very short content
+
+  const title = fetchData.title ?? fetchData.url ?? 'Web Page';
+  const url = fetchData.url ?? '';
+
+  // Build markdown with metadata
+  const lines: string[] = [
+    `# ${title}`,
+    '',
+  ];
+  if (fetchData.byline) {
+    lines.push(`**Author:** ${fetchData.byline}`);
+  }
+  if (url) {
+    lines.push(`**Source:** ${url}`);
+  }
+  lines.push(`**Fetched:** ${new Date().toISOString()}`);
+  if (fetchData.truncated) {
+    lines.push(`**Note:** Content was truncated`);
+  }
+  lines.push('', '---', '', content);
+
+  const fullContent = lines.join('\n');
+
+  // Index using qmdIndex internally
+  await qmdIndex(
+    {
+      content: fullContent,
+      title,
+      collection: 'thufir-research',
+      source: url || 'web_fetch',
+    },
+    ctx
+  );
+}
+
+/**
+ * Store an assumption in the mentat knowledge base.
+ */
+async function mentatStoreAssumption(
+  toolInput: Record<string, unknown>,
+  ctx: ToolExecutorContext
+): Promise<ToolResult> {
+  const statement = String(toolInput.statement ?? '').trim();
+  const system = String(toolInput.system ?? '').trim();
+  const evidenceFor = Array.isArray(toolInput.evidence_for) ? toolInput.evidence_for : [];
+  const evidenceAgainst = Array.isArray(toolInput.evidence_against) ? toolInput.evidence_against : [];
+  const dependencies = Array.isArray(toolInput.dependencies) ? toolInput.dependencies : [];
+  const stressScore = toolInput.stress_score === undefined ? null : Number(toolInput.stress_score);
+  const lastTested = toolInput.last_tested ? String(toolInput.last_tested) : null;
+  const criticality = String(toolInput.criticality ?? 'medium');
+
+  if (!statement) {
+    return { success: false, error: 'Missing statement' };
+  }
+  if (!system) {
+    return { success: false, error: 'Missing system' };
+  }
+
+  const assumptionId = upsertAssumption({
+    system,
+    statement,
+    dependencies,
+    evidenceFor,
+    evidenceAgainst,
+    stressScore: Number.isFinite(stressScore ?? undefined) ? stressScore : null,
+    lastTested,
+  });
+
+  // Build markdown content for the assumption
+  const lines: string[] = [
+    '---',
+    'type: assumption',
+    `system: "${system}"`,
+    `criticality: "${criticality}"`,
+    `stress_score: ${typeof stressScore === 'number' ? stressScore.toFixed(2) : 'null'}`,
+    `last_tested: ${lastTested ?? 'null'}`,
+    `created: ${new Date().toISOString()}`,
+    `validated: false`,
+    '---',
+    '',
+    `# Assumption: ${statement}`,
+    '',
+    `**System:** ${system}`,
+    `**Criticality:** ${criticality}`,
+    '',
+  ];
+
+  if (evidenceFor.length > 0) {
+    lines.push('## Evidence For');
+    for (const e of evidenceFor) {
+      lines.push(`- ${e}`);
+    }
+    lines.push('');
+  }
+
+  if (evidenceAgainst.length > 0) {
+    lines.push('## Evidence Against');
+    for (const e of evidenceAgainst) {
+      lines.push(`- ${e}`);
+    }
+    lines.push('');
+  }
+
+  if (dependencies.length > 0) {
+    lines.push('## Dependencies');
+    for (const d of dependencies) {
+      lines.push(`- ${d}`);
+    }
+    lines.push('');
+  }
+
+  const content = lines.join('\n');
+  const title = `Assumption: ${statement.slice(0, 50)}${statement.length > 50 ? '...' : ''}`;
+
+  if (!ctx.config.qmd?.enabled) {
+    return {
+      success: true,
+      data: {
+        id: assumptionId,
+        stored: 'db',
+        indexed: false,
+      },
+    };
+  }
+
+  const qmdResult = await qmdIndex(
+    {
+      content,
+      title,
+      collection: 'thufir-markets',
+      source: `mentat:assumption:${system}`,
+    },
+    ctx
+  );
+
+  if (!qmdResult.success) {
+    return qmdResult;
+  }
+
+  return {
+    success: true,
+    data: {
+      id: assumptionId,
+      stored: 'db',
+      indexed: true,
+      qmd: qmdResult.data,
+    },
+  };
+}
+
+/**
+ * Store a fragility card in the mentat knowledge base.
+ */
+async function mentatStoreFragility(
+  toolInput: Record<string, unknown>,
+  ctx: ToolExecutorContext
+): Promise<ToolResult> {
+  const system = String(toolInput.system ?? '').trim();
+  const mechanism = String(toolInput.mechanism ?? '').trim();
+  const exposureSurface = String(toolInput.exposure_surface ?? '').trim();
+  const earlySignals = Array.isArray(toolInput.early_signals) ? toolInput.early_signals : [];
+  const falsifiers = Array.isArray(toolInput.falsifiers) ? toolInput.falsifiers : [];
+  const downside = String(toolInput.downside ?? '');
+  const convexity = toolInput.convexity ? String(toolInput.convexity) : '';
+  const recoveryCapacity = toolInput.recovery_capacity ? String(toolInput.recovery_capacity) : '';
+  const score = Number(toolInput.score ?? 0);
+
+  if (!system) {
+    return { success: false, error: 'Missing system' };
+  }
+  if (!mechanism) {
+    return { success: false, error: 'Missing mechanism' };
+  }
+  if (!exposureSurface) {
+    return { success: false, error: 'Missing exposure_surface' };
+  }
+
+  const cardId = upsertFragilityCard({
+    system,
+    mechanismId: null,
+    exposureSurface,
+    convexity: convexity || null,
+    earlySignals,
+    falsifiers,
+    downside: downside || null,
+    recoveryCapacity: recoveryCapacity || null,
+    score: Number.isFinite(score) ? score : null,
+  });
+
+  // Build markdown content for the fragility card
+  const lines: string[] = [
+    '---',
+    'type: fragility_card',
+    `system: "${system}"`,
+    `score: ${score.toFixed(2)}`,
+    `convexity: "${convexity || 'unknown'}"`,
+    `recovery_capacity: "${recoveryCapacity || 'unknown'}"`,
+    `created: ${new Date().toISOString()}`,
+    '---',
+    '',
+    `# Fragility Card: ${system}`,
+    '',
+    `**Mechanism:** ${mechanism}`,
+    '',
+    `**Exposure Surface:** ${exposureSurface}`,
+    '',
+    `**Fragility Score:** ${score.toFixed(2)}`,
+    '',
+  ];
+
+  if (downside) {
+    lines.push(`## Downside`);
+    lines.push(downside);
+    lines.push('');
+  }
+
+  if (convexity) {
+    lines.push('## Convexity');
+    lines.push(convexity);
+    lines.push('');
+  }
+
+  if (recoveryCapacity) {
+    lines.push('## Recovery Capacity');
+    lines.push(recoveryCapacity);
+    lines.push('');
+  }
+
+  if (earlySignals.length > 0) {
+    lines.push('## Early Warning Signals');
+    for (const s of earlySignals) {
+      lines.push(`- ${s}`);
+    }
+    lines.push('');
+  }
+
+  if (falsifiers.length > 0) {
+    lines.push('## Falsifiers');
+    lines.push('*Conditions that would invalidate this fragility assessment:*');
+    for (const f of falsifiers) {
+      lines.push(`- ${f}`);
+    }
+    lines.push('');
+  }
+
+  const content = lines.join('\n');
+  const title = `Fragility: ${system} - ${mechanism.slice(0, 30)}`;
+
+  if (!ctx.config.qmd?.enabled) {
+    return {
+      success: true,
+      data: {
+        id: cardId,
+        stored: 'db',
+        indexed: false,
+      },
+    };
+  }
+
+  const qmdResult = await qmdIndex(
+    {
+      content,
+      title,
+      collection: 'thufir-intel',
+      source: `mentat:fragility:${system}`,
+    },
+    ctx
+  );
+
+  if (!qmdResult.success) {
+    return qmdResult;
+  }
+
+  return {
+    success: true,
+    data: {
+      id: cardId,
+      stored: 'db',
+      indexed: true,
+      qmd: qmdResult.data,
+    },
+  };
+}
+
+/**
+ * Store a mechanism in the mentat knowledge base.
+ */
+async function mentatStoreMechanism(
+  toolInput: Record<string, unknown>,
+  ctx: ToolExecutorContext
+): Promise<ToolResult> {
+  const name = String(toolInput.name ?? '').trim();
+  const system = String(toolInput.system ?? '').trim();
+  const causalChain = Array.isArray(toolInput.causal_chain) ? toolInput.causal_chain : [];
+  const triggerClass = toolInput.trigger_class ? String(toolInput.trigger_class) : '';
+  const propagationPath = Array.isArray(toolInput.propagation_path) ? toolInput.propagation_path : [];
+
+  if (!name) {
+    return { success: false, error: 'Missing name' };
+  }
+  if (!system) {
+    return { success: false, error: 'Missing system' };
+  }
+
+  const mechanismId = upsertMechanism({
+    system,
+    name,
+    causalChain,
+    triggerClass: triggerClass || null,
+    propagationPath,
+  });
+
+  const lines: string[] = [
+    '---',
+    'type: mechanism',
+    `system: "${system}"`,
+    `trigger_class: "${triggerClass || 'unknown'}"`,
+    `created: ${new Date().toISOString()}`,
+    '---',
+    '',
+    `# Mechanism: ${name}`,
+    '',
+    `**System:** ${system}`,
+  ];
+
+  if (causalChain.length > 0) {
+    lines.push('', '## Causal Chain');
+    for (const step of causalChain) {
+      lines.push(`- ${step}`);
+    }
+  }
+
+  if (propagationPath.length > 0) {
+    lines.push('', '## Propagation Path');
+    for (const step of propagationPath) {
+      lines.push(`- ${step}`);
+    }
+  }
+
+  const content = lines.join('\n');
+  const title = `Mechanism: ${name.slice(0, 50)}${name.length > 50 ? '...' : ''}`;
+
+  if (!ctx.config.qmd?.enabled) {
+    return {
+      success: true,
+      data: {
+        id: mechanismId,
+        stored: 'db',
+        indexed: false,
+      },
+    };
+  }
+
+  const qmdResult = await qmdIndex(
+    {
+      content,
+      title,
+      collection: 'thufir-markets',
+      source: `mentat:mechanism:${system}`,
+    },
+    ctx
+  );
+
+  if (!qmdResult.success) {
+    return qmdResult;
+  }
+
+  return {
+    success: true,
+    data: {
+      id: mechanismId,
+      stored: 'db',
+      indexed: true,
+      qmd: qmdResult.data,
+    },
+  };
+}
+
+/**
+ * Query the mentat knowledge base for assumptions, fragility cards, or mechanisms.
+ */
+async function mentatQuery(
+  toolInput: Record<string, unknown>,
+  ctx: ToolExecutorContext
+): Promise<ToolResult> {
+  const query = String(toolInput.query ?? '').trim();
+  const type = String(toolInput.type ?? 'all');
+  const system = toolInput.system ? String(toolInput.system) : undefined;
+  const limit = Math.min(Math.max(Number(toolInput.limit ?? 10), 1), 50);
+
+  if (!query) {
+    return { success: false, error: 'Missing query' };
+  }
+
+  if (!ctx.config.qmd?.enabled) {
+    return { success: false, error: 'QMD is not enabled in config' };
+  }
+
+  // Build enhanced query with type filter
+  let enhancedQuery = query;
+  if (type !== 'all') {
+    enhancedQuery = `type:${type} ${query}`;
+  }
+  if (system) {
+    enhancedQuery = `system:${system} ${enhancedQuery}`;
+  }
+
+  // Determine which collection to search
+  let collection: string | undefined;
+  if (type === 'assumption') {
+    collection = 'thufir-markets';
+  } else if (type === 'fragility') {
+    collection = 'thufir-intel';
+  }
+  // 'all' or 'mechanism' searches all collections
+
+  // Use qmd_query internally
+  return qmdQuery(
+    {
+      query: enhancedQuery,
+      mode: 'query',
+      limit,
+      collection,
+    },
+    ctx
+  );
 }

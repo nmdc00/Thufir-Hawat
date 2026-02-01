@@ -1,6 +1,6 @@
 # Calibration System
 
-This document describes Bijaz's prediction calibration system - a key differentiator from simple trading bots.
+This document describes Thufir's prediction calibration system - a key differentiator from simple trading bots.
 
 ## Why Calibration Matters
 
@@ -9,7 +9,7 @@ Most people (and AI systems) are poorly calibrated:
 - They're overconfident in some domains, underconfident in others
 - They don't track or learn from their prediction errors
 
-Bijaz tracks every prediction and its outcome, building a personalized calibration model that adjusts confidence over time.
+Thufir tracks every prediction and its outcome, building a personalized calibration model that adjusts confidence over time.
 
 ## How It Works
 
@@ -18,7 +18,7 @@ Bijaz tracks every prediction and its outcome, building a personalized calibrati
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  1. PREDICT                                                 │
-│     You (or Bijaz) make a prediction with a probability     │
+│     You (or Thufir) make a prediction with a probability     │
 │     "Fed will hold rates: 72% YES"                          │
 └───────────────────────────────┬─────────────────────────────┘
                                 │
@@ -135,7 +135,7 @@ Entertainment        12       0.21       58%      Underconfident
 
 ## Confidence Levels
 
-Bijaz uses three confidence levels to bucket predictions:
+Thufir uses three confidence levels to bucket predictions:
 
 | Level | Description | Typical Range |
 |-------|-------------|---------------|
@@ -147,7 +147,7 @@ Each level is calibrated separately because overconfidence patterns differ by co
 
 ## Calibration Adjustment Algorithm
 
-When making a new prediction, Bijaz adjusts based on historical performance:
+When making a new prediction, Thufir adjusts based on historical performance:
 
 ```python
 def adjust_confidence(raw_probability: float, domain: str) -> float:
@@ -232,7 +232,7 @@ def kelly_position(probability: float, price: float, domain: str) -> float:
 
 ```bash
 # Overall calibration stats
-bijaz calibration show
+thufir calibration show
 
 # Output:
 # ══════════════════════════════════════════════════════════════
@@ -267,7 +267,7 @@ bijaz calibration show
 ### Domain-Specific View
 
 ```bash
-bijaz calibration show --domain politics
+thufir calibration show --domain politics
 
 # Shows detailed calibration for politics predictions
 ```
@@ -275,20 +275,20 @@ bijaz calibration show --domain politics
 ### Historical Analysis
 
 ```bash
-bijaz calibration history --domain economics --limit 20
+thufir calibration history --domain economics --limit 20
 
 # Shows recent predictions in this domain with outcomes
 ```
 
 ## Conversation Integration
 
-Bijaz uses calibration data in conversations:
+Thufir uses calibration data in conversations:
 
 **Example:**
 
 > **You:** What do you think about the UK election market?
 >
-> **Bijaz:** Looking at the UK General Election market (Labour majority):
+> **Thufir:** Looking at the UK General Election market (Labour majority):
 >
 > **Current price:** 0.62 YES
 >
@@ -306,7 +306,7 @@ Bijaz uses calibration data in conversations:
 
 ### Cold Start Problem
 
-When you first start, there's no calibration data. Bijaz handles this by:
+When you first start, there's no calibration data. Thufir handles this by:
 
 1. Using conservative defaults (slight overconfidence adjustment)
 2. Encouraging many small predictions to build data
@@ -335,7 +335,7 @@ Good calibration requires diverse predictions:
 
 **Overconfidence (most common):**
 - Symptom: High-confidence predictions have lower actual accuracy
-- Fix: Bijaz automatically adjusts down; consciously hedge strong views
+- Fix: Thufir automatically adjusts down; consciously hedge strong views
 
 **Domain blindspots:**
 - Symptom: One domain has much worse Brier score
@@ -353,7 +353,7 @@ Good calibration requires diverse predictions:
 
 ```bash
 # Get practice recommendations
-bijaz calibration practice
+thufir calibration practice
 
 # Output:
 # To improve calibration, consider:
@@ -375,10 +375,10 @@ Export calibration data for external analysis:
 
 ```bash
 # Export all predictions
-bijaz calibration export --format csv --output predictions.csv
+thufir calibration export --format csv --output predictions.csv
 
 # Export calibration summary
-bijaz calibration export --format json --output calibration.json
+thufir calibration export --format json --output calibration.json
 ```
 
 ## Privacy
@@ -386,7 +386,7 @@ bijaz calibration export --format json --output calibration.json
 Calibration data is stored locally and never leaves your machine unless you explicitly export it.
 
 ```
-~/.bijaz/
+~/.thufir/
   └── data/
       └── predictions.db     # SQLite database with all predictions
       └── calibration.json   # Cached calibration curves

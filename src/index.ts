@@ -1,10 +1,10 @@
 /**
- * Bijaz - Prediction Market AI Companion
+ * Thufir - Prediction Market AI Companion
  *
- * Main entry point for the Bijaz library.
+ * Main entry point for the Thufir library.
  */
 
-import { loadConfig, type BijazConfig } from './core/config.js';
+import { loadConfig, type ThufirConfig } from './core/config.js';
 import { createLlmClient } from './core/llm.js';
 import { ConversationHandler } from './core/conversation.js';
 import { PolymarketMarketClient } from './execution/polymarket/markets.js';
@@ -44,32 +44,32 @@ export {
 export const VERSION = '0.1.0';
 
 /**
- * Bijaz client for programmatic access.
+ * Thufir client for programmatic access.
  *
  * @example
  * ```typescript
- * import { Bijaz } from 'bijaz';
+ * import { Thufir } from 'thufir';
  *
- * const bijaz = new Bijaz({
- *   configPath: '~/.bijaz/config.yaml'
+ * const thufir = new Thufir({
+ *   configPath: '~/.thufir/config.yaml'
  * });
  *
- * await bijaz.start();
+ * await thufir.start();
  *
  * // Analyze a market
- * const analysis = await bijaz.analyze('fed-rate-decision');
+ * const analysis = await thufir.analyze('fed-rate-decision');
  *
  * // Execute a trade (with confirmation)
- * const result = await bijaz.trade({
+ * const result = await thufir.trade({
  *   marketId: 'abc123',
  *   outcome: 'YES',
  *   amount: 25
  * });
  * ```
  */
-export class Bijaz {
+export class Thufir {
   private configPath?: string;
-  private config!: BijazConfig;
+  private config!: ThufirConfig;
   private userId: string;
   private llm?: ReturnType<typeof createLlmClient>;
   private marketClient?: PolymarketMarketClient;
@@ -84,17 +84,17 @@ export class Bijaz {
   }
 
   /**
-   * Start the Bijaz agent.
+   * Start the Thufir agent.
    */
   async start(): Promise<void> {
     if (this.started) {
-      throw new Error('Bijaz already started');
+      throw new Error('Thufir already started');
     }
 
     const config = loadConfig(this.configPath);
     this.config = config;
     if (config.memory?.dbPath) {
-      process.env.BIJAZ_DB_PATH = config.memory.dbPath;
+      process.env.THUFIR_DB_PATH = config.memory.dbPath;
     }
 
     this.llm = createLlmClient(config);
@@ -110,12 +110,12 @@ export class Bijaz {
     this.started = true;
   }
 
-  private createExecutor(config: BijazConfig): ExecutionAdapter {
+  private createExecutor(config: ThufirConfig): ExecutionAdapter {
     if (config.execution.mode === 'live') {
-      const password = process.env.BIJAZ_WALLET_PASSWORD;
+      const password = process.env.THUFIR_WALLET_PASSWORD;
       if (!password) {
         throw new Error(
-          'Live execution mode requires BIJAZ_WALLET_PASSWORD environment variable'
+          'Live execution mode requires THUFIR_WALLET_PASSWORD environment variable'
         );
       }
       return new LiveExecutor({ config, password });
@@ -129,7 +129,7 @@ export class Bijaz {
   }
 
   /**
-   * Stop the Bijaz agent.
+   * Stop the Thufir agent.
    */
   async stop(): Promise<void> {
     if (!this.started) {
@@ -328,7 +328,7 @@ export class Bijaz {
 
   private ensureStarted(): void {
     if (!this.started) {
-      throw new Error('Bijaz not started. Call start() first.');
+      throw new Error('Thufir not started. Call start() first.');
     }
   }
 }

@@ -1,4 +1,4 @@
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 
 export interface NewsApiItem {
   title: string;
@@ -13,7 +13,7 @@ export class NewsApiFetcher {
   private apiKey: string | undefined;
   private baseUrl: string;
 
-  constructor(private config: BijazConfig) {
+  constructor(private config: ThufirConfig) {
     this.apiKey =
       this.config.intel?.sources?.newsapi?.apiKey ?? process.env.NEWSAPI_KEY;
     this.baseUrl =

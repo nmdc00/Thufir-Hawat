@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 import { RssFetcher } from './rss.js';
 import { NewsApiFetcher } from './newsapi.js';
 import { GoogleNewsFetcher } from './googlenews.js';
@@ -20,16 +20,16 @@ export interface IntelPipelineOverrides {
   twitterKeywords?: string[];
 }
 
-export async function runIntelPipeline(config: BijazConfig): Promise<number> {
+export async function runIntelPipeline(config: ThufirConfig): Promise<number> {
   const result = await runIntelPipelineDetailed(config);
   return result.storedCount;
 }
 
 export async function runIntelPipelineDetailedWithOverrides(
-  config: BijazConfig,
+  config: ThufirConfig,
   overrides: IntelPipelineOverrides
 ): Promise<IntelPipelineResult> {
-  const cloned = JSON.parse(JSON.stringify(config)) as BijazConfig;
+  const cloned = JSON.parse(JSON.stringify(config)) as ThufirConfig;
 
   if (overrides.newsapiQueries && cloned.intel?.sources?.newsapi) {
     cloned.intel.sources.newsapi.queries = overrides.newsapiQueries;
@@ -45,7 +45,7 @@ export async function runIntelPipelineDetailedWithOverrides(
 }
 
 export async function runIntelPipelineDetailed(
-  config: BijazConfig
+  config: ThufirConfig
 ): Promise<IntelPipelineResult> {
   let stored = 0;
   const storedItems: StoredIntel[] = [];

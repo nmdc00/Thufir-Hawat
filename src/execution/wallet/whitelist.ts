@@ -3,7 +3,7 @@
  *
  * CRITICAL SECURITY COMPONENT
  *
- * This file contains the ONLY addresses that Bijaz is allowed to interact with.
+ * This file contains the ONLY addresses that Thufir is allowed to interact with.
  * These addresses are HARDCODED and should NEVER be made configurable.
  *
  * Before ANY transaction is signed, the destination address MUST be checked
@@ -75,7 +75,7 @@ export function assertWhitelisted(address: string, context?: string): void {
     const ctx = context ? ` (${context})` : '';
     throw new WhitelistError(
       `Address ${address} is not whitelisted${ctx}. ` +
-        'Bijaz can only interact with Polymarket contracts.'
+        'Thufir can only interact with Polymarket contracts.'
     );
   }
 }

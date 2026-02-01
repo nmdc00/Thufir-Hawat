@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 import type { IncomingMessage, ChannelAdapter } from './channels.js';
 
 export class TelegramAdapter implements ChannelAdapter {
@@ -10,7 +10,7 @@ export class TelegramAdapter implements ChannelAdapter {
   private pollingInterval: number;
   private lastUpdateId = 0;
 
-  constructor(config: BijazConfig) {
+  constructor(config: ThufirConfig) {
     this.token = config.channels.telegram.token ?? '';
     this.allowedChatIds = new Set(
       (config.channels.telegram.allowedChatIds ?? []).map((id) => String(id))

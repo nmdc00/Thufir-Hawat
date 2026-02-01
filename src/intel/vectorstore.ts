@@ -1,4 +1,4 @@
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 import { openDatabase } from '../memory/db.js';
 import { createEmbedder, type Embedder } from './embeddings.js';
 
@@ -11,7 +11,7 @@ export class IntelVectorStore {
   private enabled: boolean;
   private embedder: Embedder;
 
-  constructor(config: BijazConfig, embedder?: Embedder) {
+  constructor(config: ThufirConfig, embedder?: Embedder) {
     this.enabled = config.intel?.embeddings?.enabled ?? false;
     this.embedder = embedder ?? createEmbedder(config, 'intel');
   }

@@ -10,16 +10,25 @@
 
 import { EventEmitter } from 'eventemitter3';
 import type { LlmClient } from './llm.js';
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
 import { checkExposureLimits } from './exposure.js';
-import { scanForOpportunities, generateDailyReport, formatDailyReport, type Opportunity } from './opportunities.js';
+import {
+  scanForOpportunities,
+  generateDailyReport,
+  formatDailyReport,
+  type Opportunity,
+  type OrchestratorAssets,
+} from './opportunities.js';
 import { getDailyPnLRollup } from './daily_pnl.js';
 import { createPrediction, listOpenPositions } from '../memory/predictions.js';
 import { openDatabase } from '../memory/db.js';
 import { Logger } from './logger.js';
+import { AgentToolRegistry } from '../agent/tools/registry.js';
+import { registerAllTools } from '../agent/tools/adapters/index.js';
+import { loadThufirIdentity } from '../agent/identity/identity.js';
 
 export interface AutonomousConfig {
   enabled: boolean;
@@ -71,7 +80,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   private executor: ExecutionAdapter;
   private limiter: DbSpendingLimitEnforcer;
   private logger: Logger;
-  private bijazConfig: BijazConfig;
+  private thufirConfig: ThufirConfig;
+  private orchestratorAssets?: OrchestratorAssets;
 
   private isPaused = false;
   private pauseReason = '';
@@ -84,7 +94,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     marketClient: PolymarketMarketClient,
     executor: ExecutionAdapter,
     limiter: DbSpendingLimitEnforcer,
-    bijazConfig: BijazConfig,
+    thufirConfig: ThufirConfig,
     logger?: Logger
   ) {
     super();
@@ -92,19 +102,28 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     this.marketClient = marketClient;
     this.executor = executor;
     this.limiter = limiter;
-    this.bijazConfig = bijazConfig;
+    this.thufirConfig = thufirConfig;
     this.logger = logger ?? new Logger('info');
 
     // Load autonomous config with defaults
     this.config = {
-      enabled: bijazConfig.autonomy?.enabled ?? false,
-      fullAuto: (bijazConfig.autonomy as any)?.fullAuto ?? false,
-      minEdge: (bijazConfig.autonomy as any)?.minEdge ?? 0.05,
-      requireHighConfidence: (bijazConfig.autonomy as any)?.requireHighConfidence ?? false,
-      pauseOnLossStreak: (bijazConfig.autonomy as any)?.pauseOnLossStreak ?? 3,
-      dailyReportTime: (bijazConfig.autonomy as any)?.dailyReportTime ?? '20:00',
-      maxTradesPerScan: (bijazConfig.autonomy as any)?.maxTradesPerScan ?? 3,
+      enabled: thufirConfig.autonomy?.enabled ?? false,
+      fullAuto: (thufirConfig.autonomy as any)?.fullAuto ?? false,
+      minEdge: (thufirConfig.autonomy as any)?.minEdge ?? 0.05,
+      requireHighConfidence: (thufirConfig.autonomy as any)?.requireHighConfidence ?? false,
+      pauseOnLossStreak: (thufirConfig.autonomy as any)?.pauseOnLossStreak ?? 3,
+      dailyReportTime: (thufirConfig.autonomy as any)?.dailyReportTime ?? '20:00',
+      maxTradesPerScan: (thufirConfig.autonomy as any)?.maxTradesPerScan ?? 3,
     };
+
+    if (thufirConfig.agent?.useOrchestrator) {
+      const registry = new AgentToolRegistry();
+      registerAllTools(registry);
+      const identity = loadThufirIdentity({
+        workspacePath: thufirConfig.agent?.workspace,
+      }).identity;
+      this.orchestratorAssets = { registry, identity };
+    }
 
     this.ensureTradesTable();
   }
@@ -118,7 +137,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return;
     }
 
-    const scanInterval = this.bijazConfig.autonomy?.scanIntervalSeconds ?? 900;
+    const scanInterval = this.thufirConfig.autonomy?.scanIntervalSeconds ?? 900;
 
     // Start periodic scanning
     this.scanTimer = setInterval(async () => {
@@ -218,8 +237,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     const opportunities = await scanForOpportunities(
       this.llm,
       this.marketClient,
-      this.bijazConfig,
-      50
+      this.thufirConfig,
+      50,
+      { orchestrator: this.orchestratorAssets }
     );
 
     this.emit('opportunity-found', opportunities);
@@ -273,7 +293,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     }
 
     const exposureCheck = checkExposureLimits({
-      config: this.bijazConfig,
+      config: this.thufirConfig,
       market: opp.market,
       outcome: opp.direction.includes('YES') ? 'YES' : 'NO',
       amount,
@@ -412,7 +432,12 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   async generateDailyPnLReport(): Promise<string> {
     const pnl = this.getDailyPnL();
     const rollup = getDailyPnLRollup(pnl.date);
-    const report = await generateDailyReport(this.llm, this.marketClient, this.bijazConfig);
+    const report = await generateDailyReport(
+      this.llm,
+      this.marketClient,
+      this.thufirConfig,
+      { orchestrator: this.orchestratorAssets }
+    );
 
     const lines: string[] = [];
     lines.push(`📈 **Daily Autonomous Trading Report** (${pnl.date})`);

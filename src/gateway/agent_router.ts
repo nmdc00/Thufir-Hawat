@@ -1,9 +1,9 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 import type { Logger } from '../core/logger.js';
-import { BijazAgent } from '../core/agent.js';
+import { ThufirAgent } from '../core/agent.js';
 
 export type IncomingMessage = {
   channel: 'telegram' | 'whatsapp' | 'cli';
@@ -12,21 +12,21 @@ export type IncomingMessage = {
   threadId?: string;
 };
 
-type AgentOverride = NonNullable<BijazConfig['agents']>['overrides'][string];
+type AgentOverride = NonNullable<ThufirConfig['agents']>['overrides'][string];
 
 function normalizeToken(value: string | undefined | null): string {
   return (value ?? '').trim().toLowerCase();
 }
 
-function getBaseSessionsPath(config: BijazConfig): string {
-  return config.memory?.sessionsPath ?? join(homedir(), '.bijaz', 'sessions');
+function getBaseSessionsPath(config: ThufirConfig): string {
+  return config.memory?.sessionsPath ?? join(homedir(), '.thufir', 'sessions');
 }
 
 function mergeConfig(
-  base: BijazConfig,
+  base: ThufirConfig,
   override: AgentOverride | undefined,
   params: { agentId: string; isolateSessions: boolean }
-): BijazConfig {
+): ThufirConfig {
   const sessionsPath = params.isolateSessions
     ? join(getBaseSessionsPath(base), 'agents', params.agentId)
     : base.memory?.sessionsPath;
@@ -51,7 +51,7 @@ function mergeConfig(
 }
 
 function routeMatches(
-  route: NonNullable<BijazConfig['agents']>['routes'][number],
+  route: NonNullable<ThufirConfig['agents']>['routes'][number],
   message: IncomingMessage
 ): boolean {
   if (route.channel && route.channel !== message.channel) {
@@ -93,7 +93,7 @@ function routeMatches(
   return true;
 }
 
-export function createAgentRegistry(config: BijazConfig, logger: Logger) {
+export function createAgentRegistry(config: ThufirConfig, logger: Logger) {
   const agentsConfig = config.agents;
   const routeList = agentsConfig?.routes ?? [];
   const defaultAgentId = agentsConfig?.defaultAgentId ?? 'main';
@@ -111,11 +111,11 @@ export function createAgentRegistry(config: BijazConfig, logger: Logger) {
     agentIds.add('main');
   }
 
-  const agents = new Map<string, BijazAgent>();
+  const agents = new Map<string, ThufirAgent>();
   const isolateSessions = agentIds.size > 1;
   for (const agentId of agentIds) {
     const merged = mergeConfig(config, overrides[agentId], { agentId, isolateSessions });
-    const instance = new BijazAgent(merged, logger);
+    const instance = new ThufirAgent(merged, logger);
     agents.set(agentId, instance);
   }
 
@@ -128,7 +128,7 @@ export function createAgentRegistry(config: BijazConfig, logger: Logger) {
     return defaultAgentId;
   };
 
-  const resolveAgent = (message: IncomingMessage): { agentId: string; agent: BijazAgent } => {
+  const resolveAgent = (message: IncomingMessage): { agentId: string; agent: ThufirAgent } => {
     const agentId = resolveAgentId(message);
     const fallback = agents.get(defaultAgentId) ?? agents.values().next().value;
     if (!fallback) {

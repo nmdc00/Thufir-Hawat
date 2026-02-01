@@ -276,7 +276,7 @@ async function testAPIKeyDerivation() {
 
 async function main() {
   console.log('╔═══════════════════════════════════════════════════════════════╗');
-  console.log('║        Bijaz End-to-End Test Suite (Polymarket)              ║');
+  console.log('║        Thufir End-to-End Test Suite (Polymarket)              ║');
   console.log('╚═══════════════════════════════════════════════════════════════╝');
 
   const results: Record<string, boolean> = {};
@@ -303,9 +303,9 @@ async function main() {
   if (allPassed) {
     console.log('\n✅ All tests passed! Ready for live trading.');
     console.log('\nNext steps:');
-    console.log('  1. Create a wallet: bijaz wallet create');
+    console.log('  1. Create a wallet: thufir wallet create');
     console.log('  2. Fund with USDC + MATIC on Polygon');
-    console.log('  3. Set BIJAZ_WALLET_PASSWORD env var');
+    console.log('  3. Set THUFIR_WALLET_PASSWORD env var');
     console.log('  4. Set execution.mode: live in config');
     console.log('  5. Start with small trades ($1-5)');
   } else {

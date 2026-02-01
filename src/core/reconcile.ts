@@ -1,10 +1,10 @@
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import { getCashBalance } from '../memory/portfolio.js';
 import { loadWallet } from '../execution/wallet/manager.js';
 import { getWalletBalances } from '../execution/wallet/balances.js';
 
 export async function reconcileBalances(params: {
-  config: BijazConfig;
+  config: ThufirConfig;
   password: string;
 }): Promise<
   | {

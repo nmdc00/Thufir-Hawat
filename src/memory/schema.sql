@@ -1,4 +1,4 @@
--- Bijaz Database Schema
+-- Thufir Database Schema
 -- SQLite compatible
 
 -- ============================================================================
@@ -197,6 +197,95 @@ CREATE TABLE IF NOT EXISTS market_cache (
     created_at TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- ============================================================================
+-- Mentat Storage (Assumptions / Mechanisms / Fragility Cards)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS assumptions (
+    id TEXT PRIMARY KEY,
+    system TEXT,
+    statement TEXT NOT NULL,
+    dependencies TEXT,       -- JSON array
+    evidence_for TEXT,        -- JSON array
+    evidence_against TEXT,    -- JSON array
+    stress_score REAL,
+    last_tested TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_assumptions_system ON assumptions(system);
+CREATE INDEX IF NOT EXISTS idx_assumptions_updated ON assumptions(updated_at);
+
+CREATE TABLE IF NOT EXISTS assumption_deltas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assumption_id TEXT NOT NULL,
+    changed_at TEXT DEFAULT (datetime('now')),
+    previous_snapshot TEXT,   -- JSON
+    current_snapshot TEXT,    -- JSON
+    stress_delta REAL,
+    fields_changed TEXT       -- JSON array
+);
+
+CREATE INDEX IF NOT EXISTS idx_assumption_deltas_id ON assumption_deltas(assumption_id);
+
+CREATE TABLE IF NOT EXISTS mechanisms (
+    id TEXT PRIMARY KEY,
+    system TEXT,
+    name TEXT NOT NULL,
+    causal_chain TEXT,        -- JSON array
+    trigger_class TEXT,
+    propagation_path TEXT,    -- JSON array
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_mechanisms_system ON mechanisms(system);
+CREATE INDEX IF NOT EXISTS idx_mechanisms_updated ON mechanisms(updated_at);
+
+CREATE TABLE IF NOT EXISTS mechanism_deltas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mechanism_id TEXT NOT NULL,
+    changed_at TEXT DEFAULT (datetime('now')),
+    previous_snapshot TEXT,   -- JSON
+    current_snapshot TEXT,    -- JSON
+    fields_changed TEXT       -- JSON array
+);
+
+CREATE INDEX IF NOT EXISTS idx_mechanism_deltas_id ON mechanism_deltas(mechanism_id);
+
+CREATE TABLE IF NOT EXISTS fragility_cards (
+    id TEXT PRIMARY KEY,
+    system TEXT,
+    mechanism_id TEXT,
+    exposure_surface TEXT,
+    convexity TEXT,
+    early_signals TEXT,       -- JSON array
+    falsifiers TEXT,          -- JSON array
+    downside TEXT,
+    recovery_capacity TEXT,
+    score REAL,
+    updated_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_fragility_cards_system ON fragility_cards(system);
+CREATE INDEX IF NOT EXISTS idx_fragility_cards_score ON fragility_cards(score);
+
+CREATE TABLE IF NOT EXISTS fragility_card_deltas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id TEXT NOT NULL,
+    changed_at TEXT DEFAULT (datetime('now')),
+    previous_score REAL,
+    current_score REAL,
+    score_delta REAL,
+    previous_snapshot TEXT,   -- JSON
+    current_snapshot TEXT,    -- JSON
+    fields_changed TEXT       -- JSON array
+);
+
+CREATE INDEX IF NOT EXISTS idx_fragility_card_deltas_id ON fragility_card_deltas(card_id);
 
 CREATE INDEX IF NOT EXISTS idx_market_category ON market_cache(category);
 CREATE INDEX IF NOT EXISTS idx_market_resolved ON market_cache(resolved);

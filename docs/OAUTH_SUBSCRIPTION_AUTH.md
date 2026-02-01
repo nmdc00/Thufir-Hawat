@@ -1,11 +1,11 @@
-# Subscription-Based Authentication for Bijaz
+# Subscription-Based Authentication for Thufir
 
 Use your Claude Pro/Max and OpenAI subscriptions instead of API keys by running [llm-mux](https://github.com/nghyane/llm-mux) as a local proxy.
 
 ## Overview
 
 ```
-Bijaz → localhost:8317 (llm-mux) → Claude Pro / OpenAI / Copilot
+Thufir → localhost:8317 (llm-mux) → Claude Pro / OpenAI / Copilot
 ```
 
 | Provider | Subscription | Support |
@@ -39,9 +39,9 @@ llm-mux
 # Server runs on http://localhost:8317
 ```
 
-### 4. Configure Bijaz
+### 4. Configure Thufir
 
-In `~/.bijaz/config.yaml`:
+In `~/.thufir/config.yaml`:
 
 ```yaml
 agent:
@@ -51,11 +51,11 @@ agent:
   proxyBaseUrl: http://localhost:8317
 ```
 
-### 5. Run Bijaz
+### 5. Run Thufir
 
 ```bash
 # No ANTHROPIC_API_KEY needed!
-bijaz
+thufir
 ```
 
 ## Hetzner / Cloud Deployment
@@ -123,7 +123,7 @@ curl http://localhost:8317/api/stats
 
 ## Configuration Reference
 
-### Bijaz Config (`~/.bijaz/config.yaml`)
+### Thufir Config (`~/.thufir/config.yaml`)
 
 ```yaml
 agent:
@@ -136,7 +136,7 @@ agent:
 
 ### Environment Variables (Fallback)
 
-If proxy is disabled or unavailable, Bijaz falls back to API keys:
+If proxy is disabled or unavailable, Thufir falls back to API keys:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-..."

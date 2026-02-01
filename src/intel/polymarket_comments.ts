@@ -1,4 +1,4 @@
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { listWatchlist } from '../memory/watchlist.js';
 
@@ -23,7 +23,7 @@ export class PolymarketCommentsFetcher {
   private gammaUrl: string;
   private marketClient: PolymarketMarketClient;
 
-  constructor(private config: BijazConfig, marketClient?: PolymarketMarketClient) {
+  constructor(private config: ThufirConfig, marketClient?: PolymarketMarketClient) {
     this.gammaUrl = config.polymarket.api.gamma.replace(/\/$/, '');
     this.marketClient = marketClient ?? new PolymarketMarketClient(config);
   }

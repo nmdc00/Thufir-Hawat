@@ -1,4 +1,4 @@
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { Market, PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listMarketCategories } from '../memory/market_cache.js';
@@ -8,7 +8,7 @@ import { IntelVectorStore } from '../intel/vectorstore.js';
 export type ToolResult = Record<string, unknown>;
 
 export interface ToolContext {
-  config: BijazConfig;
+  config: ThufirConfig;
   marketClient: PolymarketMarketClient;
 }
 
@@ -36,7 +36,7 @@ export class ToolRegistry {
   constructor(options: ToolRegistryOptions = {}) {
     this.defaultTtlMs = options.defaultTtlMs ?? 30_000;
     this.ttlByTool = options.ttlByTool ?? {};
-    this.enableLogs = options.enableLogs ?? process.env.BIJAZ_TOOL_LOG === '1';
+    this.enableLogs = options.enableLogs ?? process.env.THUFIR_TOOL_LOG === '1';
 
     this.handlers['market.get'] = async (ctx, params) => {
       const id = String(params.marketId ?? '');

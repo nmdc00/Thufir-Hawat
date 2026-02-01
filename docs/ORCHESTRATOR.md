@@ -1,5 +1,7 @@
 # Orchestrator Architecture
 
+Last updated: 2026-02-01
+
 Split model architecture where Claude handles reasoning/orchestration and GPT handles execution/implementation.
 
 ## Rationale
@@ -12,7 +14,7 @@ Split model architecture where Claude handles reasoning/orchestration and GPT ha
 **Current approach**: Claude does everything, GPT only on rate limit errors.
 **Problem**: Wastes Claude calls on grunt work (tool execution, data gathering).
 
-## Proposed Architecture
+## Implemented Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -130,16 +132,33 @@ Claude receives the structured data and:
 
 ## Implementation
 
-### New Config Options
+### Config Options (Current)
 
 ```yaml
 agent:
   model: claude-sonnet-4-5-20251101      # Orchestrator/synthesizer
-  executorModel: gpt-4o                   # Executor
+  executorModel: gpt-5.2                  # Executor
   executorProvider: openai
 
   # Optional: use same model for both (current behavior)
-  useExecutorModel: true                  # Enable split architecture
+  useExecutorModel: false                 # Enable split architecture
+  useOrchestrator: false                  # Enable agentic loop in src/agent/
+  showToolTrace: false                    # Append tool trace to chat responses
+  showCriticNotes: false                  # Append critic notes to chat responses
+  showPlanTrace: false                    # Append plan trace to chat responses
+  mentatAutoScan: false                   # Auto-run mentat scan/report in chat + daily report + autonomous P&L
+  mentatSystem: Polymarket                # System label for mentat reports
+  identityPromptMode: full                # full | minimal | none (identity prelude)
+  internalPromptMode: minimal             # full | minimal | none (internal LLM calls)
+  # Mentat monitoring/alerts (gateway)
+  # notifications.mentat.enabled: true
+  # Clawdbot-style heartbeats (gateway)
+  # notifications.heartbeat.enabled: true
+  # Proactive search can be scheduled or heartbeat-driven
+  # notifications.proactiveSearch.mode: "schedule" | "heartbeat" | "direct"
+  # CLI: `thufir intel proactive --send` sends direct summaries
+
+Note: `identityPromptMode: none` minimizes tokens but disables identity injection in user-facing prompts.
 ```
 
 ### New Classes
@@ -238,6 +257,23 @@ Apply your reasoning to draw conclusions, not just summarize the data.
 - Quick questions
 - Tasks requiring single-turn reasoning
 - When GPT executor would add latency without benefit
+
+---
+
+## Implementation Status (2026-02-01)
+
+Implemented:
+
+- Split-model plan/execute/synth client (`src/core/llm.ts` OrchestratorClient)
+- Fallback to single-model execution when planning/execution fails
+- Metrics for plan/executor/synth failure counts
+- Agentic orchestrator loop (plan -> tool -> reflect -> critic) behind `agent.useOrchestrator`
+
+Not yet implemented:
+
+- User-visible plan/tool trace by default (optional via config)
+- Multi-agent role split (Cartographer/Skeptic/Risk Officer)
+- Automatic mentat report generation inside the orchestrator loop
 
 ## Migration Path
 

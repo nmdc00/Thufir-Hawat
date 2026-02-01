@@ -8,7 +8,7 @@
 import fetch from 'node-fetch';
 import { ethers } from 'ethers';
 
-import type { BijazConfig } from '../../core/config.js';
+import type { ThufirConfig } from '../../core/config.js';
 
 // ============================================================================
 // Types
@@ -125,7 +125,7 @@ export class PolymarketCLOBClient {
   private credentials?: ApiKeyCredentials;
   private wallet?: ethers.Wallet;
 
-  constructor(config: BijazConfig) {
+  constructor(config: ThufirConfig) {
     this.clobUrl = config.polymarket.api.clob.replace(/\/$/, '');
   }
 

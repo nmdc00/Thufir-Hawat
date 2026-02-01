@@ -1,10 +1,10 @@
 # Wallet Security Guide
 
-This document describes the security architecture for Bijaz's crypto wallet integration.
+This document describes the security architecture for Thufir's crypto wallet integration.
 
 ## Overview
 
-Bijaz requires a Polygon wallet with USDC to execute trades on Polymarket. This is the most security-critical component of the system.
+Thufir requires a Polygon wallet with USDC to execute trades on Polymarket. This is the most security-critical component of the system.
 
 **Principle:** The wallet should be a "hot wallet" with limited funds, used exclusively for Polymarket trading. Never store more than you're willing to lose.
 
@@ -112,7 +112,7 @@ User Password
          │
          ▼
   Encrypted Private Key
-  (stored in ~/.bijaz/keystore.json)
+  (stored in ~/.thufir/keystore.json)
 ```
 
 ### Address Whitelist
@@ -241,10 +241,10 @@ class CooldownEnforcer {
 
 ## Live Execution Mode
 
-When you set `execution.mode: live` in your config, Bijaz will execute real trades on Polymarket using your wallet. This requires:
+When you set `execution.mode: live` in your config, Thufir will execute real trades on Polymarket using your wallet. This requires:
 
-1. **Wallet Setup**: Create or import a wallet using `bijaz wallet create` or `bijaz wallet import`
-2. **Password**: Set `BIJAZ_WALLET_PASSWORD` environment variable with your keystore password
+1. **Wallet Setup**: Create or import a wallet using `thufir wallet create` or `thufir wallet import`
+2. **Password**: Set `THUFIR_WALLET_PASSWORD` environment variable with your keystore password
 3. **USDC Balance**: Fund your wallet with USDC on Polygon
 4. **MATIC for Gas**: Small amount of MATIC (~$5) for transaction fees
 
@@ -267,7 +267,7 @@ When you set `execution.mode: live` in your config, Bijaz will execute real trad
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Order Signing:                                             │
-│  • Wallet decrypted using BIJAZ_WALLET_PASSWORD             │
+│  • Wallet decrypted using THUFIR_WALLET_PASSWORD             │
 │  • Order signed with EIP-712 typed data                     │
 │  • Private key cleared from memory                          │
 └─────────────────────────┬───────────────────────────────────┘
@@ -302,19 +302,19 @@ execution:
 
 ### 1. Create a Dedicated Wallet
 
-**Do not use your main wallet.** Create a new wallet specifically for Bijaz:
+**Do not use your main wallet.** Create a new wallet specifically for Thufir:
 
 ```bash
-# Option 1: Let Bijaz create one
-bijaz wallet create
+# Option 1: Let Thufir create one
+thufir wallet create
 
 # Option 2: Import existing (for advanced users)
-bijaz wallet import
+thufir wallet import
 ```
 
 ### 2. Fund the Wallet
 
-Transfer USDC on Polygon to your Bijaz wallet. **Start small:**
+Transfer USDC on Polygon to your Thufir wallet. **Start small:**
 
 - Initial testing: $50-100
 - Normal operation: $200-500
@@ -326,26 +326,26 @@ You also need a small amount of MATIC for gas (~$5 worth).
 
 ```bash
 # Set spending limits
-bijaz wallet limits set \
+thufir wallet limits set \
   --daily 100 \
   --per-trade 25 \
   --confirmation-threshold 10
 
 # View current limits
-bijaz wallet limits show
+thufir wallet limits show
 ```
 
 ### 4. Test the Setup
 
 ```bash
 # Check wallet status
-bijaz wallet status
+thufir wallet status
 
 # Test a tiny trade ($1)
-bijaz trade buy "Some Market" YES 0.50 --amount 1 --dry-run
+thufir trade buy "Some Market" YES 0.50 --amount 1 --dry-run
 
 # Execute for real
-bijaz trade buy "Some Market" YES 0.50 --amount 1
+thufir trade buy "Some Market" YES 0.50 --amount 1
 ```
 
 ## Operational Security
@@ -363,7 +363,7 @@ bijaz trade buy "Some Market" YES 0.50 --amount 1
 
 - Don't store more than you can afford to lose
 - Don't share your password
-- Don't run Bijaz on a shared/compromised machine
+- Don't run Thufir on a shared/compromised machine
 - Don't disable the address whitelist
 - Don't increase limits without careful consideration
 - Don't ignore the cooldown warnings
@@ -375,16 +375,16 @@ bijaz trade buy "Some Market" YES 0.50 --amount 1
 If you suspect your wallet or machine has been compromised:
 
 1. **Immediately** transfer funds out using a different device
-2. Stop the Bijaz process
+2. Stop the Thufir process
 3. Investigate the compromise
 4. Create a new wallet before resuming
 
 ```bash
 # Emergency stop
-bijaz stop --force
+thufir stop --force
 
 # Transfer funds out (from another device/wallet app)
-# Do NOT use Bijaz for this - use MetaMask or similar
+# Do NOT use Thufir for this - use MetaMask or similar
 ```
 
 ### Lost Password
@@ -399,10 +399,10 @@ If you lose your keystore password:
 
 ```bash
 # Export encrypted keystore (safe to backup)
-bijaz wallet export --output ./bijaz-wallet-backup.json
+thufir wallet export --output ./thufir-wallet-backup.json
 
 # Import on new machine
-bijaz wallet import --input ./bijaz-wallet-backup.json
+thufir wallet import --input ./thufir-wallet-backup.json
 ```
 
 The exported file is encrypted and requires your password to use.
@@ -436,4 +436,4 @@ All wallet operations are logged (without sensitive data):
 2026-01-26T10:00:05Z INFO  [limits] Daily spend updated: $25.00 / $100.00
 ```
 
-Logs are stored in `~/.bijaz/logs/wallet.log` and rotated daily.
+Logs are stored in `~/.thufir/logs/wallet.log` and rotated daily.

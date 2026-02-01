@@ -1,4 +1,4 @@
-import type { BijazConfig } from '../core/config.js';
+import type { ThufirConfig } from '../core/config.js';
 
 export interface TwitterItem {
   title: string;
@@ -13,7 +13,7 @@ export class TwitterFetcher {
   private bearer: string | undefined;
   private baseUrl: string;
 
-  constructor(private config: BijazConfig) {
+  constructor(private config: ThufirConfig) {
     this.bearer =
       this.config.intel?.sources?.twitter?.bearerToken ??
       process.env.TWITTER_BEARER;

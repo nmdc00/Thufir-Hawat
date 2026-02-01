@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Bijaz Hetzner Installer (Ubuntu/Debian)"
+echo "Thufir Hetzner Installer (Ubuntu/Debian)"
 echo "This script will:"
 echo "  - Install Node 22 + pnpm (via NodeSource + corepack)"
-echo "  - Clone/update Bijaz to /opt/bijaz (default)"
-echo "  - Create .env and ~/.bijaz/config.yaml"
+echo "  - Clone/update Thufir to /opt/thufir (default)"
+echo "  - Create .env and ~/.thufir/config.yaml"
 echo "  - Install a systemd service and start it"
 echo
 
-read -rp "Install path [/opt/bijaz]: " INSTALL_PATH
-INSTALL_PATH=${INSTALL_PATH:-/opt/bijaz}
+read -rp "Install path [/opt/thufir]: " INSTALL_PATH
+INSTALL_PATH=${INSTALL_PATH:-/opt/thufir}
 
-read -rp "Git repo URL (e.g. https://github.com/you/bijaz.git): " REPO_URL
+read -rp "Git repo URL (e.g. https://github.com/you/thufir.git): " REPO_URL
 if [[ -z "${REPO_URL}" ]]; then
   echo "Repo URL is required."
   exit 1
 fi
 
-read -rp "System user to run Bijaz as [$(whoami)]: " RUN_USER
+read -rp "System user to run Thufir as [$(whoami)]: " RUN_USER
 RUN_USER=${RUN_USER:-$(whoami)}
 
 read -rp "Execution mode (paper|live) [paper]: " EXEC_MODE
@@ -51,12 +51,12 @@ if [[ "${ENABLE_TELEGRAM}" =~ ^[Yy]$ ]]; then
   read -rp "Telegram allowed chat IDs (comma-separated): " TELEGRAM_ALLOWED_CHAT_IDS
 fi
 
-BIJAZ_WALLET_PASSWORD=""
-BIJAZ_KEYSTORE_PATH=""
+THUFIR_WALLET_PASSWORD=""
+THUFIR_KEYSTORE_PATH=""
 if [[ "${EXEC_MODE}" == "live" ]]; then
-  read -rsp "BIJAZ_WALLET_PASSWORD: " BIJAZ_WALLET_PASSWORD; echo
-  read -rp "BIJAZ_KEYSTORE_PATH [~/.bijaz/keystore.json]: " BIJAZ_KEYSTORE_PATH
-  BIJAZ_KEYSTORE_PATH=${BIJAZ_KEYSTORE_PATH:-~/.bijaz/keystore.json}
+  read -rsp "THUFIR_WALLET_PASSWORD: " THUFIR_WALLET_PASSWORD; echo
+  read -rp "THUFIR_KEYSTORE_PATH [~/.thufir/keystore.json]: " THUFIR_KEYSTORE_PATH
+  THUFIR_KEYSTORE_PATH=${THUFIR_KEYSTORE_PATH:-~/.thufir/keystore.json}
 fi
 
 echo
@@ -69,6 +69,14 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 sudo corepack enable
 sudo corepack prepare pnpm@10.28.1 --activate
+
+echo "Installing bun (required for QMD)..."
+curl -fsSL https://bun.sh/install | bash
+export BUN_INSTALL="${HOME}/.bun"
+export PATH="${BUN_INSTALL}/bin:${PATH}"
+
+echo "Installing QMD (local knowledge search)..."
+bun install -g github:tobi/qmd || echo "Warning: QMD install failed, will retry after deploy"
 
 echo "Cloning/updating repo..."
 sudo mkdir -p "${INSTALL_PATH}"
@@ -92,13 +100,25 @@ NEWSAPI_KEY=${NEWSAPI_KEY}
 SERPAPI_KEY=${SERPAPI_KEY}
 TWITTER_BEARER=${TWITTER_BEARER}
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-BIJAZ_WALLET_PASSWORD=${BIJAZ_WALLET_PASSWORD}
-BIJAZ_KEYSTORE_PATH=${BIJAZ_KEYSTORE_PATH}
+THUFIR_WALLET_PASSWORD=${THUFIR_WALLET_PASSWORD}
+THUFIR_KEYSTORE_PATH=${THUFIR_KEYSTORE_PATH}
 EOF
 
-echo "Writing ~/.bijaz/config.yaml..."
-mkdir -p "${HOME}/.bijaz"
-cat > "${HOME}/.bijaz/config.yaml" <<EOF
+echo "Setting up QMD knowledge collections..."
+mkdir -p "${HOME}/.thufir/knowledge"/{research,intel,markets}
+if command -v qmd &> /dev/null; then
+    qmd collection add "${HOME}/.thufir/knowledge/research" --name thufir-research 2>/dev/null || true
+    qmd collection add "${HOME}/.thufir/knowledge/intel" --name thufir-intel 2>/dev/null || true
+    qmd collection add "${HOME}/.thufir/knowledge/markets" --name thufir-markets 2>/dev/null || true
+    qmd context add qmd://thufir-research "Web search results and articles for prediction market research" 2>/dev/null || true
+    qmd context add qmd://thufir-intel "News, social media intel, market commentary" 2>/dev/null || true
+    qmd context add qmd://thufir-markets "Market analysis and trading notes" 2>/dev/null || true
+    echo "QMD collections configured"
+fi
+
+echo "Writing ~/.thufir/config.yaml..."
+mkdir -p "${HOME}/.thufir"
+cat > "${HOME}/.thufir/config.yaml" <<EOF
 gateway:
   port: 18789
   bind: loopback
@@ -108,13 +128,13 @@ agent:
   openaiModel: gpt-5.2
   provider: anthropic
   apiBaseUrl: https://api.openai.com
-  workspace: ~/.bijaz
+  workspace: ~/.thufir
 
 execution:
   mode: ${EXEC_MODE}
 
 wallet:
-  keystorePath: ~/.bijaz/keystore.json
+  keystorePath: ~/.thufir/keystore.json
   limits:
     daily: 100
     perTrade: 25
@@ -126,8 +146,8 @@ polymarket:
     clob: https://clob.polymarket.com
 
 memory:
-  dbPath: ~/.bijaz/bijaz.sqlite
-  sessionsPath: ~/.bijaz/sessions
+  dbPath: ~/.thufir/thufir.sqlite
+  sessionsPath: ~/.thufir/sessions
   maxHistoryMessages: 50
   compactAfterTokens: 12000
   keepRecentMessages: 12
@@ -145,18 +165,19 @@ channels:
     allowedChatIds: [${TELEGRAM_ALLOWED_CHAT_IDS}]
 EOF
 
-SERVICE_PATH="/etc/systemd/system/bijaz.service"
+SERVICE_PATH="/etc/systemd/system/thufir.service"
 echo "Writing systemd service to ${SERVICE_PATH}..."
 sudo tee "${SERVICE_PATH}" >/dev/null <<EOF
 [Unit]
-Description=Bijaz Gateway
+Description=Thufir Gateway
 After=network.target
 
 [Service]
 WorkingDirectory=${INSTALL_PATH}
 Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:${HOME}/.bun/bin
 EnvironmentFile=${INSTALL_PATH}/.env
-ExecStart=/usr/bin/pnpm bijaz gateway
+ExecStart=/usr/bin/pnpm thufir gateway
 Restart=always
 User=${RUN_USER}
 Group=${RUN_USER}
@@ -167,26 +188,26 @@ EOF
 
 echo "Enabling service..."
 sudo systemctl daemon-reload
-sudo systemctl enable bijaz
-sudo systemctl start bijaz
+sudo systemctl enable thufir
+sudo systemctl start thufir
 
 echo "Installing update helper..."
-sudo tee /usr/local/bin/bijaz-update >/dev/null <<EOF
+sudo tee /usr/local/bin/thufir-update >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${INSTALL_PATH}"
 git pull
 pnpm install
 pnpm build
-sudo systemctl restart bijaz
-sudo systemctl status bijaz --no-pager
+sudo systemctl restart thufir
+sudo systemctl status thufir --no-pager
 if systemctl list-unit-files --type=service --no-legend | awk '{print \$1}' | grep -qx 'llm-mux.service'; then
   sudo systemctl restart llm-mux
   sudo systemctl status llm-mux --no-pager
 fi
 EOF
-sudo chmod +x /usr/local/bin/bijaz-update
+sudo chmod +x /usr/local/bin/thufir-update
 
 echo
 echo "Done. Service status:"
-sudo systemctl status bijaz --no-pager
+sudo systemctl status thufir --no-pager

@@ -278,8 +278,8 @@ describe('LiveExecutor', () => {
 describe('Execution mode factory', () => {
   it('creates LiveExecutor when mode is live and password provided', async () => {
     // Set environment variable
-    const originalPassword = process.env.BIJAZ_WALLET_PASSWORD;
-    process.env.BIJAZ_WALLET_PASSWORD = 'test-password';
+    const originalPassword = process.env.THUFIR_WALLET_PASSWORD;
+    process.env.THUFIR_WALLET_PASSWORD = 'test-password';
 
     try {
       // This is tested indirectly through the agent - just verify the LiveExecutor can be instantiated
@@ -293,16 +293,16 @@ describe('Execution mode factory', () => {
             limits: { daily: 100, perTrade: 25, confirmationThreshold: 10 },
           },
         } as any,
-        password: process.env.BIJAZ_WALLET_PASSWORD,
+        password: process.env.THUFIR_WALLET_PASSWORD,
       });
 
       expect(executor).toBeInstanceOf(LiveExecutor);
     } finally {
       // Restore original value
       if (originalPassword !== undefined) {
-        process.env.BIJAZ_WALLET_PASSWORD = originalPassword;
+        process.env.THUFIR_WALLET_PASSWORD = originalPassword;
       } else {
-        delete process.env.BIJAZ_WALLET_PASSWORD;
+        delete process.env.THUFIR_WALLET_PASSWORD;
       }
     }
   });

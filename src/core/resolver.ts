@@ -1,10 +1,10 @@
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { listUnresolvedPredictions } from '../memory/predictions.js';
 import { recordOutcome } from '../memory/calibration.js';
 
 export async function resolveOutcomes(
-  config: BijazConfig,
+  config: ThufirConfig,
   limit = 25
 ): Promise<number> {
   let updated = 0;

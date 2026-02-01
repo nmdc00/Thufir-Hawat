@@ -8,10 +8,15 @@
  */
 
 import type { LlmClient } from './llm.js';
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import type { Market, PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listRecentIntel } from '../intel/store.js';
+import { runOrchestrator } from '../agent/orchestrator/orchestrator.js';
+import { AgentToolRegistry } from '../agent/tools/registry.js';
+import { registerAllTools } from '../agent/tools/adapters/index.js';
+import { loadThufirIdentity } from '../agent/identity/identity.js';
+import type { AgentIdentity } from '../agent/identity/types.js';
 
 export interface Opportunity {
   market: Market;
@@ -33,9 +38,15 @@ export interface DailyReport {
   marketsScanned: number;
   newsItemsAnalyzed: number;
   generatedAt: Date;
+  mentatReport?: string;
 }
 
-const OPPORTUNITY_SYSTEM_PROMPT = `You are Bijaz, an expert prediction market analyst. Your job is to find trading opportunities by comparing market prices to your probability estimates.
+export interface OrchestratorAssets {
+  registry: AgentToolRegistry;
+  identity: AgentIdentity;
+}
+
+const OPPORTUNITY_SYSTEM_PROMPT = `You are Thufir, an expert prediction market analyst. Your job is to find trading opportunities by comparing market prices to your probability estimates.
 
 For each market, you will:
 1. Analyze the question and current price
@@ -64,8 +75,9 @@ Edge = |myEstimate - marketPrice|. Only flag opportunities where edge >= 0.05.`;
 export async function scanForOpportunities(
   llm: LlmClient,
   marketClient: PolymarketMarketClient,
-  config: BijazConfig,
-  maxMarkets = 50
+  config: ThufirConfig,
+  maxMarkets = 50,
+  options?: { orchestrator?: OrchestratorAssets }
 ): Promise<Opportunity[]> {
   // Fetch markets and news
   const markets = await marketClient.listMarkets(maxMarkets);
@@ -109,16 +121,52 @@ Analyze these markets. For each one, estimate the true probability and identify 
 Focus on markets where the news gives you an informational edge.
 Return a JSON array with your analysis.`;
 
-  const response = await llm.complete(
-    [
-      { role: 'system', content: OPPORTUNITY_SYSTEM_PROMPT },
-      { role: 'user', content: prompt },
-    ],
-    { temperature: 0.3 }
-  );
+  let responseContent: string;
+
+  if (config.agent?.useOrchestrator) {
+    const registry = options?.orchestrator?.registry ?? new AgentToolRegistry();
+    if (!options?.orchestrator) {
+      registerAllTools(registry);
+    }
+    const identity =
+      options?.orchestrator?.identity ??
+      loadThufirIdentity({
+        workspacePath: config.agent?.workspace,
+      }).identity;
+
+    const result = await runOrchestrator(
+      'Generate opportunity analysis JSON for the provided markets.',
+      {
+        llm,
+        toolRegistry: registry,
+        identity,
+        toolContext: { config, marketClient },
+        memorySystem: {
+          getRelevantContext: async () => prompt,
+        },
+      },
+      {
+        skipPlanning: true,
+        skipCritic: true,
+        maxIterations: 1,
+        synthesisSystemPrompt:
+          'Return ONLY a JSON array matching the requested schema. No markdown, no commentary.',
+      }
+    );
+    responseContent = result.response;
+  } else {
+    const response = await llm.complete(
+      [
+        { role: 'system', content: OPPORTUNITY_SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
+      ],
+      { temperature: 0.3 }
+    );
+    responseContent = response.content;
+  }
 
   // Parse response
-  const analyses = parseAnalyses(response.content);
+  const analyses = parseAnalyses(responseContent);
 
   // Convert to opportunities
   const opportunities: Opportunity[] = [];
@@ -179,12 +227,42 @@ Return a JSON array with your analysis.`;
 export async function generateDailyReport(
   llm: LlmClient,
   marketClient: PolymarketMarketClient,
-  config: BijazConfig
+  config: ThufirConfig,
+  options?: { orchestrator?: OrchestratorAssets }
 ): Promise<DailyReport> {
-  const opportunities = await scanForOpportunities(llm, marketClient, config, 100);
+  const opportunities = await scanForOpportunities(
+    llm,
+    marketClient,
+    config,
+    100,
+    options
+  );
   const top10 = opportunities.slice(0, 10);
 
   const totalEdge = top10.reduce((sum, o) => sum + o.edge, 0);
+
+  let mentatReport: string | undefined;
+  if (config.agent?.mentatAutoScan) {
+    try {
+      const { runMentatScan } = await import('../mentat/scan.js');
+      const { generateMentatReport, formatMentatReport } = await import('../mentat/report.js');
+      const scan = await runMentatScan({
+        system: config.agent?.mentatSystem ?? 'Polymarket',
+        llm,
+        marketClient,
+        marketQuery: config.agent?.mentatMarketQuery,
+        limit: config.agent?.mentatMarketLimit,
+        intelLimit: config.agent?.mentatIntelLimit,
+      });
+      const report = generateMentatReport({
+        system: scan.system,
+        detectors: scan.detectors,
+      });
+      mentatReport = formatMentatReport(report);
+    } catch {
+      mentatReport = undefined;
+    }
+  }
 
   return {
     date: new Date().toISOString().split('T')[0] ?? new Date().toISOString(),
@@ -193,6 +271,7 @@ export async function generateDailyReport(
     marketsScanned: 100,
     newsItemsAnalyzed: listRecentIntel(30).length,
     generatedAt: new Date(),
+    mentatReport,
   };
 }
 
@@ -238,6 +317,13 @@ export function formatDailyReport(report: DailyReport): string {
   lines.push(`Total edge identified: ${(report.totalEdgeFound * 100).toFixed(1)}%`);
   lines.push('');
   lines.push('Use `/trade <id> <YES|NO> <amount>` to execute.');
+
+  if (report.mentatReport) {
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push(report.mentatReport);
+  }
 
   return lines.join('\n');
 }

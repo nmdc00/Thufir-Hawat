@@ -1,10 +1,10 @@
-# Bijaz Architecture
+# Thufir Architecture
 
-This document describes the technical architecture of Bijaz, a prediction market AI companion.
+This document describes the technical architecture of Thufir, a prediction market AI companion.
 
 ## System Overview
 
-Bijaz is built as a layered system with clear separation of concerns:
+Thufir is built as a layered system with clear separation of concerns:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -75,7 +75,7 @@ Inherited from Clawdbot with minimal modifications.
 - CLI (native)
 - WebChat (embedded)
 
-**Bijaz-Specific Additions:**
+**Thufir-Specific Additions:**
 - Prediction-specific slash commands (`/predict`, `/portfolio`, `/calibration`)
 - Rich message formatting for market data
 - Interactive confirmation dialogs for trades
@@ -90,7 +90,7 @@ Direct fork of Clawdbot gateway with extensions.
 - Multi-agent routing
 - Cron scheduler for automated tasks
 
-**Bijaz Extensions:**
+**Thufir Extensions:**
 - `PredictionSession` class extending base session
 - Market data WebSocket subscriptions
 - Portfolio state synchronization
@@ -98,7 +98,7 @@ Direct fork of Clawdbot gateway with extensions.
 
 ### 3. Agent Core
 
-The brain of Bijaz. Three main subsystems:
+The brain of Thufir. Three main subsystems:
 
 #### 3.1 LLM Reasoning Engine
 
@@ -665,7 +665,7 @@ User: "Buy $50 on Tesla deliveries YES"
 │                     YOUR MACHINE                            │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │                 Bijaz Gateway                       │    │
+│  │                 Thufir Gateway                       │    │
 │  │                 (Node.js process)                   │    │
 │  │                                                     │    │
 │  │  ┌─────────────┐  ┌─────────────┐  ┌────────────┐   │    │

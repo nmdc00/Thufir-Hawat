@@ -1,10 +1,10 @@
 # Intel Sources Configuration
 
-This document describes how to configure and use intelligence sources in Bijaz.
+This document describes how to configure and use intelligence sources in Thufir.
 
 ## Overview
 
-Bijaz aggregates information from multiple sources to inform predictions. The intel layer is designed to be modular - you can enable/disable sources and add custom ones.
+Thufir aggregates information from multiple sources to inform predictions. The intel layer is designed to be modular - you can enable/disable sources and add custom ones.
 
 ## Built-in Sources
 
@@ -15,7 +15,7 @@ General news aggregation from 150,000+ sources.
 **Setup:**
 ```bash
 # Get API key from https://newsapi.org
-bijaz intel add newsapi --key YOUR_API_KEY
+thufir intel add newsapi --key YOUR_API_KEY
 ```
 
 **Configuration:**
@@ -51,7 +51,7 @@ Real-time social sentiment and breaking news.
 **Setup:**
 ```bash
 # Get bearer token from https://developer.twitter.com
-bijaz intel add twitter --bearer YOUR_BEARER_TOKEN
+thufir intel add twitter --bearer YOUR_BEARER_TOKEN
 ```
 
 **Configuration:**
@@ -81,7 +81,7 @@ Traditional news and niche sources.
 
 **Setup:**
 ```bash
-bijaz intel add rss --url "https://fivethirtyeight.com/feed/"
+thufir intel add rss --url "https://fivethirtyeight.com/feed/"
 ```
 
 **Configuration:**
@@ -121,7 +121,7 @@ Broader news coverage with search capabilities.
 **Setup:**
 ```bash
 # Uses SerpAPI for reliable access
-bijaz intel add googlenews --serpapi-key YOUR_KEY
+thufir intel add googlenews --serpapi-key YOUR_KEY
 ```
 
 **Configuration:**
@@ -149,7 +149,7 @@ Sentiment from the prediction market community itself.
 
 **Setup:**
 ```bash
-bijaz intel add polymarket-comments
+thufir intel add polymarket-comments
 ```
 
 **Configuration:**
@@ -168,7 +168,7 @@ intel:
 
 ## Embeddings (Semantic Search)
 
-Bijaz can optionally embed intel items for semantic search. This improves retrieval
+Thufir can optionally embed intel items for semantic search. This improves retrieval
 quality for long-running conversations.
 
 **Configuration:**
@@ -191,7 +191,7 @@ Receive intel from any external system.
 
 **Setup:**
 ```bash
-bijaz intel add webhook --name "my-scraper" --secret YOUR_SECRET
+thufir intel add webhook --name "my-scraper" --secret YOUR_SECRET
 ```
 
 **Configuration:**
@@ -200,12 +200,12 @@ intel:
   webhooks:
     - name: my-scraper
       secret: ${WEBHOOK_SECRET}
-      # Bijaz will listen on /intel/webhook/my-scraper
+      # Thufir will listen on /intel/webhook/my-scraper
 ```
 
 **Webhook Format:**
 ```bash
-curl -X POST https://your-bijaz-host/intel/webhook/my-scraper \
+curl -X POST https://your-thufir-host/intel/webhook/my-scraper \
   -H "Authorization: Bearer YOUR_SECRET" \
   -H "Content-Type: application/json" \
   -d '{
@@ -326,7 +326,7 @@ All intel flows through a standard pipeline:
 
 ## Retrieval
 
-When analyzing a market, Bijaz retrieves relevant intel:
+When analyzing a market, Thufir retrieves relevant intel:
 
 ```typescript
 // Example: Get intel for a market
@@ -360,7 +360,7 @@ intel:
   # Global settings
   vectorDb:
     type: chroma
-    path: ~/.bijaz/chroma
+    path: ~/.thufir/chroma
     embeddingModel: text-embedding-3-small
 
   # Deduplication
@@ -443,7 +443,7 @@ View intel status:
 
 ```bash
 # Show source status
-bijaz intel status
+thufir intel status
 
 # Output:
 # Source              Status    Last Fetch    Items (24h)
@@ -455,21 +455,21 @@ bijaz intel status
 # my-webhook          ⚠ STALE   2 hours ago   12
 
 # View recent intel
-bijaz intel recent --limit 20
+thufir intel recent --limit 20
 
 # Search intel
-bijaz intel search "Federal Reserve" --from 7d
+thufir intel search "Federal Reserve" --from 7d
 
 # Preview alerts
-bijaz intel alerts --limit 50
-bijaz intel alerts --show-score --min-score 1.5
-bijaz intel alerts --show-reasons
-bijaz intel alerts --sentiment negative
+thufir intel alerts --limit 50
+thufir intel alerts --show-score --min-score 1.5
+thufir intel alerts --show-reasons
+thufir intel alerts --sentiment negative
 ```
 
 ## Conversational Alert Setup
 
-If you chat with Bijaz and alerts aren’t configured yet, it will ask whether you want to define alerts.
+If you chat with Thufir and alerts aren’t configured yet, it will ask whether you want to define alerts.
 Answer "yes" to configure watchlist-only alerts, then provide keywords and sources when prompted.
 
 ## Alert Scoring
@@ -489,7 +489,7 @@ To minimize API costs:
 2. **Use caching** - Intel is cached and deduplicated
 3. **Filter aggressively** - Only fetch categories you care about
 4. **Batch requests** - Sources batch API calls where possible
-5. **Monitor usage** - `bijaz intel usage` shows API call counts
+5. **Monitor usage** - `thufir intel usage` shows API call counts
 
 Estimated monthly costs for moderate use:
 - NewsAPI Developer: $449 (or free tier for testing)

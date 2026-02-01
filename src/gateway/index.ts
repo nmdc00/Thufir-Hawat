@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import http from 'node:http';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+import { join } from 'node:path';
 
 import { loadConfig } from '../core/config.js';
+
+const execAsync = promisify(exec);
 import { Logger } from '../core/logger.js';
 import { TelegramAdapter } from '../interface/telegram.js';
 import { WhatsAppAdapter } from '../interface/whatsapp.js';
@@ -14,15 +19,16 @@ import { PolymarketMarketClient } from '../execution/polymarket/markets.js';
 import { pruneIntel } from '../intel/store.js';
 import { rankIntelAlerts } from '../intel/alerts.js';
 import { refreshMarketPrices, syncMarketCache } from '../core/markets_sync.js';
-import { runProactiveSearch } from '../core/proactive_search.js';
+import { formatProactiveSummary, runProactiveSearch } from '../core/proactive_search.js';
 import { buildAgentPeerSessionKey, resolveThreadSessionKeys } from './session_keys.js';
 import { PolymarketStreamClient } from '../execution/polymarket/stream.js';
 import { upsertMarketCache } from '../memory/market_cache.js';
 import { getMarketCache } from '../memory/market_cache.js';
 import { createAgentRegistry } from './agent_router.js';
+import { createLlmClient } from '../core/llm.js';
 
 const config = loadConfig();
-const rawLevel = (process.env.BIJAZ_LOG_LEVEL ?? 'info').toLowerCase();
+const rawLevel = (process.env.THUFIR_LOG_LEVEL ?? 'info').toLowerCase();
 const level =
   rawLevel === 'debug' || rawLevel === 'info' || rawLevel === 'warn' || rawLevel === 'error'
     ? rawLevel
@@ -288,7 +294,7 @@ if (marketSyncConfig?.enabled) {
 
 const proactiveConfig = config.notifications?.proactiveSearch;
 let lastProactiveDate = '';
-if (proactiveConfig?.enabled) {
+if (proactiveConfig?.enabled && proactiveConfig.mode !== 'heartbeat') {
   setInterval(async () => {
     const now = new Date();
     const [hours, minutes] = proactiveConfig.time.split(':').map((part) => Number(part));
@@ -317,11 +323,232 @@ if (proactiveConfig?.enabled) {
       if (alertsConfig?.enabled && result.storedItems.length > 0) {
         await sendIntelAlerts(result.storedItems, alertsConfig);
       }
+
+      if (proactiveConfig.mode === 'direct' && result.storedItems.length > 0) {
+        const summaryLines = formatProactiveSummary(result);
+
+        const channels = proactiveConfig.channels ?? [];
+        if (channels.includes('telegram') && telegram) {
+          for (const chatId of config.channels.telegram.allowedChatIds ?? []) {
+            try {
+              await telegram.sendMessage(String(chatId), summaryLines);
+              logger.info(`Telegram proactive summary sent to ${chatId}`);
+            } catch (error) {
+              logger.error(`Telegram proactive summary failed for ${chatId}`, error);
+            }
+          }
+        }
+        if (channels.includes('whatsapp') && whatsapp) {
+          for (const number of config.channels.whatsapp.allowedNumbers ?? []) {
+            try {
+              await whatsapp.sendMessage(number, summaryLines);
+              logger.info(`WhatsApp proactive summary sent to ${number}`);
+            } catch (error) {
+              logger.error(`WhatsApp proactive summary failed for ${number}`, error);
+            }
+          }
+        }
+      }
     } catch (error) {
       logger.error('Proactive search failed', error);
     }
     lastProactiveDate = today;
   }, 60_000);
+}
+
+const heartbeatConfig = config.notifications?.heartbeat;
+if (heartbeatConfig?.enabled) {
+  const intervalMs = Math.max(1, heartbeatConfig.intervalMinutes ?? 30) * 60 * 1000;
+  const heartbeatUserId = '__heartbeat__';
+  const heartbeatPrompt =
+    'Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. ' +
+    'Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.';
+
+  const isHeartbeatEmpty = (content: string | null): boolean => {
+    if (!content) return true;
+    const stripped = content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith('<!--'));
+    return stripped.length === 0;
+  };
+
+  const loadHeartbeatContent = async (): Promise<string | null> => {
+    try {
+      const workspacePath = config.agent?.workspace ?? join(process.env.HOME ?? '', '.thufir');
+      const heartbeatPath = join(workspacePath, 'HEARTBEAT.md');
+      const content = await (await import('node:fs/promises')).readFile(heartbeatPath, 'utf-8');
+      return content;
+    } catch {
+      return null;
+    }
+  };
+
+  const runHeartbeat = async () => {
+    let proactiveSummary = '';
+    if (proactiveConfig?.enabled && proactiveConfig.mode === 'heartbeat') {
+      try {
+        const result = await runProactiveSearch(config, {
+          maxQueries: proactiveConfig.maxQueries,
+          watchlistLimit: proactiveConfig.watchlistLimit,
+          useLlm: proactiveConfig.useLlm,
+          recentIntelLimit: proactiveConfig.recentIntelLimit,
+          extraQueries: proactiveConfig.extraQueries,
+        });
+        const titles = result.storedItems
+          .map((item) => item.title)
+          .filter((title): title is string => typeof title === 'string')
+          .slice(0, 5);
+        proactiveSummary = [
+          `Proactive search stored ${result.storedCount} item(s).`,
+          result.queries.length > 0 ? `Queries: ${result.queries.join('; ')}` : '',
+          titles.length > 0 ? `Top items: ${titles.join(' | ')}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+      } catch (error) {
+        logger.error('Heartbeat proactive search failed', error);
+      }
+    }
+
+    const content = await loadHeartbeatContent();
+    if (isHeartbeatEmpty(content)) {
+      return;
+    }
+    const prompt = proactiveSummary
+      ? `${heartbeatPrompt}\n\n${proactiveSummary}`
+      : heartbeatPrompt;
+    const response = await defaultAgent.handleMessage(heartbeatUserId, prompt);
+    if (!response || response.trim().length === 0) {
+      return;
+    }
+    const normalized = response.trim().toUpperCase();
+    if (normalized.startsWith('HEARTBEAT_OK')) {
+      return;
+    }
+
+    const channels = heartbeatConfig.channels ?? [];
+    if (channels.includes('telegram') && telegram) {
+      for (const chatId of config.channels.telegram.allowedChatIds ?? []) {
+        try {
+          await telegram.sendMessage(String(chatId), response);
+          logger.info(`Telegram heartbeat sent to ${chatId}`);
+        } catch (error) {
+          logger.error(`Telegram heartbeat failed for ${chatId}`, error);
+        }
+      }
+    }
+    if (channels.includes('whatsapp') && whatsapp) {
+      for (const number of config.channels.whatsapp.allowedNumbers ?? []) {
+        try {
+          await whatsapp.sendMessage(number, response);
+          logger.info(`WhatsApp heartbeat sent to ${number}`);
+        } catch (error) {
+          logger.error(`WhatsApp heartbeat failed for ${number}`, error);
+        }
+      }
+    }
+  };
+
+  setInterval(() => {
+    runHeartbeat().catch((error) => logger.error('Heartbeat failed', error));
+  }, intervalMs);
+}
+
+const mentatConfig = config.notifications?.mentat;
+let lastMentatDate = '';
+let lastMentatRunAt = '';
+if (mentatConfig?.enabled) {
+  const llm = createLlmClient(config);
+  const mentatMarketClient = new PolymarketMarketClient(config);
+
+  const runMentatMonitor = async () => {
+    const { runMentatScan } = await import('../mentat/scan.js');
+    const { generateMentatReport, formatMentatReport } = await import('../mentat/report.js');
+    const { listFragilityCardDeltas } = await import('../memory/mentat.js');
+
+    const scan = await runMentatScan({
+      system: mentatConfig.system ?? 'Polymarket',
+      llm,
+      marketClient: mentatMarketClient,
+      marketQuery: mentatConfig.marketQuery,
+      limit: mentatConfig.marketLimit,
+      intelLimit: mentatConfig.intelLimit,
+    });
+
+    const report = generateMentatReport({
+      system: scan.system,
+      detectors: scan.detectors,
+    });
+    const reportText = formatMentatReport(report);
+
+    const deltas = listFragilityCardDeltas({ limit: 100 })
+      .filter((delta) => (lastMentatRunAt ? delta.changedAt > lastMentatRunAt : true));
+    const maxDelta = deltas.reduce((max, delta) => {
+      const value = delta.scoreDelta ?? 0;
+      return value > max ? value : max;
+    }, 0);
+
+    const triggerOverall = (report.fragilityScore ?? 0) >= (mentatConfig.minOverallScore ?? 0.7);
+    const triggerDelta = maxDelta >= (mentatConfig.minDeltaScore ?? 0.15);
+    if (!(triggerOverall || triggerDelta)) {
+      lastMentatRunAt = new Date().toISOString();
+      return;
+    }
+
+    const fragilityScore = report.fragilityScore ?? 0;
+    const header = `⚠️ Mentat Alert: ${scan.system}\n` +
+      `Fragility Score: ${(fragilityScore * 100).toFixed(1)}%\n` +
+      `Max Score Delta: ${(maxDelta * 100).toFixed(1)}%`;
+    const message = `${header}\n\n${reportText}`;
+
+    const channels = mentatConfig.channels ?? [];
+    if (channels.includes('telegram') && telegram) {
+      for (const chatId of config.channels.telegram.allowedChatIds ?? []) {
+        try {
+          await telegram.sendMessage(String(chatId), message);
+          logger.info(`Telegram mentat alert sent to ${chatId}`);
+        } catch (error) {
+          logger.error(`Telegram mentat alert failed for ${chatId}`, error);
+        }
+      }
+    }
+    if (channels.includes('whatsapp') && whatsapp) {
+      for (const number of config.channels.whatsapp.allowedNumbers ?? []) {
+        try {
+          await whatsapp.sendMessage(number, message);
+          logger.info(`WhatsApp mentat alert sent to ${number}`);
+        } catch (error) {
+          logger.error(`WhatsApp mentat alert failed for ${number}`, error);
+        }
+      }
+    }
+
+    lastMentatRunAt = new Date().toISOString();
+  };
+
+  if (mentatConfig.intervalMinutes && mentatConfig.intervalMinutes > 0) {
+    setInterval(() => {
+      runMentatMonitor().catch((error) => logger.error('Mentat monitor failed', error));
+    }, mentatConfig.intervalMinutes * 60 * 1000);
+  } else {
+    setInterval(() => {
+      const now = new Date();
+      const [hours, minutes] = mentatConfig.time.split(':').map((part) => Number(part));
+      if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+        return;
+      }
+      const today = now.toISOString().split('T')[0]!;
+      if (lastMentatDate === today) {
+        return;
+      }
+      if (now.getHours() !== hours || now.getMinutes() !== minutes) {
+        return;
+      }
+      runMentatMonitor().catch((error) => logger.error('Mentat monitor failed', error));
+      lastMentatDate = today;
+    }, 60_000);
+  }
 }
 
 const dailyReportConfig = config.notifications?.dailyReport;
@@ -369,6 +596,36 @@ if (intelRetentionDays > 0) {
       logger.info(`Pruned ${pruned} intel item(s) older than ${intelRetentionDays} days.`);
     }
   }, 12 * 60 * 60 * 1000);
+}
+
+// QMD embedding scheduler
+const qmdEmbedConfig = config.qmd?.embedSchedule;
+if (config.qmd?.enabled && qmdEmbedConfig?.enabled) {
+  const intervalMs = (qmdEmbedConfig.intervalMinutes ?? 60) * 60 * 1000;
+
+  const runQmdEmbed = async () => {
+    try {
+      // Check if qmd is available
+      await execAsync('qmd --version');
+      // Run embedding update for all collections
+      const { stderr } = await execAsync('qmd embed', { timeout: 300_000 });
+      if (stderr && !stderr.includes('warning')) {
+        logger.warn(`QMD embed warning: ${stderr}`);
+      }
+      logger.info('QMD embeddings updated successfully.');
+    } catch (error) {
+      // QMD not installed or embed failed - non-fatal
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      if (!msg.includes('not found') && !msg.includes('ENOENT')) {
+        logger.warn(`QMD embed failed: ${msg}`);
+      }
+    }
+  };
+
+  // Run on startup after a delay, then periodically
+  setTimeout(runQmdEmbed, 30_000); // 30 seconds after startup
+  setInterval(runQmdEmbed, intervalMs);
+  logger.info(`QMD embedding scheduler enabled (every ${qmdEmbedConfig.intervalMinutes} minutes).`);
 }
 
 if (telegram) {

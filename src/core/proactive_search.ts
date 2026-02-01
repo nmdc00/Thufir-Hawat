@@ -1,4 +1,4 @@
-import type { BijazConfig } from './config.js';
+import type { ThufirConfig } from './config.js';
 import { createLlmClient } from './llm.js';
 import { listWatchlist } from '../memory/watchlist.js';
 import { listRecentIntel, type StoredIntel } from '../intel/store.js';
@@ -11,6 +11,20 @@ import {
 
 export interface ProactiveSearchResult extends IntelPipelineResult {
   queries: string[];
+}
+
+export function formatProactiveSummary(result: ProactiveSearchResult): string {
+  const titles = result.storedItems
+    .map((item) => item.title)
+    .filter((title): title is string => typeof title === 'string')
+    .slice(0, 6);
+  return [
+    `🔎 Proactive Search (${result.storedCount} new item(s))`,
+    result.queries.length > 0 ? `Queries: ${result.queries.join('; ')}` : '',
+    titles.length > 0 ? `Top items: ${titles.join(' | ')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function normalizeQuery(query: string): string {
@@ -69,7 +83,7 @@ function extractEntities(text: string): string[] {
 }
 
 async function buildQueriesFromWatchlist(
-  config: BijazConfig,
+  config: ThufirConfig,
   watchlistLimit: number
 ): Promise<string[]> {
   const watchlist = listWatchlist();
@@ -109,7 +123,7 @@ function buildQueriesFromIntel(limit: number): string[] {
 }
 
 async function refineQueriesWithLlm(
-  config: BijazConfig,
+  config: ThufirConfig,
   rawQueries: string[],
   maxQueries: number
 ): Promise<string[]> {
@@ -142,7 +156,7 @@ async function refineQueriesWithLlm(
 
 
 export async function runProactiveSearch(
-  config: BijazConfig,
+  config: ThufirConfig,
   options?: {
     maxQueries?: number;
     watchlistLimit?: number;
