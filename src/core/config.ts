@@ -67,6 +67,30 @@ const ConfigSchema = z.object({
     workspace: z.string().optional(),
     useProxy: z.boolean().default(false),
     proxyBaseUrl: z.string().default('http://localhost:8317'),
+    modes: z
+      .object({
+        chat: z
+          .object({
+            maxIterations: z.number().default(8),
+            temperature: z.number().default(0.7),
+          })
+          .default({}),
+        trade: z
+          .object({
+            maxIterations: z.number().default(15),
+            temperature: z.number().default(0.3),
+            requireConfirmation: z.boolean().default(true),
+            minConfidence: z.number().default(0.6),
+          })
+          .default({}),
+        mentat: z
+          .object({
+            maxIterations: z.number().default(20),
+            temperature: z.number().default(0.5),
+          })
+          .default({}),
+      })
+      .default({}),
   }),
   execution: z
     .object({

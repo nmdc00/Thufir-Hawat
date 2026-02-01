@@ -48,12 +48,13 @@ const CHAT_TOOLS = [
 
 /**
  * Chat mode configuration.
+ * Note: maxIterations and temperature can be overridden in config.yaml under agent.modes.chat
  */
 export const chatMode: ModeConfig = {
   name: 'chat',
   description: 'General conversation about prediction markets. Read-only, no trading.',
   allowedTools: CHAT_TOOLS,
-  maxIterations: 4,
+  maxIterations: 8, // Increased from 4 - simple queries exit early anyway
   requireCritic: false,
   requireConfirmation: false,
   minConfidence: 0.0, // No minimum for chat

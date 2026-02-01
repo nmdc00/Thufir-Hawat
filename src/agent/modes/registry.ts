@@ -5,12 +5,13 @@
  */
 
 import type { AgentMode, ModeConfig, ModeDetectionResult } from './types.js';
+import type { ThufirConfig } from '../../core/config.js';
 import { chatMode } from './chat.js';
 import { tradeMode } from './trade.js';
 import { mentatMode } from './mentat.js';
 
 /**
- * All available mode configurations.
+ * All available mode configurations (defaults).
  */
 const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
   chat: chatMode,
@@ -19,10 +20,34 @@ const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 };
 
 /**
- * Get the configuration for a mode.
+ * Get the configuration for a mode, with optional config overrides.
  */
-export function getModeConfig(mode: AgentMode): ModeConfig {
-  return MODE_CONFIGS[mode];
+export function getModeConfig(mode: AgentMode, config?: ThufirConfig): ModeConfig {
+  const baseConfig = MODE_CONFIGS[mode];
+
+  // If no config provided, return defaults
+  if (!config?.agent?.modes) {
+    return baseConfig;
+  }
+
+  const modeOverrides = config.agent.modes[mode];
+  if (!modeOverrides) {
+    return baseConfig;
+  }
+
+  // Merge overrides with base config
+  return {
+    ...baseConfig,
+    maxIterations: modeOverrides.maxIterations ?? baseConfig.maxIterations,
+    temperature: modeOverrides.temperature ?? baseConfig.temperature,
+    ...(mode === 'trade' && {
+      requireConfirmation:
+        (modeOverrides as { requireConfirmation?: boolean }).requireConfirmation ??
+        baseConfig.requireConfirmation,
+      minConfidence:
+        (modeOverrides as { minConfidence?: number }).minConfidence ?? baseConfig.minConfidence,
+    }),
+  };
 }
 
 /**
@@ -43,6 +68,14 @@ const TRADE_PATTERNS = [
   /\$\d+.*\b(on|yes|no)\b/i,
   /\bgo\s+(long|short)\b/i,
   /\btake\s+(a\s+)?position\b/i,
+  // Additional patterns for trade intent
+  /\b(start|begin|enable|activate)\s+(trading|betting)\b/i,
+  /\b(autonomous|auto)\s*(trading|trade|bet|betting)\b/i,
+  /\b(find|look\s+for|identify)\s+(a\s+)?(bet|trade|opportunity)\b/i,
+  /\b(trading|betting)\s+(mode|enabled?)\b/i,
+  /\bmake\s+(some\s+)?(money|bets?|trades?)\b/i,
+  /\b(can\s+you|please)\s+(trade|bet|place)\b/i,
+  /\bwant\s+(to\s+)?(trade|bet|place)\b/i,
 ];
 
 /**

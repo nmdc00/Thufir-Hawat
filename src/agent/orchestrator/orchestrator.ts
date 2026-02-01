@@ -203,7 +203,9 @@ export async function runOrchestrator(
     ? { mode: options.forceMode, confidence: 1, signals: ['forced'] }
     : detectMode(goal);
 
-  const modeConfig = getModeConfig(modeResult.mode);
+  // Extract config from toolContext for mode configuration overrides
+  const thufirConfig = ctx.toolContext?.config as import('../../core/config.js').ThufirConfig | undefined;
+  const modeConfig = getModeConfig(modeResult.mode, thufirConfig);
   const maxIterations = options?.maxIterations ?? modeConfig.maxIterations;
   const canResumePlan = Boolean(
     options?.resumePlan && options?.initialPlan && options.initialPlan.goal === goal

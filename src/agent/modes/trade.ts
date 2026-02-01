@@ -50,12 +50,13 @@ const TRADE_TOOLS = [
 
 /**
  * Trade mode configuration.
+ * Note: maxIterations, temperature, requireConfirmation, minConfidence can be overridden in config.yaml under agent.modes.trade
  */
 export const tradeMode: ModeConfig = {
   name: 'trade',
   description: 'Trading mode for executing bets on prediction markets. Includes critic pass.',
   allowedTools: TRADE_TOOLS,
-  maxIterations: 8,
+  maxIterations: 15, // Increased from 8 - full research → trade needs room
   requireCritic: true, // Critic required for trades
   requireConfirmation: true, // Confirmation required for trades
   minConfidence: 0.6, // Minimum confidence for trades

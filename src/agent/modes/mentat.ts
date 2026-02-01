@@ -50,12 +50,13 @@ const MENTAT_TOOLS = [
 
 /**
  * Mentat mode configuration.
+ * Note: maxIterations and temperature can be overridden in config.yaml under agent.modes.mentat
  */
 export const mentatMode: ModeConfig = {
   name: 'mentat',
   description: 'Deep analysis mode for comprehensive research and fragility analysis. No trading.',
   allowedTools: MENTAT_TOOLS,
-  maxIterations: 12, // Extended for deep analysis
+  maxIterations: 20, // Increased from 12 - deep analysis shouldn't be constrained
   requireCritic: true, // Critic for analysis quality
   requireConfirmation: false, // No trades, no confirmation needed
   minConfidence: 0.0, // Analysis can proceed at any confidence
