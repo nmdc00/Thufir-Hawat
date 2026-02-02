@@ -144,9 +144,9 @@ export class PolymarketOrderSigner {
         feeRateBps: signedOrder.feeRateBps,
         side: signedOrder.side,
         signatureType: signedOrder.signatureType,
+        signature: signedOrder.signature,
       },
       signature: signedOrder.signature,
-      owner: this.wallet.address,
       orderType,
     };
   }

@@ -58,7 +58,7 @@ export interface Trade {
 
 export interface CLOBOrderPayload {
   order: {
-    salt: string;
+    salt: string | number; // Can be string, converted to number for API
     maker: string;
     signer: string;
     taker: string;
@@ -68,12 +68,15 @@ export interface CLOBOrderPayload {
     expiration: string;
     nonce: string;
     feeRateBps: string;
-    side: number;
+    side: number | 'BUY' | 'SELL'; // Can be number or string
     signatureType: number;
+    signature?: string; // Signature goes INSIDE order object for API
   };
-  signature: string;
-  owner: string;
+  signature?: string; // Legacy - we'll move this inside order
+  owner?: string; // API key - will be set by CLOB client if not provided
   orderType: 'GTC' | 'GTD' | 'FOK';
+  postOnly?: boolean;
+  deferExec?: boolean;
 }
 
 export interface CLOBOrderResponse {
@@ -463,8 +466,47 @@ export class PolymarketCLOBClient {
    * Submit a signed order to the CLOB.
    */
   async postOrder(payload: CLOBOrderPayload): Promise<CLOBOrderResponse> {
+    if (!this.credentials) {
+      throw new CLOBError('API credentials not set', 0);
+    }
+
     const path = '/order';
-    const body = JSON.stringify(payload);
+
+    // Convert side to string format expected by API
+    const sideStr = typeof payload.order.side === 'number'
+      ? (payload.order.side === 0 ? 'BUY' : 'SELL')
+      : payload.order.side;
+
+    // Build the order object with signature INSIDE (required by Polymarket API)
+    // Also convert salt to number as per official client
+    const orderPayload = {
+      deferExec: payload.deferExec ?? false,
+      order: {
+        salt: typeof payload.order.salt === 'string'
+          ? parseInt(payload.order.salt, 10)
+          : payload.order.salt,
+        maker: payload.order.maker,
+        signer: payload.order.signer,
+        taker: payload.order.taker,
+        tokenId: payload.order.tokenId,
+        makerAmount: payload.order.makerAmount,
+        takerAmount: payload.order.takerAmount,
+        side: sideStr,
+        expiration: payload.order.expiration,
+        nonce: payload.order.nonce,
+        feeRateBps: payload.order.feeRateBps,
+        signatureType: payload.order.signatureType,
+        signature: payload.order.signature ?? payload.signature, // signature INSIDE order
+      },
+      owner: this.credentials.apiKey, // owner MUST be the API key, not wallet address
+      orderType: payload.orderType,
+      ...(typeof payload.postOnly === 'boolean' ? { postOnly: payload.postOnly } : {}),
+    };
+
+    // Use compact JSON serialization (no spaces) for deterministic signing
+    const body = JSON.stringify(orderPayload);
+    console.log('[CLOB] Order payload:', body);
+
     const headers = this.generateL2Headers('POST', path, body);
 
     const response = await fetch(`${this.clobUrl}${path}`, {
