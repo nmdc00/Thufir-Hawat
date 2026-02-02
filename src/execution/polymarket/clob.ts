@@ -372,6 +372,9 @@ export class PolymarketCLOBClient {
     const normalizedBody = body?.replace(/'/g, '"') ?? '';
     const message = `${timestamp}${method}${path}${normalizedBody}`;
 
+    console.log('[CLOB L2] Message to sign:', message);
+    console.log('[CLOB L2] Secret (first 10 chars):', this.credentials.secret.slice(0, 10));
+
     // Decode base64url secret before using as HMAC key
     const secretBytes = Buffer.from(this.credentials.secret, 'base64url');
 
@@ -383,6 +386,8 @@ export class PolymarketCLOBClient {
     );
     // Convert to base64url encoding
     const signature = Buffer.from(hmac.slice(2), 'hex').toString('base64url');
+
+    console.log('[CLOB L2] Signature:', signature);
 
     return {
       'POLY_ADDRESS': this.wallet?.address ?? '',
