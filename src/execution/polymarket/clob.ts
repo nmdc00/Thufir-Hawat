@@ -417,9 +417,10 @@ export class PolymarketCLOBClient {
       throw new CLOBError(`Failed to create API key: ${response.status} - ${text}`, response.status);
     }
 
-    const data = (await response.json()) as ApiKeyCredentials;
-    this.credentials = data;
-    return data;
+    const data = await response.json();
+    console.log('[CLOB] Create API key response:', JSON.stringify(data, null, 2));
+    this.credentials = data as ApiKeyCredentials;
+    return data as ApiKeyCredentials;
   }
 
   /**
@@ -445,9 +446,10 @@ export class PolymarketCLOBClient {
       throw new CLOBError(`Failed to derive API key: ${response.status} - ${text}`, response.status);
     }
 
-    const data = (await response.json()) as ApiKeyCredentials;
-    this.credentials = data;
-    return data;
+    const data = await response.json();
+    console.log('[CLOB] Derive API key response:', JSON.stringify(data, null, 2));
+    this.credentials = data as ApiKeyCredentials;
+    return data as ApiKeyCredentials;
   }
 
   /**
