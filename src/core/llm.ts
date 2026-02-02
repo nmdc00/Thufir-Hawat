@@ -973,7 +973,7 @@ export class AgenticOpenAiClient implements LlmClient {
     this.baseUrl = resolveOpenAiBaseUrl(config);
     this.toolContext = toolContext;
     this.includeTemperature = !config.agent.useProxy;
-    this.useResponsesApi = config.agent.useProxy;
+    this.useResponsesApi = config.agent.useResponsesApi ?? config.agent.useProxy;
     this.meta = { provider: 'openai', model: this.model, kind: 'agentic' };
   }
 
@@ -1238,7 +1238,7 @@ class OpenAiClient implements LlmClient {
     this.model = resolveOpenAiModel(config, modelOverride);
     this.baseUrl = resolveOpenAiBaseUrl(config);
     this.includeTemperature = !config.agent.useProxy;
-    this.useResponsesApi = config.agent.useProxy;
+    this.useResponsesApi = config.agent.useResponsesApi ?? config.agent.useProxy;
     this.meta = { provider: 'openai', model: this.model, kind };
   }
 
