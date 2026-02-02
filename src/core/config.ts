@@ -129,6 +129,13 @@ const ConfigSchema = z.object({
       clob: z.string(),
     }),
     rpcUrl: z.string().optional(),
+    credentials: z
+      .object({
+        apiKey: z.string(),
+        secret: z.string(),
+        passphrase: z.string(),
+      })
+      .optional(),
     stream: z
       .object({
         enabled: z.boolean().default(false),

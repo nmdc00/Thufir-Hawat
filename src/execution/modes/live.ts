@@ -68,9 +68,11 @@ export class LiveExecutor implements ExecutionAdapter {
     this.clobClient = new PolymarketCLOBClient(options.config);
     this.clobClient.setWallet(this.wallet);
 
-    // Set credentials if provided
+    // Set credentials if provided (options take precedence over config)
     if (options.credentials) {
       this.clobClient.setCredentials(options.credentials);
+    } else if (options.config.polymarket?.credentials) {
+      this.clobClient.setCredentials(options.config.polymarket.credentials);
     }
 
     // Initialize signer
