@@ -211,11 +211,13 @@ export function computeDetectorBundle(signals: MentatSignals): DetectorBundle {
   const irreversibility = summarizeIrreversibility(signals.markets);
 
   const overall = clamp(
-    leverage.score *
-      coupling.score *
-      illiquidity.score *
-      consensus.score *
-      irreversibility.score
+    (average([
+      leverage.score,
+      coupling.score,
+      illiquidity.score,
+      consensus.score,
+      irreversibility.score,
+    ]) ?? 0)
   );
 
   return {
