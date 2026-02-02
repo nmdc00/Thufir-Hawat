@@ -604,6 +604,18 @@ Just type naturally to chat about predictions, events, or markets.
     const autoEnabled =
       (this.config.autonomy as any)?.enabled === true &&
       (this.config.autonomy as any)?.fullAuto === true;
+    const wantsAutoScan =
+      /\b(find|look\s+for|scan|search|identify)\b.*\b(bet|bets|trade|trades|opportunit|edge)\b/i.test(message) ||
+      /\b(start|begin|run|kick\s*off)\b.*\b(trading|auto|autonomous)\b/i.test(message) ||
+      /\bplace\b.*\b(bets|trades)\b/i.test(message);
+
+    if (wantsAutoScan) {
+      if (!autoEnabled) {
+        return 'Autonomous trading is disabled. Enable with /fullauto on and ensure autonomy.enabled: true.';
+      }
+      return this.autonomousScan();
+    }
+
     if (!autoEnabled) return null;
 
     const hasTradeIntent = /\b(bet|trade|buy|sell)\b/i.test(message);

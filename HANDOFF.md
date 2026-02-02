@@ -2,7 +2,24 @@
 
 This document provides everything needed to continue development on Thufir.
 
-## Latest Session (2026-02-01, Session 14)
+## Latest Session (2026-02-02, Session 15)
+
+### What Was Done
+1. **Autonomous NL trigger**
+   - Natural-language requests like "find good bets" or "start trading" now trigger `/scan` when full auto is enabled.
+   - If full auto is disabled, the bot responds with how to enable it.
+
+2. **Mentat scan fixes**
+   - Fragility score aggregation now uses average detector score (no zeroing out).
+   - Mentat scan/report warns when intelCount is 0.
+
+3. **LLM fallback diagnostics**
+   - Fallback logs now show when suppression happens and why.
+   - Non-critical fallback enabled by default (config flag).
+
+---
+
+## Prior Session (2026-02-01, Session 14)
 
 ### What Was Done
 1. **Build fixes after agentic/mentat changes**
