@@ -691,7 +691,11 @@ export function formatMentatScan(scan: MentatScanOutput): string {
   lines.push(`🧠 Mentat Scan: ${scan.system}`);
   lines.push(`Generated: ${scan.generatedAt}`);
   lines.push('─'.repeat(60));
-  lines.push(`Markets: ${scan.signalsSummary.marketCount ?? 0} | Intel: ${scan.signalsSummary.intelCount ?? 0}`);
+  const intelCount = scan.signalsSummary.intelCount ?? 0;
+  lines.push(`Markets: ${scan.signalsSummary.marketCount ?? 0} | Intel: ${intelCount}`);
+  if (intelCount === 0) {
+    lines.push('Warning: No intel items; consensus signals are low-confidence.');
+  }
   lines.push(`Fragility Score: ${(scan.detectors.overall * 100).toFixed(1)}%`);
   lines.push('');
   lines.push('Detector Scores');

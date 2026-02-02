@@ -85,6 +85,10 @@ export function formatMentatReport(report: MentatReport): string {
   lines.push(`Generated: ${report.generatedAt}`);
   lines.push('─'.repeat(60));
   lines.push(`Fragility Score: ${formatScore(report.fragilityScore)}`);
+  const intelCount = report.detectors?.consensus.details?.intelCount ?? null;
+  if (intelCount === 0) {
+    lines.push('Warning: No intel items; consensus signals are low-confidence.');
+  }
 
   if (report.detectors) {
     lines.push('Detector Breakdown');
