@@ -1018,8 +1018,11 @@ export class AgenticOpenAiClient implements LlmClient {
             this.useResponsesApi
               ? {
                   model: this.model,
-                  // Extract system message as instructions (overrides proxy defaults)
-                  instructions: openaiMessages.find((m) => m.role === 'system')?.content ?? undefined,
+                  // Merge ALL system messages into instructions (identity + task prompts)
+                  instructions: openaiMessages
+                    .filter((m) => m.role === 'system')
+                    .map((m) => m.content)
+                    .join('\n\n---\n\n') || undefined,
                   input: openaiMessages
                     .filter((msg) => msg.role !== 'system')
                     .map((msg) => ({
@@ -1264,8 +1267,11 @@ class OpenAiClient implements LlmClient {
             ? {
                 model: this.model,
                 ...(typeof maxTokens === 'number' ? { max_output_tokens: maxTokens } : {}),
-                // Extract system message as instructions (overrides proxy defaults)
-                instructions: openaiMessages.find((m) => m.role === 'system')?.content ?? undefined,
+                // Merge ALL system messages into instructions (identity + task prompts)
+                instructions: openaiMessages
+                  .filter((m) => m.role === 'system')
+                  .map((m) => m.content)
+                  .join('\n\n---\n\n') || undefined,
                 input: openaiMessages
                   .filter((msg) => msg.role !== 'system')
                   .map((msg) => ({
