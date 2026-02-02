@@ -389,13 +389,15 @@ export class PolymarketCLOBClient {
 
     console.log('[CLOB L2] Signature:', signature);
 
-    return {
+    const headers = {
       'POLY_ADDRESS': this.wallet?.address ?? '',
       'POLY_SIGNATURE': signature,
       'POLY_TIMESTAMP': String(timestamp),
       'POLY_API_KEY': this.credentials.apiKey,
       'POLY_PASSPHRASE': this.credentials.passphrase,
     };
+    console.log('[CLOB L2] Headers:', JSON.stringify(headers, null, 2));
+    return headers;
   }
 
   /**
