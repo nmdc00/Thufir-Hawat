@@ -73,6 +73,7 @@ const ConfigSchema = z.object({
     workspace: z.string().optional(),
     useProxy: z.boolean().default(false),
     proxyBaseUrl: z.string().default('http://localhost:8317'),
+    useResponsesApi: z.boolean().optional(),
     modes: z
       .object({
         chat: z
