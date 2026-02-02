@@ -733,10 +733,15 @@ async function synthesizeResponse(
   sections.push('\nSynthesize a response to the user based on the above.');
 
   const identityPrompt = resolveIdentityPrompt(request.identity, ctx);
+  // Merge identity and synthesis prompts into one system message (identity FIRST)
+  // This ensures the LLM client extracts identity for the instructions field
+  const baseSystemPrompt = systemPromptOverride ?? SYNTHESIS_SYSTEM_PROMPT;
+  const systemContent = identityPrompt
+    ? `${identityPrompt}\n\n---\n\n${baseSystemPrompt}`
+    : baseSystemPrompt;
 
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPromptOverride ?? SYNTHESIS_SYSTEM_PROMPT },
-    ...(identityPrompt ? [{ role: 'system', content: identityPrompt } as ChatMessage] : []),
+    { role: 'system', content: systemContent },
     { role: 'user', content: sections.join('\n\n') },
   ];
 
