@@ -32,12 +32,33 @@ function extractJsonCandidate(text: string): string {
 
 function parseDecision(text: string): Decision | null {
   const candidate = extractJsonCandidate(text);
+  const parsed = tryParseDecision(candidate);
+  if (parsed) {
+    return parsed;
+  }
+
+  const repaired = repairJson(candidate);
+  return repaired ? tryParseDecision(repaired) : null;
+}
+
+function tryParseDecision(candidate: string): Decision | null {
   try {
     const parsed = DecisionSchema.safeParse(JSON.parse(candidate));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
+}
+
+function repairJson(candidate: string): string | null {
+  const trimmed = candidate.trim();
+  if (!trimmed) return null;
+  let repaired = trimmed;
+  if (repaired.startsWith('{') && !repaired.endsWith('}')) {
+    repaired = repaired + '}';
+  }
+  repaired = repaired.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+  return repaired === trimmed ? null : repaired;
 }
 
 /**
@@ -189,7 +210,7 @@ Your key principles:
 3. TRACK REASONING - explain why you expect this outcome
 4. RESPECT LIMITS - stay within suggested position sizes
 
-Return ONLY valid JSON in this schema:
+Return ONLY valid JSON in this schema (no markdown, no commentary):
 {
   "action": "buy" | "sell" | "hold",
   "outcome": "YES" | "NO" (required if action is buy/sell),
