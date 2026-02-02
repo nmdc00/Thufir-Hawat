@@ -467,11 +467,17 @@ export class PolymarketCLOBClient {
       body,
     });
 
-    const data = (await response.json()) as CLOBOrderResponse;
+    const text = await response.text();
+    let data: CLOBOrderResponse;
+    try {
+      data = JSON.parse(text) as CLOBOrderResponse;
+    } catch {
+      throw new CLOBError(`Order submission failed: ${response.status} - ${text}`, response.status);
+    }
 
     if (!response.ok || !data.success) {
       throw new CLOBError(
-        data.errorMsg ?? `Order submission failed: ${response.status}`,
+        data.errorMsg ?? `Order submission failed: ${response.status} - ${text}`,
         response.status
       );
     }
