@@ -1174,9 +1174,11 @@ class OpenAiClient implements LlmClient {
 class LocalClient implements LlmClient {
   private model: string;
   private baseUrl: string;
+  private config: ThufirConfig;
   meta?: LlmClientMeta;
 
   constructor(config: ThufirConfig, modelOverride?: string, kind?: LlmClientMeta['kind']) {
+    this.config = config;
     this.model = modelOverride ?? config.agent.model;
     this.baseUrl = resolveLocalBaseUrl(config);
     this.meta = { provider: 'local', model: this.model, kind };
@@ -1186,6 +1188,11 @@ class LocalClient implements LlmClient {
     messages: ChatMessage[],
     options?: LlmClientOptions
   ): Promise<LlmResponse> {
+    const prelude = loadIdentityPrelude({
+      workspacePath: this.config.agent?.workspace,
+      promptMode: resolveIdentityPromptMode(this.config, this.meta?.kind),
+    }).prelude;
+    const localMessages = injectIdentity(messages, prelude);
     const controller =
       typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeoutMs = options?.timeoutMs;
@@ -1204,7 +1211,7 @@ class LocalClient implements LlmClient {
         model: this.model,
         temperature: options?.temperature ?? 0.2,
         ...(typeof options?.maxTokens === 'number' ? { max_tokens: options.maxTokens } : {}),
-        messages,
+        messages: localMessages,
       }),
     });
 
