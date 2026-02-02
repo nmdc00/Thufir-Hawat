@@ -84,7 +84,7 @@ export async function createPlan(
   messages.push({ role: 'user', content: userPrompt });
 
   const response = await llm.complete(messages, { temperature: 0.3 });
-  const parsed = parseplanResponse(response.content, context.goal);
+  const parsed = parseplanResponse(response.content, context.goal, context.availableTools);
 
   return parsed;
 }
@@ -117,7 +117,11 @@ function buildPlanningPrompt(context: PlanningContext): string {
 /**
  * Parse the LLM response into a plan.
  */
-function parseplanResponse(content: string, goal: string): PlanCreationResult {
+function parseplanResponse(
+  content: string,
+  goal: string,
+  availableTools: string[]
+): PlanCreationResult {
   const now = new Date().toISOString();
 
   try {
@@ -170,6 +174,36 @@ function parseplanResponse(content: string, goal: string): PlanCreationResult {
       warnings: parsed.warnings ?? [],
     };
   } catch (error) {
+    const fallbackTool = selectFallbackTool(goal, availableTools);
+    if (fallbackTool) {
+      const plan: AgentPlan = {
+        id: randomUUID(),
+        goal,
+        steps: [
+          {
+            id: '1',
+            description: fallbackTool.description,
+            requiresTool: true,
+            toolName: fallbackTool.toolName,
+            toolInput: fallbackTool.toolInput,
+            status: 'pending',
+          },
+        ],
+        complete: false,
+        blockers: ['Failed to parse plan from LLM response'],
+        confidence: 0.35,
+        createdAt: now,
+        updatedAt: now,
+        revisionCount: 0,
+      };
+
+      return {
+        plan,
+        reasoning: 'Plan parsing failed, using fallback tool step',
+        warnings: [`Parse error: ${error instanceof Error ? error.message : 'Unknown'}`],
+      };
+    }
+
     // Return a minimal plan on parse failure
     const plan: AgentPlan = {
       id: randomUUID(),
@@ -196,6 +230,84 @@ function parseplanResponse(content: string, goal: string): PlanCreationResult {
       warnings: [`Parse error: ${error instanceof Error ? error.message : 'Unknown'}`],
     };
   }
+}
+
+function selectFallbackTool(
+  goal: string,
+  availableTools: string[]
+): { toolName: string; toolInput: Record<string, unknown>; description: string } | null {
+  const toolSet = new Set(availableTools);
+  const lower = goal.toLowerCase();
+
+  const hasTool = (name: string) => toolSet.has(name);
+  const firstAvailable = (names: string[]) => names.find((name) => hasTool(name));
+
+  if (/(portfolio|positions?|balance|holdings?)/i.test(lower)) {
+    const toolName = firstAvailable(['get_portfolio']);
+    if (toolName) {
+      return {
+        toolName,
+        toolInput: {},
+        description: 'Fetch current portfolio summary',
+      };
+    }
+  }
+
+  if (/(predictions?|history|track record)/i.test(lower)) {
+    const toolName = firstAvailable(['get_predictions']);
+    if (toolName) {
+      return {
+        toolName,
+        toolInput: {},
+        description: 'Fetch recent predictions and outcomes',
+      };
+    }
+  }
+
+  if (/(wallet|address|keystore)/i.test(lower)) {
+    const toolName = firstAvailable(['get_wallet_info']);
+    if (toolName) {
+      return {
+        toolName,
+        toolInput: {},
+        description: 'Fetch wallet info',
+      };
+    }
+  }
+
+  if (/(news|intel|recent updates?)/i.test(lower)) {
+    const toolName = firstAvailable(['intel_search', 'intel.search']);
+    if (toolName) {
+      const query = sanitizeQuery(goal);
+      return {
+        toolName,
+        toolInput: { query },
+        description: `Search intel for "${query}"`,
+      };
+    }
+  }
+
+  if (/(market|polymarket|search|find)/i.test(lower)) {
+    const toolName = firstAvailable(['market_search', 'markets.search']);
+    if (toolName) {
+      const query = sanitizeQuery(goal);
+      return {
+        toolName,
+        toolInput: { query },
+        description: `Search markets for "${query}"`,
+      };
+    }
+  }
+
+  return null;
+}
+
+function sanitizeQuery(goal: string): string {
+  const cleaned = goal
+    .replace(/\b(find|search|market|markets|polymarket|about|for|on|show|me|a|an|the|please)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > 0 ? cleaned : goal.trim();
 }
 
 /**
