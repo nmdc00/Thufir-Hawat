@@ -341,6 +341,18 @@ function resolveOpenAiBaseUrl(config: ThufirConfig): string {
   return config.agent.apiBaseUrl ?? 'https://api.openai.com';
 }
 
+function resolveOpenAiModel(config: ThufirConfig, modelOverride?: string): string {
+  let model = modelOverride ?? config.agent.openaiModel ?? config.agent.model;
+  if (config.agent.useProxy) {
+    const isAnthropicPrimary = config.agent.provider === 'anthropic';
+    const looksAnthropic = model.toLowerCase().includes('claude');
+    if ((isAnthropicPrimary && model === config.agent.model) || looksAnthropic) {
+      model = config.agent.openaiModel ?? model;
+    }
+  }
+  return model;
+}
+
 function resolveAnthropicBaseUrl(config: ThufirConfig): string | undefined {
   if (config.agent.useProxy) {
     return config.agent.proxyBaseUrl;
@@ -828,7 +840,7 @@ export class AgenticOpenAiClient implements LlmClient {
     toolContext: ToolExecutorContext,
     modelOverride?: string
   ) {
-    this.model = modelOverride ?? config.agent.openaiModel ?? config.agent.model;
+    this.model = resolveOpenAiModel(config, modelOverride);
     this.baseUrl = resolveOpenAiBaseUrl(config);
     this.toolContext = toolContext;
     this.includeTemperature = !config.agent.useProxy;
@@ -1086,7 +1098,7 @@ class OpenAiClient implements LlmClient {
 
   constructor(config: ThufirConfig, modelOverride?: string, kind?: LlmClientMeta['kind']) {
     this.config = config;
-    this.model = modelOverride ?? config.agent.model;
+    this.model = resolveOpenAiModel(config, modelOverride);
     this.baseUrl = resolveOpenAiBaseUrl(config);
     this.includeTemperature = !config.agent.useProxy;
     this.useResponsesApi = config.agent.useProxy;
