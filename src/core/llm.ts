@@ -1230,6 +1230,21 @@ export class FallbackLlmClient implements LlmClient {
     messages: ChatMessage[],
     options?: LlmClientOptions
   ): Promise<LlmResponse> {
+    const primaryMeta = this.primary.meta ?? { provider: 'unknown', model: 'unknown' };
+    const fallbackMeta = this.fallback.meta ?? { provider: 'unknown', model: 'unknown' };
+    if (primaryMeta.provider !== 'unknown' && primaryMeta.model !== 'unknown') {
+      const cooldown = isCooling(primaryMeta.provider, primaryMeta.model);
+      if (cooldown) {
+        const reason = `primary cooling until ${new Date(cooldown.until).toISOString()}`;
+        this.logger.warn('LLM fallback triggered (primary cooling)', {
+          from: primaryMeta,
+          to: fallbackMeta,
+          reason,
+        });
+        return this.fallback.complete(messages, options);
+      }
+    }
+
     try {
       return await this.primary.complete(messages, options);
     } catch (error) {
@@ -1241,15 +1256,15 @@ export class FallbackLlmClient implements LlmClient {
       const allowNonCritical = this.config?.agent?.allowFallbackNonCritical ?? true;
       if (!ctx?.critical && !allowNonCritical) {
         this.logger?.warn('LLM fallback suppressed (non-critical context)', {
-          from: this.primary.meta ?? { provider: 'unknown', model: 'unknown' },
-          to: this.fallback.meta ?? { provider: 'unknown', model: 'unknown' },
+          from: primaryMeta,
+          to: fallbackMeta,
           reason,
         });
         throw error;
       }
       this.logger?.warn('LLM fallback triggered', {
-        from: this.primary.meta ?? { provider: 'unknown', model: 'unknown' },
-        to: this.fallback.meta ?? { provider: 'unknown', model: 'unknown' },
+        from: primaryMeta,
+        to: fallbackMeta,
         reason,
       });
       if (this.config) {
