@@ -22,9 +22,33 @@ function hashIntel(title: string, url?: string): string {
   return hash.digest('hex');
 }
 
+function coerceString(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
 export function storeIntel(item: StoredIntel): boolean {
   const db = openDatabase();
-  const digest = hashIntel(item.title, item.url);
+  const title = coerceString(item.title) ?? 'Untitled';
+  const content = coerceString(item.content);
+  const source = coerceString(item.source) ?? 'unknown';
+  const sourceType = item.sourceType;
+  const category = coerceString(item.category);
+  const url = coerceString(item.url);
+  const timestamp = coerceString(item.timestamp) ?? new Date().toISOString();
+
+  const digest = hashIntel(title, url ?? undefined);
 
   const exists = db
     .prepare(`SELECT 1 FROM intel_hashes WHERE hash = ? LIMIT 1`)
@@ -45,13 +69,13 @@ export function storeIntel(item: StoredIntel): boolean {
 
   insertIntel.run({
     id: item.id,
-    title: item.title,
-    content: item.content ?? null,
-    source: item.source,
-    sourceType: item.sourceType,
-    category: item.category ?? null,
-    url: item.url ?? null,
-    timestamp: item.timestamp,
+    title,
+    content,
+    source,
+    sourceType,
+    category,
+    url,
+    timestamp,
   });
 
   db.prepare(`INSERT INTO intel_hashes (hash, intel_id) VALUES (?, ?)`).run(
