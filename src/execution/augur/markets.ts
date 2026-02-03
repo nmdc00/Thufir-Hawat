@@ -11,7 +11,7 @@ export class AugurMarketClient {
   private client: AugurTurboClient;
 
   constructor(config: ThufirConfig) {
-    const rpcUrl = config.augur?.rpcUrl ?? config.polymarket?.rpcUrl;
+    const rpcUrl = config.augur?.rpcUrl;
     const provider = new ethers.providers.JsonRpcProvider(rpcUrl ?? 'https://polygon-rpc.com');
     this.client = new AugurTurboClient(config, provider);
   }

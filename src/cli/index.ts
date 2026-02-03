@@ -220,7 +220,6 @@ const ENV_KEYS = [
   'WHATSAPP_PHONE_NUMBER_ID',
   'THUFIR_WALLET_PASSWORD',
   'THUFIR_KEYSTORE_PATH',
-  'POLYMARKET_WS_URL',
 ];
 
 function parseEnvFile(content: string): Record<string, string> {

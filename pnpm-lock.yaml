@@ -14,12 +14,6 @@ importers:
       '@mozilla/readability':
         specifier: ^0.5.0
         version: 0.5.0
-      '@polymarket/order-utils':
-        specifier: ^3.0.1
-        version: 3.0.1(typescript@5.9.3)(zod@3.25.76)
-      '@polymarket/sdk':
-        specifier: ^6.0.1
-        version: 6.0.1(@ethersproject/abi@5.8.0)(@ethersproject/address@5.8.0)(@ethersproject/bignumber@5.8.0)(@ethersproject/constants@5.8.0)(@ethersproject/contracts@5.8.0)(@ethersproject/keccak256@5.8.0)(@ethersproject/providers@5.8.0)(@ethersproject/solidity@5.8.0)
       '@xenova/transformers':
         specifier: ^2.15.0
         version: 2.17.2
@@ -608,23 +602,6 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
-
-  '@polymarket/order-utils@3.0.1':
-    resolution: {integrity: sha512-XVcVladfGtC/VmboMkcszqYs82rvath/0XFWqzIFfq8O4atVOU8ykPOGJ2ZfodBPcXETzL+2u1rcepLMLKu9AQ==}
-    engines: {node: '>=20.10', yarn: '>=1'}
-
-  '@polymarket/sdk@6.0.1':
-    resolution: {integrity: sha512-CJSzGuT/Aavvc8ex2rDFgYm1zhwt8uu0h9NKcpTbVqKcsTjNre82/ZEaUK2Mpc8yAesMk5yHZ80aFZIMYtevpw==}
-    engines: {node: '>=8', npm: '>=5'}
-    peerDependencies:
-      '@ethersproject/abi': ^5.4.1
-      '@ethersproject/address': ^5.0.8
-      '@ethersproject/bignumber': ^5.0.8
-      '@ethersproject/constants': ^5.0.8
-      '@ethersproject/contracts': ^5.0.9
-      '@ethersproject/keccak256': ^5.0.6
-      '@ethersproject/providers': ^5.0.14
-      '@ethersproject/solidity': ^5.0.7
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -2954,30 +2931,6 @@ snapshots:
     dependencies:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
-
-  '@polymarket/order-utils@3.0.1(typescript@5.9.3)(zod@3.25.76)':
-    dependencies:
-      '@ethersproject/providers': 5.8.0
-      '@ethersproject/wallet': 5.8.0
-      ethers: 5.8.0
-      tslib: 2.8.1
-      viem: 2.45.0(typescript@5.9.3)(zod@3.25.76)
-    transitivePeerDependencies:
-      - bufferutil
-      - typescript
-      - utf-8-validate
-      - zod
-
-  '@polymarket/sdk@6.0.1(@ethersproject/abi@5.8.0)(@ethersproject/address@5.8.0)(@ethersproject/bignumber@5.8.0)(@ethersproject/constants@5.8.0)(@ethersproject/contracts@5.8.0)(@ethersproject/keccak256@5.8.0)(@ethersproject/providers@5.8.0)(@ethersproject/solidity@5.8.0)':
-    dependencies:
-      '@ethersproject/abi': 5.8.0
-      '@ethersproject/address': 5.8.0
-      '@ethersproject/bignumber': 5.8.0
-      '@ethersproject/constants': 5.8.0
-      '@ethersproject/contracts': 5.8.0
-      '@ethersproject/keccak256': 5.8.0
-      '@ethersproject/providers': 5.8.0
-      '@ethersproject/solidity': 5.8.0
 
   '@protobufjs/aspromise@1.1.2': {}
 

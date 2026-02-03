@@ -2,7 +2,7 @@
 
 **Thufir** (from Arabic بيجاز, meaning "concise oracle") is a personal AI assistant specialized in prediction markets. Unlike pure trading bots that optimize for speed and arbitrage, Thufir is a **prediction companion** that learns your interests, curates intel, discusses reasoning, and executes trades on your behalf — **fully autonomous by default**.
 
-Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel architecture and [Polymarket Agents](https://github.com/Polymarket/agents)' execution framework.
+Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel architecture with an Augur Turbo execution stack.
 
 ## Why Thufir?
 
@@ -47,7 +47,7 @@ Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel
 - Primary + fallback model support
 
 ### 7. Crypto Wallet Integration
-- Secure wallet management for Polymarket trades
+- Secure wallet management for Augur trades
 - Portfolio tracking and P&L reporting
 - Risk limits and exposure controls
 
@@ -77,7 +77,7 @@ Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel
 ┌───────▼───────┐ ┌───────▼───────┐ ┌───────▼───────┐
 │  INTEL LAYER  │ │ MEMORY LAYER  │ │EXECUTION LAYER│
 │  ─────────────│ │ ──────────────│ │ ──────────────│
-│ • News APIs   │ │ • Predictions │ │ • Polymarket  │
+│ • News APIs   │ │ • Predictions │ │ • Augur Turbo │
 │ • Twitter/X   │ │ • Outcomes    │ │ • Wallet Mgmt │
 │ • RSS Feeds   │ │ • Reasoning   │ │ • Portfolio   │
 │ • Vector DB   │ │ • Calibration │ │ • Risk Limits │
@@ -187,7 +187,7 @@ execution:
 **Mode descriptions:**
 - `paper` (default): Simulates trades without real execution. Tracks positions and P&L for practice/testing.
 - `webhook`: Sends trade decisions to an external URL for execution (useful for external signing services).
-- `live`: Executes real trades on Polymarket via the CLOB API. Requires wallet setup and `THUFIR_WALLET_PASSWORD` environment variable.
+- `live`: Executes real trades on Augur Turbo via on-chain AMM interaction. Requires wallet setup and `THUFIR_WALLET_PASSWORD` environment variable.
 
 **Live mode setup:**
 ```bash
@@ -340,8 +340,8 @@ thufir wallet setup
 thufir env init
 thufir env check
 
-# Configure prediction markets
-thufir markets connect polymarket
+# Verify Augur connectivity
+thufir markets augur-status
 
 # Set up intel sources
 thufir intel add newsapi --key YOUR_KEY
@@ -541,7 +541,7 @@ Thufir/
 │   ├── core/           # Agent logic, LLM integration
 │   ├── intel/          # News aggregation, vectorization
 │   ├── memory/         # Prediction storage, calibration
-│   ├── execution/      # Polymarket integration, wallet
+│   ├── execution/      # Augur integration, wallet
 │   └── interface/      # Channel adapters, CLI
 ├── docs/
 │   ├── ARCHITECTURE.md
@@ -605,7 +605,7 @@ Thufir/
 - [ ] Web dashboard
 
 ### Phase 5: Proactive Intelligence (PLANNED)
-- [ ] **Daily Top 10 Trades**: Automatically scour Polymarket + news to find best opportunities
+- [ ] **Daily Top 10 Trades**: Automatically scour Augur + news to find best opportunities
 - [ ] **Event-Driven Alerts**: Monitor current events and alert when relevant markets have edge
 - [ ] **Full Autonomous Mode**: Toggle on/off autonomous betting with daily P&L reports
 - [ ] Clawdbot integration for proactive search and multi-step reasoning
@@ -623,7 +623,7 @@ Thufir/
 ### Daily Top 10 Trades Report
 Thufir will automatically:
 1. Fetch current events from news sources
-2. Cross-reference with all active Polymarket markets
+2. Cross-reference with all active Augur markets
 3. Use LLM to identify markets where news creates edge
 4. Rank by expected value and confidence
 5. Push daily report to configured channels
@@ -663,7 +663,7 @@ autonomy:
 
 **Safety Controls:**
 - Always respects daily/per-trade limits
-- Whitelist-only addresses (Polymarket contracts)
+- Whitelist-only addresses (Augur contracts)
 - Auto-pause after configurable loss streak
 - Manual override via `/pause` and `/resume` commands
 
@@ -694,21 +694,6 @@ The plan is to integrate more of Clawdbot's gateway core to enable:
 3. Learning from conversation patterns
 4. More sophisticated autonomous reasoning
 
-### Market Data Live Subscriptions
-Thufir can optionally use a WebSocket feed to keep market prices fresh (watchlist-only by default). If you have a
-market data WebSocket endpoint, configure:
-
-```yaml
-polymarket:
-  stream:
-    enabled: true
-    wsUrl: "wss://your-stream-endpoint"
-    watchlistOnly: true
-    maxWatchlist: 50
-    staleAfterSeconds: 180
-    refreshIntervalSeconds: 300
-```
-
 ### Proactive Search (Clawdbot-Style, Local)
 Thufir now runs a Clawdbot-style proactive search loop locally. It generates queries from your watchlist
 and recent intel, optionally refines them with the LLM, then runs the intel pipeline using those queries.
@@ -728,7 +713,7 @@ notifications:
 ## Acknowledgments
 
 - [Clawdbot](https://github.com/clawdbot/clawdbot) - Multi-channel AI assistant framework (planned integration)
-- [Polymarket Agents](https://github.com/Polymarket/agents) - Prediction market trading framework
+- Augur Turbo execution stack (internal)
 - The prediction market community
 
 ---

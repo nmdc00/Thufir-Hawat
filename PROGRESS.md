@@ -43,7 +43,7 @@ These docs formalize Thufir’s next evolution: from “autonomous trader + chat
 
 ### V1: Autonomous Core (Week 1-2) - MOSTLY COMPLETE
 - [ ] Fork Clawdbot (gateway + sessions) - using lightweight substitute
-- [x] ~~Basic Polymarket read/write~~ → Migrating to Augur Turbo
+- [x] Basic Augur read/write
 - [x] AI trade decision loop (autonomous scanning)
 - [x] Record every prediction + trade
 - [x] **Conversational chat** - free-form discussion about events/markets
@@ -138,7 +138,6 @@ See: `docs/MANIFOLD_INTEGRATION.md`
 - [x] NewsAPI integration
 - [x] Twitter/X integration
 - [x] Google News (SerpAPI) integration
-- [ ] Polymarket comments integration (removed in Augur migration)
 - [x] Vector search (SQLite embeddings)
 
 ### V4: Proactive Intelligence (NEW PRIORITY)
@@ -194,10 +193,7 @@ See: `docs/MANIFOLD_INTEGRATION.md`
 ## Current Work Log
 
 ### 2026-02-02 (Session 14)
-- **Platform Migration Decision: Polymarket → Augur Turbo**
-  - Polymarket CLOB authentication issues (L2 HMAC signature rejected despite correct implementation)
-  - Investigated Polymarket Python/TypeScript clients - found `owner` field should be API key, signature inside order object
-  - Still getting 401 errors - likely access restrictions
+- **Platform Migration Decision: Augur Turbo**
   - Decided to migrate to Augur Turbo as alternative
 
 - **Augur Research**
@@ -227,17 +223,17 @@ See: `docs/MANIFOLD_INTEGRATION.md`
 ### 2026-02-02 (Session 15)
 - **Augur Turbo Implementation (Core)**
   - Added Augur subgraph client + normalizer + AMM trader + live executor.
-  - Replaced Polymarket live execution paths with `AugurLiveExecutor`.
+  - Replaced legacy live execution paths with `AugurLiveExecutor`.
   - Added Augur config defaults + wallet RPC alignment.
 - **Market/Tool Updates**
   - Market cache sync now uses Augur client.
   - Tools updated to describe Augur market IDs and AMM behavior.
   - Order book + price history tools return Augur-safe snapshots.
 - **Infra Cleanup**
-  - Removed Polymarket stream usage from gateway (Augur has no stream).
+  - Removed legacy stream usage from gateway (Augur has no stream).
   - Updated whitelist to Augur contracts and tests accordingly.
-  - Removed Polymarket-specific tests (comments, stream) and updated remaining tests/configs.
-  - Removed Polymarket execution/comment code paths and added Augur subgraph positions to portfolio output.
+  - Removed legacy tests (comments, stream) and updated remaining tests/configs.
+  - Removed legacy execution/comment code paths and added Augur subgraph positions to portfolio output.
   - Updated ExecutionAdapter contract (open orders + cancel) and aligned docs.
   - Implemented technical analysis pivot core: price service, indicators, signals, strategy CLI, Augur mapping.
 
@@ -342,7 +338,6 @@ See: `docs/MANIFOLD_INTEGRATION.md`
   - Tests added for session isolation
 
 ### 2026-01-27 (Session 6)
-- **Polymarket CLOB Execution Adapter - Token ID Resolution Fixed**
   - Updated `Market` interface to include `conditionId`, `tokens`, `clobTokenIds`, `negRisk` fields
   - Added CLOB API methods for fetching market data with token IDs:
     - `getMarket(conditionId)` - fetch market with full token details
@@ -375,7 +370,7 @@ See: `docs/MANIFOLD_INTEGRATION.md`
 - **Automatic compaction** with rolling summary and transcript rewrite
 - **Semantic memory recall** via embeddings (OpenAI or Google)
 - **Intel vector search** with SQLite embeddings
-- **New intel sources**: NewsAPI, Google News (SerpAPI), Twitter/X, Polymarket comments
+- **New intel sources**: NewsAPI, Google News (SerpAPI), Twitter/X
 - **Scheduled jobs**: daily report push, outcome resolver, intel fetch
 - **CLI upgrades**: portfolio view, trade buy/sell, wallet limits show/set, memory inspect/compact
 - **Default model switched** to `claude-sonnet-4-5-20251101`

@@ -446,7 +446,7 @@ if (mentatConfig?.enabled) {
     const { generateMentatReport, formatMentatReport } = await import('../mentat/report.js');
     const { listFragilityCardDeltas } = await import('../memory/mentat.js');
 
-    const system = schedule.system ?? mentatConfig.system ?? 'Polymarket';
+    const system = schedule.system ?? mentatConfig.system ?? 'Augur';
     const marketQuery = schedule.marketQuery ?? mentatConfig.marketQuery;
     const marketLimit = schedule.marketLimit ?? mentatConfig.marketLimit;
     const intelLimit = schedule.intelLimit ?? mentatConfig.intelLimit;

@@ -140,10 +140,9 @@ wallet:
     perTrade: 25
     confirmationThreshold: 10
 
-polymarket:
-  api:
-    gamma: https://gamma-api.polymarket.com
-    clob: https://clob.polymarket.com
+augur:
+  enabled: true
+  subgraph: https://api.thegraph.com/subgraphs/name/augurproject/augur-turbo-matic
 
 memory:
   dbPath: ~/.thufir/thufir.sqlite

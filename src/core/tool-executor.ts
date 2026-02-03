@@ -490,7 +490,7 @@ function getWalletInfo(ctx: ToolExecutorContext): ToolResult {
         address,
         chain: 'polygon',
         token: 'USDC',
-        rpc_url: ctx.config.augur?.rpcUrl ?? ctx.config.polymarket?.rpcUrl ?? null,
+        rpc_url: ctx.config.augur?.rpcUrl ?? null,
         keystore_path: keystorePath,
       },
     };

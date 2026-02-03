@@ -123,11 +123,6 @@ const ConfigSchema = z.object({
         .default({}),
     })
     .default({}),
-  polymarket: z
-    .object({
-      rpcUrl: z.string().optional(),
-    })
-    .optional(),
   augur: z
     .object({
       enabled: z.boolean().default(true),

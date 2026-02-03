@@ -309,9 +309,6 @@ export interface ThufirConfig {
       maxDomainPercent: number;
     };
   };
-  polymarket?: {
-    rpcUrl?: string;
-  };
   augur?: {
     enabled?: boolean;
     subgraph?: string;

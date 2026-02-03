@@ -50,8 +50,8 @@ This document provides everything needed to continue development on Thufir.
    - Execution contexts for non-chat/background LLM calls
    - Identity prelude enforced across Anthropic/OpenAI + internal/trivial paths
 
-4. **CLOB positions**
-   - Portfolio tool uses CLOB trade history in live mode
+4. **Augur positions**
+   - Portfolio tool uses Augur trade history in live mode
 
 ### What's Ready to Use
 - `thufir agent run "<goal>"` with `--show-tools/--show-plan/--show-critic/--show-fragility`
@@ -63,10 +63,10 @@ This document provides everything needed to continue development on Thufir.
 ## Prior Session (2026-01-27, Session 7)
 
 ### What Was Done
-1. **Polymarket CLOB execution adapter**
-   - Token ID resolution via CLOB API
-   - Live executor fetches token IDs and signs orders correctly
-   - New CLI commands: `thufir markets tokens`, `thufir markets clob-status`
+1. **Augur AMM execution adapter**
+   - Market metadata resolution via subgraph
+   - Live executor routes trades through AMM interactions
+   - CLI commands: `thufir markets tokens`, `thufir markets augur-status`
 
 2. **LLM orchestration pipeline**
    - Claude plans, OpenAI executes trade decisions
@@ -86,9 +86,9 @@ This document provides everything needed to continue development on Thufir.
 - `/fullauto on` - enable autonomous trading
 - `/status` - see P&L and status
 - Daily reports pushed to channels
-- NewsAPI/Google News/Twitter/Polymarket comments intel
+- NewsAPI/Google News/Twitter intel
 - Conversational intel alert setup + preview
-- Paper trading works, real trading needs Polymarket adapter
+- Paper trading works, live trading uses Augur adapter
 - Portfolio positions + cash balance tracking (CLI `thufir portfolio --set-cash`)
 - Trade ledger + realized PnL (FIFO) + market cache sync
 - Proactive search loop (Clawdbot-style, local) + CLI `thufir intel proactive`
@@ -100,7 +100,7 @@ This document provides everything needed to continue development on Thufir.
 - Market data live subscriptions (watchlist-only + staleness fallback)
 - Intel source registry + roaming controls (trust thresholds, social opt-in)
 - Env setup + validation CLI (`thufir env init`, `thufir env check`) + `.env.example`
-- Live trading adapter (CLOB) implemented; needs a live test trade
+- Live trading adapter (Augur AMM) implemented; needs a live test trade
 - **QMD Knowledge Base** - Local hybrid search (BM25 + vector + LLM reranking)
   - Auto-indexes web search/fetch results
   - Mentat storage: assumptions, fragility cards
@@ -126,7 +126,7 @@ This document provides everything needed to continue development on Thufir.
 
 ## What Is Thufir?
 
-Thufir is a **prediction market AI companion** - an AI assistant that helps you make better predictions on Polymarket. Unlike pure trading bots that optimize for speed/arbitrage, Thufir:
+Thufir is a **prediction market AI companion** - an AI assistant that helps you make better predictions on Augur. Unlike pure trading bots that optimize for speed/arbitrage, Thufir:
 
 1. **Learns your interests** and curates relevant intel
 2. **Tracks calibration** - how accurate your predictions actually are
@@ -148,7 +148,7 @@ We fork Clawdbot rather than building from scratch.
 ### 2. Security-First Wallet
 
 The wallet is the most critical component. Design principles:
-- **Address whitelist is hardcoded** - only Polymarket contracts allowed
+- **Address whitelist is hardcoded** - only Augur contracts allowed
 - **Spending limits enforced at app layer** - daily and per-trade limits
 - **Key encrypted at rest** - AES-256-GCM with Argon2 key derivation
 - **Hot wallet only** - never store more than you can afford to lose
@@ -174,7 +174,7 @@ Intel sources are pluggable:
 ### If You're a Solo Developer
 
 1. **Week 1-2:** Fork Clawdbot, set up wallet security layer
-2. **Week 3-4:** Integrate Polymarket API (read + execute)
+2. **Week 3-4:** Integrate Augur API (read + execute)
 3. **Week 5-6:** Build prediction recording + calibration
 4. **Week 7-8:** Add RSS intel source + basic retrieval
 5. **Week 9-10:** LLM integration for market analysis
@@ -183,7 +183,7 @@ Intel sources are pluggable:
 ### If You're a Team
 
 Run phases in parallel:
-- **Backend lead:** Wallet, Polymarket, execution
+- **Backend lead:** Wallet, Augur, execution
 - **ML engineer:** Intel pipeline, embeddings, prompts
 - **Full-stack:** Channels, CLI, formatting
 
@@ -197,15 +197,18 @@ These must be done first and done right:
 // src/execution/wallet/whitelist.ts
 // HARDCODE these addresses - do not make configurable
 
-export const POLYMARKET_WHITELIST = Object.freeze([
-  '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E', // CTF Exchange
-  '0xC5d563A36AE78145C45a50134d48A1215220f80a', // Neg Risk Exchange
-  '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296', // Neg Risk Adapter
-  '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // USDC
+export const AUGUR_WHITELIST = Object.freeze([
+  '0x79c3cf0553b6852890e8ba58878a5bca8b06d90c', // Augur Turbo AMM Factory
+  '0x03810440953e2bcd2f17a63706a4c8325e0abf94', // MLB Market Factory
+  '0xe696b8fa35e487c3a02c2444777c7a2ef6cd0297', // NBA Market Factory
+  '0x1f3ef7ca2b2ca07a397e7bc1beb8c3cffc57e95a', // NFL Market Factory
+  '0x6d2e53d53aec521dec3d53c533e6c6e60444c655', // MMA Market Factory
+  '0x48725bac1c27c2daf5ed7df22d6a9d781053fec1', // Crypto Market Factory
+  '0x2791bca1f2de4661ed88a30c99a7a9449aa84174', // USDC
 ]);
 
 export function isWhitelisted(address: string): boolean {
-  return POLYMARKET_WHITELIST.includes(address.toLowerCase());
+  return AUGUR_WHITELIST.includes(address.toLowerCase());
 }
 ```
 
@@ -232,8 +235,6 @@ Security-critical code needs 100% test coverage:
 ### New Dependencies
 ```json
 {
-  "@polymarket/sdk": "latest",
-  "@polymarket/order-utils": "latest",
   "ethers": "^5.7.0",
   "chromadb": "^1.5.0",
   "@xenova/transformers": "^2.15.0",
@@ -268,9 +269,8 @@ intel:
         - url: https://fivethirtyeight.com/feed/
           category: politics
 
-polymarket:
-  network: polygon
-  # Use testnet for development
+augur:
+  enabled: true
 ```
 
 ### Production Config
@@ -374,7 +374,6 @@ thufir analyze <market>       # Deep market analysis
 - `calibration.test.ts` - Brier score calculation
 
 ### Integration Tests
-- `polymarket.test.ts` - API integration
 - `intel-pipeline.test.ts` - Source → vector store
 
 ### E2E Tests
@@ -383,13 +382,7 @@ thufir analyze <market>       # Deep market analysis
 
 ## Known Challenges
 
-### 1. Polymarket Geographic Restrictions
-Polymarket is restricted in the US. Users need:
-- VPN or non-US location
-- Non-US identity for larger trades
-
-### 2. API Rate Limits
-- Polymarket: Moderate limits, use WebSocket for live data
+### 1. API Rate Limits
 - NewsAPI: 100 req/day free tier
 - Twitter: 500K tweets/month free tier
 
@@ -424,11 +417,6 @@ These need answers before building:
 4. **Alert thresholds** - When to alert about high-relevance intel?
 
 ## Resources
-
-### Polymarket
-- [Polymarket Docs](https://docs.polymarket.com)
-- [Polymarket Agents Repo](https://github.com/Polymarket/agents)
-- [CLOB API](https://docs.polymarket.com/clob)
 
 ### Clawdbot
 - [Clawdbot Repo](https://github.com/clawdbot/clawdbot)
