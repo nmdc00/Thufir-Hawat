@@ -1,6 +1,6 @@
 import type { ThufirConfig } from '../../core/config.js';
 import type { MarketCacheRecord } from '../../memory/market_cache.js';
-import { listMarketCache, searchMarketCache } from '../../memory/market_cache.js';
+import { getMarketCache, listMarketCache, searchMarketCache } from '../../memory/market_cache.js';
 import type { Market } from '../markets.js';
 export type { Market } from '../markets.js';
 import { AugurTurboClient, type AugurPosition } from './client.js';
@@ -37,6 +37,11 @@ export class AugurMarketClient {
   }
 
   async getMarket(marketId: string): Promise<Market> {
+    // Check cache first since the Augur subgraph endpoint has been deprecated
+    const cached = getMarketCache(marketId);
+    if (cached) {
+      return this.marketFromCache(cached);
+    }
     const raw = await this.client.getMarket(marketId);
     if (!raw) {
       throw new Error(`Augur market not found: ${marketId}`);
