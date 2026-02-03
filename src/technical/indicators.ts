@@ -46,7 +46,12 @@ export function calculateIndicators(
     SimpleMASignal: false,
   });
   const currentMacd = macd[macd.length - 1];
-  if (currentMacd && typeof currentMacd.histogram === 'number') {
+  if (
+    currentMacd &&
+    typeof currentMacd.MACD === 'number' &&
+    typeof currentMacd.signal === 'number' &&
+    typeof currentMacd.histogram === 'number'
+  ) {
     results.push({
       name: 'MACD',
       value: [currentMacd.MACD, currentMacd.signal, currentMacd.histogram],
