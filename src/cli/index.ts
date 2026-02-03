@@ -811,7 +811,22 @@ trade
 
       if (options.dryRun) {
         limiter.release(amount);
-        console.log('Dry run: trade not executed.');
+        const currentPrice = marketData.prices?.[normalizedOutcome] ?? marketData.prices?.['0'] ?? 0.5;
+        const estimatedShares = amount / currentPrice;
+        console.log('─'.repeat(50));
+        console.log('DRY RUN - Trade Preview');
+        console.log('─'.repeat(50));
+        console.log(`Market:   ${marketData.question}`);
+        console.log(`Action:   BUY ${normalizedOutcome}`);
+        console.log(`Amount:   $${amount.toFixed(2)}`);
+        console.log(`Price:    ${(currentPrice * 100).toFixed(2)}¢`);
+        console.log(`Shares:   ~${estimatedShares.toFixed(2)} (estimated)`);
+        console.log(`Payout:   $${estimatedShares.toFixed(2)} if ${normalizedOutcome} wins`);
+        console.log('─'.repeat(50));
+        console.log('✓ Exposure check passed');
+        console.log('✓ Spending limit check passed');
+        console.log('─'.repeat(50));
+        console.log('Run without --dry-run to execute.');
         return;
       }
 
@@ -894,7 +909,22 @@ trade
 
       if (options.dryRun) {
         limiter.release(amount);
-        console.log('Dry run: trade not executed.');
+        const currentPrice = marketData.prices?.[normalizedOutcome] ?? marketData.prices?.['0'] ?? 0.5;
+        const estimatedShares = amount / currentPrice;
+        console.log('─'.repeat(50));
+        console.log('DRY RUN - Trade Preview');
+        console.log('─'.repeat(50));
+        console.log(`Market:   ${marketData.question}`);
+        console.log(`Action:   SELL ${normalizedOutcome}`);
+        console.log(`Amount:   $${amount.toFixed(2)}`);
+        console.log(`Price:    ${(currentPrice * 100).toFixed(2)}¢`);
+        console.log(`Shares:   ~${estimatedShares.toFixed(2)} (estimated)`);
+        console.log(`Proceeds: ~$${(estimatedShares * currentPrice).toFixed(2)} (estimated)`);
+        console.log('─'.repeat(50));
+        console.log('✓ Exposure check passed');
+        console.log('✓ Spending limit check passed');
+        console.log('─'.repeat(50));
+        console.log('Run without --dry-run to execute.');
         return;
       }
 
