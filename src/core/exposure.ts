@@ -1,5 +1,5 @@
 import type { ThufirConfig } from './config.js';
-import type { Market } from '../execution/augur/markets.js';
+import type { Market } from '../execution/markets.js';
 import { listOpenPositionsFromTrades } from '../memory/trades.js';
 import { listOpenPositions } from '../memory/predictions.js';
 import { getCashBalance } from '../memory/portfolio.js';

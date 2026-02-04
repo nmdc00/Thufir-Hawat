@@ -4,6 +4,13 @@ export interface TradeDecision {
   action: 'buy' | 'sell' | 'hold';
   outcome?: 'YES' | 'NO';
   amount?: number;
+  symbol?: string;
+  side?: 'buy' | 'sell';
+  size?: number;
+  price?: number;
+  leverage?: number;
+  reduceOnly?: boolean;
+  orderType?: 'market' | 'limit';
   confidence?: 'low' | 'medium' | 'high';
   reasoning?: string;
 }
@@ -27,5 +34,5 @@ export interface Order {
 export interface ExecutionAdapter {
   execute(market: Market, decision: TradeDecision): Promise<TradeResult>;
   getOpenOrders(): Promise<Order[]>;
-  cancelOrder(id: string): Promise<void>;
+  cancelOrder(id: string, options?: { symbol?: string }): Promise<void>;
 }

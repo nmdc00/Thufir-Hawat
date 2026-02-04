@@ -177,6 +177,68 @@ CREATE INDEX IF NOT EXISTS idx_trades_prediction ON trades(prediction_id);
 CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_id);
 CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
 
+-- Perp trades (for derivatives execution)
+CREATE TABLE IF NOT EXISTS perp_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hypothesis_id TEXT,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    size REAL NOT NULL,
+    price REAL,
+    leverage REAL,
+    order_type TEXT,
+    status TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Learning events
+CREATE TABLE IF NOT EXISTS learning_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prediction_id TEXT,
+    market_id TEXT NOT NULL,
+    domain TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    resolved_at TEXT,
+    predicted_outcome TEXT,
+    predicted_probability REAL,
+    outcome TEXT,
+    brier REAL,
+    pnl REAL,
+    edge REAL,
+    confidence_raw REAL,
+    confidence_adjusted REAL,
+    signal_scores TEXT,
+    signal_weights TEXT,
+    market_snapshot TEXT,
+    model_version TEXT,
+    notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_learning_prediction ON learning_events(prediction_id);
+CREATE INDEX IF NOT EXISTS idx_learning_domain ON learning_events(domain);
+CREATE INDEX IF NOT EXISTS idx_learning_resolved ON learning_events(resolved_at);
+
+-- Signal weights
+CREATE TABLE IF NOT EXISTS signal_weights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain TEXT DEFAULT 'global',
+    weights TEXT NOT NULL,
+    samples INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_weights_domain ON signal_weights(domain);
+
+CREATE TABLE IF NOT EXISTS weight_updates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    learning_event_id INTEGER,
+    domain TEXT,
+    delta TEXT,
+    method TEXT,
+    learning_rate REAL,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
 -- ============================================================================
 -- Market Cache
 -- ============================================================================
@@ -334,6 +396,43 @@ CREATE TABLE IF NOT EXISTS decision_audit (
 CREATE INDEX IF NOT EXISTS idx_decision_audit_created ON decision_audit(created_at);
 CREATE INDEX IF NOT EXISTS idx_decision_audit_market ON decision_audit(market_id);
 CREATE INDEX IF NOT EXISTS idx_decision_audit_prediction ON decision_audit(prediction_id);
+
+-- ============================================================================
+-- Decision Artifacts (Learning / Reuse)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS decision_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT,
+    source TEXT,
+    kind TEXT NOT NULL,
+    market_id TEXT,
+    fingerprint TEXT,
+    outcome TEXT,
+    confidence REAL,
+    expires_at TEXT,
+    payload TEXT,
+    notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_artifacts_created ON decision_artifacts(created_at);
+CREATE INDEX IF NOT EXISTS idx_decision_artifacts_kind ON decision_artifacts(kind);
+CREATE INDEX IF NOT EXISTS idx_decision_artifacts_market ON decision_artifacts(market_id);
+CREATE INDEX IF NOT EXISTS idx_decision_artifacts_fingerprint ON decision_artifacts(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_decision_artifacts_expires ON decision_artifacts(expires_at);
+
+-- ============================================================================
+-- Execution State (Execution Mode Gating)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS execution_state (
+    source TEXT PRIMARY KEY,
+    fingerprint TEXT,
+    updated_at TEXT DEFAULT (datetime('now')),
+    last_mode TEXT,
+    last_reason TEXT
+);
 
 -- ============================================================================
 -- Intel Embeddings

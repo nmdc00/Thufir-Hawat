@@ -15,7 +15,7 @@ import { resolveOutcomes } from '../core/resolver.js';
 import { runIntelPipelineDetailed } from '../intel/pipeline.js';
 import { pruneChatMessages } from '../memory/chat.js';
 import { listWatchlist } from '../memory/watchlist.js';
-import { AugurMarketClient } from '../execution/augur/markets.js';
+import { createMarketClient } from '../execution/market-client.js';
 import { pruneIntel } from '../intel/store.js';
 import { rankIntelAlerts } from '../intel/alerts.js';
 import { refreshMarketPrices, syncMarketCache } from '../core/markets_sync.js';
@@ -46,7 +46,7 @@ for (const instance of agentRegistry.agents.values()) {
   instance.start();
 }
 
-// Augur Turbo does not provide a websocket market stream; cache is refreshed on schedule.
+// Market cache is refreshed on schedule (no websocket stream configured).
 
 const onIncoming = async (
   message: {
@@ -408,8 +408,11 @@ if (heartbeatConfig?.enabled) {
 const mentatConfig = config.notifications?.mentat;
 if (mentatConfig?.enabled) {
   const llm = createLlmClient(config);
-  const mentatMarketClient = new AugurMarketClient(config);
-  const schedules =
+  const mentatMarketClient = createMarketClient(config);
+  if (!mentatMarketClient.isAvailable()) {
+    logger.warn('Mentat notifications disabled: market client not configured.');
+  } else {
+    const schedules =
     mentatConfig.schedules && mentatConfig.schedules.length > 0
       ? mentatConfig.schedules
       : [
@@ -446,7 +449,7 @@ if (mentatConfig?.enabled) {
     const { generateMentatReport, formatMentatReport } = await import('../mentat/report.js');
     const { listFragilityCardDeltas } = await import('../memory/mentat.js');
 
-    const system = schedule.system ?? mentatConfig.system ?? 'Augur';
+    const system = schedule.system ?? mentatConfig.system ?? 'Markets';
     const marketQuery = schedule.marketQuery ?? mentatConfig.marketQuery;
     const marketLimit = schedule.marketLimit ?? mentatConfig.marketLimit;
     const intelLimit = schedule.intelLimit ?? mentatConfig.intelLimit;
@@ -457,6 +460,7 @@ if (mentatConfig?.enabled) {
     const scan = await runMentatScan({
       system,
       llm,
+      config,
       marketClient: mentatMarketClient,
       marketQuery,
       limit: marketLimit,
@@ -519,7 +523,7 @@ if (mentatConfig?.enabled) {
     lastMentatRunAtBySchedule.set(scheduleId, new Date().toISOString());
   };
 
-  for (const schedule of schedules) {
+    for (const schedule of schedules) {
     if (schedule.intervalMinutes && schedule.intervalMinutes > 0) {
       setInterval(() => {
         runMentatMonitor(schedule).catch((error) => logger.error('Mentat monitor failed', error));
@@ -547,6 +551,7 @@ if (mentatConfig?.enabled) {
       runMentatMonitor(schedule).catch((error) => logger.error('Mentat monitor failed', error));
       lastMentatDateBySchedule.set(scheduleId, today);
     }, 60_000);
+    }
   }
 }
 
@@ -634,7 +639,7 @@ if (telegram) {
   });
 }
 
-// Augur Turbo has no native market stream; rely on cache refresh schedules instead.
+// No native market stream configured; rely on cache refresh schedules instead.
 
 async function sendIntelAlerts(
   items: Array<{ title: string; url?: string; source: string; content?: string }>,
@@ -694,7 +699,10 @@ async function sendIntelAlerts(
     entityAliases: alertsConfig.entityAliases ?? {},
   };
 
-  const marketClient = new AugurMarketClient(config);
+  const marketClient = createMarketClient(config);
+  if (!marketClient.isAvailable()) {
+    return;
+  }
   let watchlistTitles: string[] = [];
 
   if (settings.watchlistOnly) {

@@ -82,7 +82,7 @@ export class WebhookExecutor implements ExecutionAdapter {
     return [];
   }
 
-  async cancelOrder(_id: string): Promise<void> {
+  async cancelOrder(_id: string, _options?: { symbol?: string }): Promise<void> {
     throw new Error('Order cancellation is not supported for webhook execution.');
   }
 }

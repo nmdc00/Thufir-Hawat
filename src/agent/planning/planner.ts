@@ -289,7 +289,7 @@ function buildFallbackSteps(goal: string, availableTools: string[]): PlanStep[] 
     }
   }
 
-  if (/(market|augur|search|find)/i.test(lower)) {
+  if (/(market|search|find)/i.test(lower)) {
     const toolName = firstAvailable(['market_search', 'markets.search']);
     if (toolName) {
       const query = sanitizeQuery(goal);
@@ -309,7 +309,7 @@ function buildFallbackSteps(goal: string, availableTools: string[]): PlanStep[] 
 
 function sanitizeQuery(goal: string): string {
   const cleaned = goal
-    .replace(/\b(find|search|market|markets|augur|about|for|on|show|me|a|an|the|please)\b/gi, ' ')
+    .replace(/\b(find|search|market|markets|about|for|on|show|me|a|an|the|please)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return cleaned.length > 0 ? cleaned : goal.trim();

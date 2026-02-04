@@ -16,6 +16,7 @@
     "gateway:watch": "tsx watch src/gateway/index.ts",
     "test": "vitest",
     "test:coverage": "vitest --coverage",
+    "install:vendor-deps": "PNPM_STORE_DIR=/home/nmdc/.local/share/pnpm/store/v10 pnpm install --store-dir $PNPM_STORE_DIR && PNPM_STORE_DIR=/home/nmdc/.local/share/pnpm/store/v10 pnpm add -D tslog json5 chalk @aws-sdk/client-bedrock @sinclair/typebox --store-dir $PNPM_STORE_DIR",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit"
   },
@@ -27,6 +28,7 @@
     "ccxt": "^4.2.0",
     "chromadb": "^1.5.0",
     "commander": "^12.0.0",
+    "@nktkas/hyperliquid": "^0.30.3",
     "dotenv": "^16.4.5",
     "ethers": "^5.7.2",
     "eventemitter3": "^5.0.1",
@@ -37,11 +39,14 @@
     "ora": "^8.0.0",
     "rss-parser": "^3.13.0",
     "technicalindicators": "^3.1.0",
+    "viem": "^2.21.0",
     "ws": "^8.16.0",
     "yaml": "^2.3.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
+    "@aws-sdk/client-bedrock": "^3.574.0",
+    "@sinclair/typebox": "^0.33.0",
     "@types/better-sqlite3": "^7.6.9",
     "@types/inquirer": "^9.0.7",
     "@types/jsdom": "^21.1.6",
@@ -49,7 +54,10 @@
     "@types/ws": "^8.5.10",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "chalk": "^5.3.0",
     "eslint": "^8.56.0",
+    "json5": "^2.2.3",
+    "tslog": "^4.9.2",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",
     "vitest": "^1.2.0"

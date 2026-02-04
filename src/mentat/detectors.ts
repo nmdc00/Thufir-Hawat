@@ -1,4 +1,4 @@
-import type { Market } from '../execution/augur/markets.js';
+import type { Market } from '../execution/markets.js';
 import type { StoredIntel } from '../intel/store.js';
 import type { DetectorBundle, DetectorResult, MentatSignals } from './types.js';
 

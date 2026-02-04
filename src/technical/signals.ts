@@ -2,6 +2,7 @@ import type { ThufirConfig } from '../core/config.js';
 import type { TechnicalSnapshot, TradeSignal, Timeframe } from './types.js';
 import { getNewsSentiment } from './news.js';
 import { getOnChainSnapshot } from './onchain.js';
+import { getSignalWeights } from '../memory/learning.js';
 
 function clamp(value: number, min = 0, max = 1): number {
   return Math.min(Math.max(value, min), max);
@@ -37,7 +38,8 @@ export async function buildTradeSignal(params: {
   timeframe: Timeframe;
 }): Promise<TradeSignal> {
   const { config, snapshot } = params;
-  const weights = config.technical?.signals?.weights;
+  const learned = getSignalWeights('global');
+  const weights = learned ?? config.technical?.signals?.weights;
   const technicalWeight = weights?.technical ?? 0.5;
   const newsWeight = weights?.news ?? 0.3;
   const onChainWeight = weights?.onChain ?? 0.2;

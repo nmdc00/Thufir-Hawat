@@ -320,8 +320,7 @@ export async function runOrchestrator(
     // Execute tool if step requires it
     if (nextStep.requiresTool && nextStep.toolName) {
       // Run fragility scan before trade tools
-      const isTradeToolStep =
-        nextStep.toolName === 'place_bet' || nextStep.toolName === 'trade.place';
+      const isTradeToolStep = nextStep.toolName === 'perp_place_order';
       if (isTradeToolStep && !tradeFragilityScan) {
         tradeFragilityScan = await runPreTradeFragilityScan(nextStep, ctx);
         if (tradeFragilityScan) {
@@ -411,7 +410,7 @@ export async function runOrchestrator(
 
   // Phase 6: Critic (if required)
   let criticResult = null;
-  const tradeToolNames = new Set(['place_bet', 'trade.place']);
+  const tradeToolNames = new Set(['perp_place_order']);
   const shouldCritic =
     !options?.skipCritic &&
     (modeConfig.requireCritic ||
@@ -556,7 +555,7 @@ function extractTradeAudit(state: AgentState): {
   tradeAmount?: number;
 } {
   const trade = state.toolExecutions.find(
-    (t) => t.toolName === 'place_bet' || t.toolName === 'trade.place'
+    (t) => t.toolName === 'perp_place_order'
   );
   if (!trade) {
     return {};

@@ -11,7 +11,7 @@
 import { EventEmitter } from 'eventemitter3';
 import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
-import type { AugurMarketClient } from '../execution/augur/markets.js';
+import type { MarketClient } from '../execution/market-client.js';
 import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
 import { checkExposureLimits } from './exposure.js';
@@ -22,6 +22,8 @@ import {
   type Opportunity,
   type OrchestratorAssets,
 } from './opportunities.js';
+import { runDiscovery } from '../discovery/engine.js';
+import { recordPerpTrade } from '../memory/perp_trades.js';
 import { getDailyPnLRollup } from './daily_pnl.js';
 import { createPrediction, listOpenPositions } from '../memory/predictions.js';
 import { recordDecisionAudit } from '../memory/decision_audit.js';
@@ -77,7 +79,7 @@ export interface AutonomousEvents {
 export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   private config: AutonomousConfig;
   private llm: LlmClient;
-  private marketClient: AugurMarketClient;
+  private marketClient: MarketClient;
   private executor: ExecutionAdapter;
   private limiter: DbSpendingLimitEnforcer;
   private logger: Logger;
@@ -92,7 +94,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
   constructor(
     llm: LlmClient,
-    marketClient: AugurMarketClient,
+    marketClient: MarketClient,
     executor: ExecutionAdapter,
     limiter: DbSpendingLimitEnforcer,
     thufirConfig: ThufirConfig,
@@ -234,7 +236,11 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return 'Daily spending limit reached. No trades executed.';
     }
 
-    // Find opportunities
+    if (this.thufirConfig.autonomy?.strategy === 'discovery') {
+      return this.runDiscoveryScan();
+    }
+
+    // Find opportunities (legacy prediction-market flow)
     const opportunities = await scanForOpportunities(
       this.llm,
       this.marketClient,
@@ -281,6 +287,73 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     }
 
     return results.join('\n');
+  }
+
+  private async runDiscoveryScan(): Promise<string> {
+    const result = await runDiscovery(this.thufirConfig);
+    if (result.expressions.length === 0) {
+      return 'No discovery expressions generated.';
+    }
+
+    if (!this.config.fullAuto) {
+      const top = result.expressions.slice(0, 5);
+      const lines = top.map(
+        (expr) =>
+          `- ${expr.symbol} ${expr.side} probe=${expr.probeSizeUsd.toFixed(2)} leverage=${expr.leverage} (${expr.expectedMove})`
+      );
+      return `Discovery scan completed:\n${lines.join('\n')}`;
+    }
+
+    const toExecute = result.expressions.slice(0, this.config.maxTradesPerScan);
+    const outputs: string[] = [];
+
+    for (const expr of toExecute) {
+      const symbol = expr.symbol.includes('/') ? expr.symbol.split('/')[0]! : expr.symbol;
+      const market = await this.marketClient.getMarket(symbol);
+      const markPrice = market.markPrice ?? 0;
+      const probeUsd = Math.min(expr.probeSizeUsd, this.limiter.getRemainingDaily());
+      if (probeUsd <= 0) {
+        outputs.push(`${symbol}: Skipped (insufficient daily budget)`);
+        continue;
+      }
+      const size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
+
+      const limitCheck = await this.limiter.checkAndReserve(probeUsd);
+      if (!limitCheck.allowed) {
+        outputs.push(`${symbol}: Blocked (${limitCheck.reason})`);
+        continue;
+      }
+
+      const decision: TradeDecision = {
+        action: expr.side,
+        side: expr.side,
+        symbol,
+        size,
+        orderType: expr.orderType,
+        leverage: expr.leverage,
+        reasoning: expr.expectedMove,
+      };
+
+      const tradeResult = await this.executor.execute(market, decision);
+      if (tradeResult.executed) {
+        this.limiter.confirm(probeUsd);
+      } else {
+        this.limiter.release(probeUsd);
+      }
+      recordPerpTrade({
+        hypothesisId: expr.hypothesisId,
+        symbol,
+        side: expr.side,
+        size,
+        price: markPrice || null,
+        leverage: expr.leverage,
+        orderType: expr.orderType,
+        status: tradeResult.executed ? 'executed' : 'failed',
+      });
+      outputs.push(tradeResult.message);
+    }
+
+    return outputs.join('\n');
   }
 
   /**

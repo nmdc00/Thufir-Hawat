@@ -1,7 +1,7 @@
 /**
  * Opportunity Scanner
  *
- * Proactively scans Augur for opportunities based on:
+ * Proactively scans markets for opportunities based on:
  * 1. Current news/intel
  * 2. Market prices vs LLM estimates
  * 3. User's calibration history
@@ -9,7 +9,8 @@
 
 import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
-import type { Market, AugurMarketClient } from '../execution/augur/markets.js';
+import type { Market } from '../execution/markets.js';
+import type { MarketClient } from '../execution/market-client.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listRecentIntel } from '../intel/store.js';
 import { runOrchestrator } from '../agent/orchestrator/orchestrator.js';
@@ -18,6 +19,8 @@ import { registerAllTools } from '../agent/tools/adapters/index.js';
 import { loadThufirIdentity } from '../agent/identity/identity.js';
 import type { AgentIdentity } from '../agent/identity/types.js';
 import { withExecutionContextIfMissing } from './llm_infra.js';
+import { computeFingerprint, selectExecutionContext } from './execution_mode.js';
+import { findReusableArtifact, storeDecisionArtifact } from '../memory/decision_artifacts.js';
 
 export interface Opportunity {
   market: Market;
@@ -70,12 +73,52 @@ Be calibrated - don't claim high confidence without strong evidence.
 If you don't have enough information, estimate close to market price with low confidence.
 Edge = |myEstimate - marketPrice|. Only flag opportunities where edge >= 0.05.`;
 
+function buildOpportunityFingerprint(
+  markets: Market[],
+  recentNews: ReturnType<typeof listRecentIntel>,
+  calibration: ReturnType<typeof listCalibrationSummaries>
+): string {
+  const marketSnapshot = markets
+    .map((market) => ({
+      id: market.id,
+      yesPrice: getYesPrice(market),
+      volume: market.volume ?? 0,
+      resolved: market.resolved ?? false,
+      category: market.category ?? null,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const newsSnapshot = recentNews
+    .map((item) => ({
+      id: item.id ?? `${item.source ?? 'src'}:${item.timestamp ?? ''}:${item.title ?? ''}`,
+      timestamp: item.timestamp ?? null,
+      title: item.title ?? null,
+      source: item.source ?? null,
+    }))
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
+  const calibrationSnapshot = calibration
+    .map((entry) => ({
+      domain: entry.domain ?? 'unknown',
+      accuracy: entry.accuracy ?? null,
+      avgBrier: entry.avgBrier ?? null,
+      resolved: entry.resolvedPredictions ?? 0,
+    }))
+    .sort((a, b) => a.domain.localeCompare(b.domain));
+
+  return computeFingerprint({
+    markets: marketSnapshot,
+    news: newsSnapshot,
+    calibration: calibrationSnapshot,
+  });
+}
+
 /**
  * Scan markets and find opportunities
  */
 export async function scanForOpportunities(
   llm: LlmClient,
-  marketClient: AugurMarketClient,
+  marketClient: MarketClient,
   config: ThufirConfig,
   maxMarkets = 50,
   options?: { orchestrator?: OrchestratorAssets }
@@ -84,6 +127,7 @@ export async function scanForOpportunities(
   const markets = await marketClient.listMarkets(maxMarkets);
   const recentNews = listRecentIntel(30);
   const calibration = listCalibrationSummaries();
+  const fingerprint = buildOpportunityFingerprint(markets, recentNews, calibration);
 
   // Build news context
   const newsContext = recentNews.map((item, i) =>
@@ -122,14 +166,36 @@ Analyze these markets. For each one, estimate the true probability and identify 
 Focus on markets where the news gives you an informational edge.
 Return a JSON array with your analysis.`;
 
-  const responseContent = await withExecutionContextIfMissing(
-    {
-      mode: config.agent?.useOrchestrator ? 'FULL_AGENT' : 'LIGHT_REASONING',
-      critical: false,
-      reason: 'opportunity_scan',
-      source: 'opportunities',
-    },
-    async () => {
+  const context = selectExecutionContext({
+    config,
+    source: 'opportunities',
+    reason: 'opportunity_scan',
+    fingerprint,
+    preferredMode: config.agent?.useOrchestrator ? 'FULL_AGENT' : 'LIGHT_REASONING',
+    critical: false,
+    providerOverride: llm.meta?.provider,
+    modelOverride: llm.meta?.model,
+  });
+
+  const cached = findReusableArtifact({
+    kind: 'opportunity_scan',
+    fingerprint,
+    maxAgeMs: 2 * 60 * 60 * 1000,
+  });
+
+  let analyses: Array<{
+    marketId: string;
+    myEstimate: number;
+    confidence: 'low' | 'medium' | 'high';
+    reasoning: string;
+    relevantNewsIndices?: number[];
+  }> = [];
+
+  const cachedAnalyses = cached?.payload && (cached.payload as { analyses?: unknown }).analyses;
+  if (Array.isArray(cachedAnalyses)) {
+    analyses = cachedAnalyses as typeof analyses;
+  } else if (context.mode !== 'MONITOR_ONLY') {
+    const responseContent = await withExecutionContextIfMissing(context, async () => {
       if (config.agent?.useOrchestrator) {
         const registry = options?.orchestrator?.registry ?? new AgentToolRegistry();
         if (!options?.orchestrator) {
@@ -171,11 +237,25 @@ Return a JSON array with your analysis.`;
         { temperature: 0.3 }
       );
       return response.content;
-    }
-  );
+    });
 
-  // Parse response
-  const analyses = parseAnalyses(responseContent);
+    analyses = parseAnalyses(responseContent);
+    const expires = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    storeDecisionArtifact({
+      source: 'opportunities',
+      kind: 'opportunity_scan',
+      fingerprint,
+      expiresAt: expires,
+      payload: {
+        analyses,
+        generatedAt: new Date().toISOString(),
+        marketsScanned: markets.length,
+        newsItemsAnalyzed: recentNews.length,
+      },
+    });
+  } else {
+    return [];
+  }
 
   // Convert to opportunities
   const opportunities: Opportunity[] = [];
@@ -235,7 +315,7 @@ Return a JSON array with your analysis.`;
  */
 export async function generateDailyReport(
   llm: LlmClient,
-  marketClient: AugurMarketClient,
+  marketClient: MarketClient,
   config: ThufirConfig,
   options?: { orchestrator?: OrchestratorAssets }
 ): Promise<DailyReport> {
@@ -256,8 +336,9 @@ export async function generateDailyReport(
       const { runMentatScan } = await import('../mentat/scan.js');
       const { generateMentatReport, formatMentatReport } = await import('../mentat/report.js');
       const scan = await runMentatScan({
-        system: config.agent?.mentatSystem ?? 'Augur',
+        system: config.agent?.mentatSystem ?? 'Markets',
         llm,
+        config,
         marketClient,
         marketQuery: config.agent?.mentatMarketQuery,
         limit: config.agent?.mentatMarketLimit,

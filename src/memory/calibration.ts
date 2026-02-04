@@ -1,6 +1,7 @@
 import { openDatabase } from './db.js';
 import { adjustCashBalance } from './portfolio.js';
 import { listTradesByPrediction } from './trades.js';
+import { recordLearningEvent } from './learning.js';
 
 export interface CalibrationSummary {
   domain: string;
@@ -20,6 +21,8 @@ export function recordOutcome(params: {
     .prepare(
       `
         SELECT outcome,
+               market_id as marketId,
+               domain,
                predicted_outcome as predictedOutcome,
                predicted_probability as predictedProbability,
                executed,
@@ -32,6 +35,8 @@ export function recordOutcome(params: {
     .get(params.id) as
     | {
         outcome?: string | null;
+        marketId?: string;
+        domain?: string | null;
         predictedOutcome?: string;
         predictedProbability?: number;
         executed?: number;
@@ -101,6 +106,19 @@ export function recordOutcome(params: {
 
   if (payout && payout > 0) {
     adjustCashBalance(payout);
+  }
+
+  if (prediction?.marketId) {
+    recordLearningEvent({
+      predictionId: params.id,
+      marketId: prediction.marketId,
+      domain: prediction.domain ?? 'global',
+      predictedOutcome: prediction.predictedOutcome ?? null,
+      predictedProbability: predictedProbability,
+      outcome: params.outcome,
+      brier,
+      pnl,
+    });
   }
 }
 

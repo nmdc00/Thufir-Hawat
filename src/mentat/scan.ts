@@ -1,8 +1,12 @@
 import type { LlmClient } from '../core/llm.js';
-import type { Market, AugurMarketClient } from '../execution/augur/markets.js';
+import type { Market } from '../execution/markets.js';
+import type { MarketClient } from '../execution/market-client.js';
+import type { ThufirConfig } from '../core/config.js';
 import { listRecentIntel } from '../intel/store.js';
 import { upsertAssumption, upsertMechanism, upsertFragilityCard, upsertSystemMap } from '../memory/mentat.js';
-import { withExecutionContextIfMissing } from '../core/llm_infra.js';
+import { withExecutionContext, withExecutionContextIfMissing } from '../core/llm_infra.js';
+import { computeFingerprint, selectExecutionContext } from '../core/execution_mode.js';
+import { findReusableArtifact, storeDecisionArtifact } from '../memory/decision_artifacts.js';
 
 import {
   type MentatAssumptionInput,
@@ -17,7 +21,8 @@ import { computeDetectorBundle, summarizeSignals } from './detectors.js';
 interface MentatScanOptions {
   system: string;
   llm: LlmClient;
-  marketClient: AugurMarketClient;
+  config: ThufirConfig;
+  marketClient: MarketClient;
   marketIds?: string[];
   marketQuery?: string;
   limit?: number;
@@ -36,6 +41,42 @@ interface MentatLlmResponse {
 function clamp(value: number, min = 0, max = 1): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(Math.max(value, min), max);
+}
+
+function getYesPriceForFingerprint(market: Market): number {
+  const prices = market.prices as Record<string, number> | number[] | undefined;
+  if (!prices) return 0;
+  if (Array.isArray(prices)) {
+    return Number(prices[0] ?? 0);
+  }
+  return Number(prices['Yes'] ?? prices['YES'] ?? prices['yes'] ?? 0);
+}
+
+function buildMentatFingerprint(system: string, signals: MentatSignals): string {
+  const marketSnapshot = signals.markets
+    .map((market) => ({
+      id: market.id,
+      yesPrice: getYesPriceForFingerprint(market),
+      volume: market.volume ?? 0,
+      resolved: market.resolved ?? false,
+      category: market.category ?? null,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const intelSnapshot = signals.intel
+    .map((item) => ({
+      id: item.id ?? `${item.source ?? 'src'}:${item.timestamp ?? ''}:${item.title ?? ''}`,
+      timestamp: item.timestamp ?? null,
+      title: item.title ?? null,
+      source: item.source ?? null,
+    }))
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
+  return computeFingerprint({
+    system,
+    markets: marketSnapshot,
+    intel: intelSnapshot,
+  });
 }
 
 function asStringArray(value: unknown): string[] | null {
@@ -254,7 +295,7 @@ function buildMentatPrompt(
 
 export async function collectMentatSignals(options: {
   system: string;
-  marketClient: AugurMarketClient;
+  marketClient: MarketClient;
   marketIds?: string[];
   marketQuery?: string;
   limit?: number;
@@ -263,7 +304,9 @@ export async function collectMentatSignals(options: {
   const limit = Math.max(1, Math.min(Number(options.limit ?? 25), 200));
   let markets: Market[] = [];
 
-  if (options.marketIds && options.marketIds.length > 0) {
+  if (!options.marketClient.isAvailable()) {
+    markets = [];
+  } else if (options.marketIds && options.marketIds.length > 0) {
     const fetched: Market[] = [];
     for (const id of options.marketIds) {
       try {
@@ -306,136 +349,183 @@ export async function runMentatScan(options: MentatScanOptions): Promise<MentatS
 
       const signalsSummary = summarizeSignals(signals.markets, signals.intel);
       const detectors = computeDetectorBundle(signals);
+      const fingerprint = buildMentatFingerprint(options.system, signals);
+      const context = selectExecutionContext({
+        config: options.config,
+        source: `mentat_scan:${options.system}`,
+        reason: 'mentat_scan',
+        fingerprint,
+        preferredMode: 'FULL_AGENT',
+        critical: false,
+        providerOverride: options.llm.meta?.provider,
+        modelOverride: options.llm.meta?.model,
+      });
 
-      const rolePrompts = [
-        {
-          role: 'Cartographer',
-          focus: 'Map the system structure and dependencies. Emphasize system map, key nodes, and coupling paths.',
-        },
-        {
-          role: 'Skeptic',
-          focus: 'Stress-test assumptions. Highlight weak evidence, missing falsifiers, and fragility in beliefs.',
-        },
-        {
-          role: 'Risk Officer',
-          focus: 'Focus on exposure surfaces, convexity, downside, recovery capacity, and fragility scores.',
-        },
-      ];
+      const cached = findReusableArtifact({
+        kind: 'mentat_scan',
+        fingerprint,
+        maxAgeMs: 4 * 60 * 60 * 1000,
+      });
 
-      const roleOutputs: Array<{
-        systemMap: SystemMap;
-        assumptions: MentatAssumptionInput[];
-        mechanisms: MentatMechanismInput[];
-        fragilityCards: MentatFragilityCardInput[];
-      }> = [];
-
-      for (const role of rolePrompts) {
-        const prompt = buildMentatPrompt(
-          options.system,
-          signalsSummary,
-          signals.markets,
-          signals.intel.map((item) => ({
-            title: item.title,
-            source: item.source,
-            timestamp: item.timestamp,
-          })),
-          now,
-          role.focus
-        );
-
-        const response = await options.llm.complete(
-          [
-            { role: 'system', content: `You are the ${role.role} in a mentat team. Provide structured JSON only.` },
-            { role: 'user', content: prompt },
-          ],
-          { temperature: 0.2 }
-        );
-
-        const parsed = parseJsonBlock(response.content) ?? {};
-        roleOutputs.push({
-          systemMap: normalizeSystemMap(parsed.system_map),
-          assumptions: normalizeAssumptions(parsed.assumptions, now),
-          mechanisms: normalizeMechanisms(parsed.mechanisms),
-          fragilityCards: normalizeFragilityCards(parsed.fragility_cards),
-        });
+      if (cached?.payload && (cached.payload as { scan?: unknown }).scan) {
+        return (cached.payload as { scan: MentatScanOutput }).scan;
       }
 
-      const systemMap = mergeSystemMaps(roleOutputs.map((o) => o.systemMap));
-      const assumptions = mergeAssumptions(roleOutputs.flatMap((o) => o.assumptions));
-      const mechanisms = mergeMechanisms(roleOutputs.flatMap((o) => o.mechanisms));
-      const fragilityCards = mergeFragilityCards(roleOutputs.flatMap((o) => o.fragilityCards));
-
-      const storedAssumptions: string[] = [];
-      const storedMechanisms: string[] = [];
-      const storedCards: string[] = [];
-
-      const storeEnabled = options.store !== false;
-      const mechanismIdByName = new Map<string, string>();
-
-      if (storeEnabled) {
-        upsertSystemMap({
+      if (context.mode === 'MONITOR_ONLY') {
+        return {
           system: options.system,
-          nodes: systemMap.nodes,
-          edges: systemMap.edges,
-        });
-
-        for (const mechanism of mechanisms) {
-          const id = upsertMechanism({
-            system: options.system,
-            name: mechanism.name,
-            causalChain: mechanism.causal_chain ?? null,
-            triggerClass: mechanism.trigger_class ?? null,
-            propagationPath: mechanism.propagation_path ?? null,
-          });
-          storedMechanisms.push(id);
-          mechanismIdByName.set(mechanism.name.toLowerCase(), id);
-        }
-
-        for (const assumption of assumptions) {
-          const id = upsertAssumption({
-            system: options.system,
-            statement: assumption.statement,
-            dependencies: assumption.dependencies ?? null,
-            evidenceFor: assumption.evidence_for ?? null,
-            evidenceAgainst: assumption.evidence_against ?? null,
-            stressScore: assumption.stress_score ?? null,
-            lastTested: assumption.last_tested ?? null,
-          });
-          storedAssumptions.push(id);
-        }
-
-        for (const card of fragilityCards) {
-          const mechanismId = mechanismIdByName.get(card.mechanism.toLowerCase()) ?? null;
-          const id = upsertFragilityCard({
-            system: options.system,
-            mechanismId,
-            exposureSurface: card.exposure_surface,
-            convexity: card.convexity ?? null,
-            earlySignals: card.early_signals ?? null,
-            falsifiers: card.falsifiers ?? null,
-            downside: card.downside ?? null,
-            recoveryCapacity: card.recovery_capacity ?? null,
-            score: card.score ?? null,
-          });
-          storedCards.push(id);
-        }
+          generatedAt: now,
+          signalsSummary,
+          detectors,
+          systemMap: { nodes: [], edges: [] },
+          assumptions: [],
+          mechanisms: [],
+          fragilityCards: [],
+          stored: { assumptions: [], mechanisms: [], fragilityCards: [] },
+        };
       }
 
-      return {
-        system: options.system,
-        generatedAt: now,
-        signalsSummary,
-        detectors,
-        systemMap,
-        assumptions,
-        mechanisms,
-        fragilityCards,
-        stored: {
-          assumptions: storedAssumptions,
-          mechanisms: storedMechanisms,
-          fragilityCards: storedCards,
-        },
-      };
+      return withExecutionContext(context, async () => {
+        const rolePrompts = [
+          {
+            role: 'Cartographer',
+            focus: 'Map the system structure and dependencies. Emphasize system map, key nodes, and coupling paths.',
+          },
+          {
+            role: 'Skeptic',
+            focus: 'Stress-test assumptions. Highlight weak evidence, missing falsifiers, and fragility in beliefs.',
+          },
+          {
+            role: 'Risk Officer',
+            focus: 'Focus on exposure surfaces, convexity, downside, recovery capacity, and fragility scores.',
+          },
+        ];
+
+        const roleOutputs: Array<{
+          systemMap: SystemMap;
+          assumptions: MentatAssumptionInput[];
+          mechanisms: MentatMechanismInput[];
+          fragilityCards: MentatFragilityCardInput[];
+        }> = [];
+
+        for (const role of rolePrompts) {
+          const prompt = buildMentatPrompt(
+            options.system,
+            signalsSummary,
+            signals.markets,
+            signals.intel.map((item) => ({
+              title: item.title,
+              source: item.source,
+              timestamp: item.timestamp,
+            })),
+            now,
+            role.focus
+          );
+
+          const response = await options.llm.complete(
+            [
+              { role: 'system', content: `You are the ${role.role} in a mentat team. Provide structured JSON only.` },
+              { role: 'user', content: prompt },
+            ],
+            { temperature: 0.2 }
+          );
+
+          const parsed = parseJsonBlock(response.content) ?? {};
+          roleOutputs.push({
+            systemMap: normalizeSystemMap(parsed.system_map),
+            assumptions: normalizeAssumptions(parsed.assumptions, now),
+            mechanisms: normalizeMechanisms(parsed.mechanisms),
+            fragilityCards: normalizeFragilityCards(parsed.fragility_cards),
+          });
+        }
+
+        const systemMap = mergeSystemMaps(roleOutputs.map((o) => o.systemMap));
+        const assumptions = mergeAssumptions(roleOutputs.flatMap((o) => o.assumptions));
+        const mechanisms = mergeMechanisms(roleOutputs.flatMap((o) => o.mechanisms));
+        const fragilityCards = mergeFragilityCards(roleOutputs.flatMap((o) => o.fragilityCards));
+
+        const storedAssumptions: string[] = [];
+        const storedMechanisms: string[] = [];
+        const storedCards: string[] = [];
+
+        const storeEnabled = options.store !== false;
+        const mechanismIdByName = new Map<string, string>();
+
+        if (storeEnabled) {
+          upsertSystemMap({
+            system: options.system,
+            nodes: systemMap.nodes,
+            edges: systemMap.edges,
+          });
+
+          for (const mechanism of mechanisms) {
+            const id = upsertMechanism({
+              system: options.system,
+              name: mechanism.name,
+              causalChain: mechanism.causal_chain ?? null,
+              triggerClass: mechanism.trigger_class ?? null,
+              propagationPath: mechanism.propagation_path ?? null,
+            });
+            storedMechanisms.push(id);
+            mechanismIdByName.set(mechanism.name.toLowerCase(), id);
+          }
+
+          for (const assumption of assumptions) {
+            const id = upsertAssumption({
+              system: options.system,
+              statement: assumption.statement,
+              dependencies: assumption.dependencies ?? null,
+              evidenceFor: assumption.evidence_for ?? null,
+              evidenceAgainst: assumption.evidence_against ?? null,
+              stressScore: assumption.stress_score ?? null,
+              lastTested: assumption.last_tested ?? null,
+            });
+            storedAssumptions.push(id);
+          }
+
+          for (const card of fragilityCards) {
+            const mechanismId = mechanismIdByName.get(card.mechanism.toLowerCase()) ?? null;
+            const id = upsertFragilityCard({
+              system: options.system,
+              mechanismId,
+              exposureSurface: card.exposure_surface,
+              convexity: card.convexity ?? null,
+              earlySignals: card.early_signals ?? null,
+              falsifiers: card.falsifiers ?? null,
+              downside: card.downside ?? null,
+              recoveryCapacity: card.recovery_capacity ?? null,
+              score: card.score ?? null,
+            });
+            storedCards.push(id);
+          }
+        }
+
+        const output: MentatScanOutput = {
+          system: options.system,
+          generatedAt: now,
+          signalsSummary,
+          detectors,
+          systemMap,
+          assumptions,
+          mechanisms,
+          fragilityCards,
+          stored: {
+            assumptions: storedAssumptions,
+            mechanisms: storedMechanisms,
+            fragilityCards: storedCards,
+          },
+        };
+        const expires = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+        storeDecisionArtifact({
+          source: 'mentat',
+          kind: 'mentat_scan',
+          fingerprint,
+          expiresAt: expires,
+          payload: { scan: output },
+        });
+
+        return output;
+      });
     }
   );
 }
@@ -471,7 +561,7 @@ export interface QuickFragilityScan {
 
 interface QuickFragilityScanOptions {
   marketId: string;
-  marketClient: AugurMarketClient;
+  marketClient: MarketClient;
   llm: LlmClient;
   intelLimit?: number;
 }

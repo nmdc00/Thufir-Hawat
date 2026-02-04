@@ -19,13 +19,8 @@ export interface Market {
   resolved?: boolean;
   resolution?: string;
   createdAt?: Date;
-  platform: 'augur';
-  augur?: {
-    marketFactory: string;
-    marketIndex: number;
-    type: 'crypto' | 'sports' | 'mma';
-    shareTokens: string[];
-  };
+  platform: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface OrderBook {
@@ -309,12 +304,15 @@ export interface ThufirConfig {
       maxDomainPercent: number;
     };
   };
-  augur?: {
+  hyperliquid?: {
     enabled?: boolean;
-    subgraph?: string;
-    rpcUrl?: string;
-    slippageTolerance?: number;
-    marketTypes?: Array<'crypto' | 'sports' | 'mma'>;
+    baseUrl?: string;
+    wsUrl?: string;
+    accountAddress?: string;
+    privateKey?: string;
+    maxLeverage?: number;
+    defaultSlippageBps?: number;
+    symbols?: string[];
   };
   technical?: {
     enabled?: boolean;

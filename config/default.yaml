@@ -33,7 +33,7 @@ agent:
   maxToolResultChars: 8000
   internalPromptMode: minimal
   mentatAutoScan: false
-  mentatSystem: Augur
+  mentatSystem: Markets
   # Optional filters for mentat auto-scan
   # mentatMarketQuery: "macro"
   # mentatMarketLimit: 25
@@ -74,6 +74,8 @@ agent:
 wallet:
   # Encrypted keystore location
   keystorePath: ~/.thufir/keystore.json
+  # Optional RPC URL for live execution adapters
+  # rpcUrl: ""
 
   # Spending limits (USD)
   limits:
@@ -90,23 +92,6 @@ wallet:
   cooldown:
     lossThresholdPercent: 10  # Trigger at 10% daily loss
     durationSeconds: 3600     # 1 hour cooldown
-
-# Augur Turbo settings
-augur:
-  enabled: true
-  subgraph: https://api.thegraph.com/subgraphs/name/augurproject/augur-turbo-matic
-  rpcUrl: https://polygon-rpc.com
-  slippageTolerance: 0.02
-  marketTypes:
-    - crypto
-  stream:
-    enabled: false
-    wsUrl: ""            # optional WebSocket endpoint
-    watchlistOnly: true
-    maxWatchlist: 50
-    reconnectSeconds: 10
-    staleAfterSeconds: 180
-    refreshIntervalSeconds: 300
 
 # Technical analysis (short-term crypto)
 technical:
@@ -145,6 +130,7 @@ technical:
 execution:
   # paper = simulated trades, webhook = forward orders to external executor
   mode: paper
+  provider: hyperliquid
   webhookUrl: ""
 
 # Channel integrations
@@ -169,6 +155,8 @@ autonomy:
   watchlistOnly: true
   eventDriven: false
   eventDrivenMinItems: 1
+  strategy: discovery
+  probeRiskFraction: 0.005
 
   # Full autonomous mode (auto-executes trades)
   fullAuto: false              # Master toggle for auto-execution
@@ -377,3 +365,13 @@ intel:
     allowTypes: []
     minTrust: medium
     socialOptIn: true
+# Hyperliquid settings
+hyperliquid:
+  enabled: true
+  baseUrl: https://api.hyperliquid.xyz
+  wsUrl: wss://api.hyperliquid.xyz/ws
+  accountAddress: ""
+  privateKey: ""
+  maxLeverage: 5
+  defaultSlippageBps: 10
+  symbols: ["BTC", "ETH"]

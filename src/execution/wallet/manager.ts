@@ -10,7 +10,7 @@ export function loadWallet(config: ThufirConfig, password: string): ethers.Walle
     `${process.env.HOME ?? ''}/.thufir/keystore.json`;
   const store = loadKeystore(path);
   const privateKey = decryptPrivateKey(store, password);
-  const rpcUrl = config.augur?.rpcUrl;
+  const rpcUrl = config.wallet?.rpcUrl ?? process.env.THUFIR_RPC_URL;
   const provider = rpcUrl ? new ethers.providers.JsonRpcProvider(rpcUrl) : undefined;
   return new ethers.Wallet(privateKey, provider);
 }

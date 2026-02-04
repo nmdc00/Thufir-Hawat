@@ -16,54 +16,9 @@ function toExecutorContext(ctx: ToolContext): ToolExecutorContext {
   return ctx as unknown as ToolExecutorContext;
 }
 
-/**
- * Place bet tool - execute a trade.
- */
-export const placeBetTool: ToolDefinition = {
-  name: 'place_bet',
-  description: 'Place a bet on a prediction market. Use after researching a market to execute a trade. System spending/exposure limits apply automatically.',
-  category: 'trading',
-  schema: z.object({
-    market_id: z.string().describe('The Augur market ID to bet on'),
-    outcome: z.enum(['YES', 'NO']).describe('The outcome to bet on (YES or NO)'),
-    amount: z.number().positive().describe('Amount in USD to bet'),
-    reasoning: z.string().optional().describe('Your reasoning for this bet (stored for calibration tracking)'),
-  }),
-  execute: async (input, ctx): Promise<ToolResult> => {
-    return executeToolCall('place_bet', input as Record<string, unknown>, toExecutorContext(ctx));
-  },
-  sideEffects: true,
-  requiresConfirmation: true, // Trades always require confirmation
-  cacheTtlMs: 0, // No caching for trades
-};
-
-/**
- * Trade place tool (dot-notation alias).
- */
-export const tradePlaceTool: ToolDefinition = {
-  name: 'trade.place',
-  description: 'Place a bet on a prediction market. Use after researching a market to execute a trade. System spending/exposure limits apply automatically.',
-  category: 'trading',
-  schema: z.object({
-    market_id: z.string().describe('The Augur market ID to bet on'),
-    outcome: z.enum(['YES', 'NO']).describe('The outcome to bet on (YES or NO)'),
-    amount: z.number().positive().describe('Amount in USD to bet'),
-    reasoning: z.string().optional().describe('Your reasoning for this bet (stored for calibration tracking)'),
-  }),
-  execute: async (input, ctx): Promise<ToolResult> => {
-    return executeToolCall('place_bet', input as Record<string, unknown>, toExecutorContext(ctx));
-  },
-  sideEffects: true,
-  requiresConfirmation: true,
-  cacheTtlMs: 0,
-};
-
-/**
- * Get portfolio tool - view current positions.
- */
 export const getPortfolioTool: ToolDefinition = {
   name: 'get_portfolio',
-  description: 'Get current portfolio: positions, balances, and P&L. Use before betting to understand available capital and exposure.',
+  description: 'Get current portfolio: positions, balances, and P&L. Use before trading to understand available capital and exposure.',
   category: 'trading',
   schema: z.object({}),
   execute: async (input, ctx): Promise<ToolResult> => {
@@ -72,6 +27,22 @@ export const getPortfolioTool: ToolDefinition = {
   sideEffects: false,
   requiresConfirmation: false,
   cacheTtlMs: 10_000, // Short cache for portfolio
+};
+
+/**
+ * Get positions tool - view live Hyperliquid positions.
+ */
+export const getPositionsTool: ToolDefinition = {
+  name: 'get_positions',
+  description: 'Get current Hyperliquid positions and account summary.',
+  category: 'trading',
+  schema: z.object({}),
+  execute: async (input, ctx): Promise<ToolResult> => {
+    return executeToolCall('get_positions', input as Record<string, unknown>, toExecutorContext(ctx));
+  },
+  sideEffects: false,
+  requiresConfirmation: false,
+  cacheTtlMs: 10_000,
 };
 
 /**
@@ -98,7 +69,7 @@ export const getPredictionsTool: ToolDefinition = {
  */
 export const getOpenOrdersTool: ToolDefinition = {
   name: 'get_open_orders',
-  description: 'Get currently open orders. For Augur AMM trades this will typically be empty.',
+  description: 'Get currently open orders.',
   category: 'trading',
   schema: z.object({}),
   execute: async (input, ctx): Promise<ToolResult> => {
@@ -113,9 +84,8 @@ export const getOpenOrdersTool: ToolDefinition = {
  * All trading tools.
  */
 export const tradingTools: ToolDefinition[] = [
-  placeBetTool,
-  tradePlaceTool,
   getPortfolioTool,
+  getPositionsTool,
   getPredictionsTool,
   getOpenOrdersTool,
 ];

@@ -1,8 +1,8 @@
 # Thufir - Prediction Market AI Companion
 
-**Thufir** (from Arabic بيجاز, meaning "concise oracle") is a personal AI assistant specialized in prediction markets. Unlike pure trading bots that optimize for speed and arbitrage, Thufir is a **prediction companion** that learns your interests, curates intel, discusses reasoning, and executes trades on your behalf — **fully autonomous by default**.
+**Thufir** (from Arabic بيجاز, meaning "concise oracle") is a personal AI assistant specialized in markets. Unlike pure trading bots that optimize for speed and arbitrage, Thufir is a **prediction companion** that learns your interests, curates intel, discusses reasoning, and executes trades on your behalf — **fully autonomous by default**.
 
-Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel architecture with an Augur Turbo execution stack.
+Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel architecture with an Hyperliquid execution stack.
 
 ## Why Thufir?
 
@@ -47,7 +47,7 @@ Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel
 - Primary + fallback model support
 
 ### 7. Crypto Wallet Integration
-- Secure wallet management for Augur trades
+- Secure wallet management for perp trades
 - Portfolio tracking and P&L reporting
 - Risk limits and exposure controls
 
@@ -77,7 +77,7 @@ Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel
 ┌───────▼───────┐ ┌───────▼───────┐ ┌───────▼───────┐
 │  INTEL LAYER  │ │ MEMORY LAYER  │ │EXECUTION LAYER│
 │  ─────────────│ │ ──────────────│ │ ──────────────│
-│ • News APIs   │ │ • Predictions │ │ • Augur Turbo │
+│ • News APIs   │ │ • Predictions │ │ • Hyperliquid │
 │ • Twitter/X   │ │ • Outcomes    │ │ • Wallet Mgmt │
 │ • RSS Feeds   │ │ • Reasoning   │ │ • Portfolio   │
 │ • Vector DB   │ │ • Calibration │ │ • Risk Limits │
@@ -187,7 +187,7 @@ execution:
 **Mode descriptions:**
 - `paper` (default): Simulates trades without real execution. Tracks positions and P&L for practice/testing.
 - `webhook`: Sends trade decisions to an external URL for execution (useful for external signing services).
-- `live`: Executes real trades on Augur Turbo via on-chain AMM interaction. Requires wallet setup and `THUFIR_WALLET_PASSWORD` environment variable.
+- `live`: Executes real trades on Hyperliquid via on-chain AMM interaction. Requires wallet setup and `THUFIR_WALLET_PASSWORD` environment variable.
 
 **Live mode setup:**
 ```bash
@@ -340,8 +340,8 @@ thufir wallet setup
 thufir env init
 thufir env check
 
-# Verify Augur connectivity
-thufir markets augur-status
+# Verify Hyperliquid connectivity
+thufir tools list | rg perp
 
 # Set up intel sources
 thufir intel add newsapi --key YOUR_KEY
@@ -451,7 +451,7 @@ thufir memory prune --days 90
 - `/analyze <marketId>` - Deep LLM analysis of a specific market
 - `/analyze-json <marketId>` - Structured analysis (JSON)
 - `/explain <predictionId>` - Explain a prediction decision
-- `/markets <query>` - Search for prediction markets
+- `/markets <query>` - Search for markets
 - `/clear` - Clear conversation history
 - `/alerts` - Start intel alert setup
 - `/help` - Show all commands
@@ -541,7 +541,7 @@ Thufir/
 │   ├── core/           # Agent logic, LLM integration
 │   ├── intel/          # News aggregation, vectorization
 │   ├── memory/         # Prediction storage, calibration
-│   ├── execution/      # Augur integration, wallet
+│   ├── execution/      # Hyperliquid integration, wallet
 │   └── interface/      # Channel adapters, CLI
 ├── docs/
 │   ├── ARCHITECTURE.md
@@ -605,7 +605,7 @@ Thufir/
 - [ ] Web dashboard
 
 ### Phase 5: Proactive Intelligence (PLANNED)
-- [ ] **Daily Top 10 Trades**: Automatically scour Augur + news to find best opportunities
+- [ ] **Daily Top 10 Trades**: Automatically scour Hyperliquid + news to find best opportunities
 - [ ] **Event-Driven Alerts**: Monitor current events and alert when relevant markets have edge
 - [ ] **Full Autonomous Mode**: Toggle on/off autonomous betting with daily P&L reports
 - [ ] Clawdbot integration for proactive search and multi-step reasoning
@@ -623,7 +623,7 @@ Thufir/
 ### Daily Top 10 Trades Report
 Thufir will automatically:
 1. Fetch current events from news sources
-2. Cross-reference with all active Augur markets
+2. Cross-reference with all active Hyperliquid markets
 3. Use LLM to identify markets where news creates edge
 4. Rank by expected value and confidence
 5. Push daily report to configured channels
@@ -663,7 +663,7 @@ autonomy:
 
 **Safety Controls:**
 - Always respects daily/per-trade limits
-- Whitelist-only addresses (Augur contracts)
+- Whitelist-only addresses (Hyperliquid contracts)
 - Auto-pause after configurable loss streak
 - Manual override via `/pause` and `/resume` commands
 
@@ -713,10 +713,10 @@ notifications:
 ## Acknowledgments
 
 - [Clawdbot](https://github.com/clawdbot/clawdbot) - Multi-channel AI assistant framework (planned integration)
-- Augur Turbo execution stack (internal)
+- Hyperliquid execution stack (internal)
 - The prediction market community
 
 ---
 
-**Disclaimer:** This software is for educational and research purposes. Prediction market trading involves financial risk. Never trade more than you can afford to lose. Check local regulations before using prediction markets.
+**Disclaimer:** This software is for educational and research purposes. Prediction market trading involves financial risk. Never trade more than you can afford to lose. Check local regulations before using markets.
 # Thufir

@@ -4,7 +4,7 @@ export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'market_search',
     description:
-      'Search for prediction markets on Augur Turbo by query. Use when the user asks about a topic and you want relevant markets.',
+      'Search for prediction markets by query. Use when the user asks about a topic and you want relevant markets.',
     input_schema: {
       type: 'object',
       properties: {
@@ -28,7 +28,7 @@ export const THUFIR_TOOLS: Tool[] = [
       properties: {
         market_id: {
           type: 'string',
-          description: 'Augur market ID',
+          description: 'Market ID',
         },
       },
       required: ['market_id'],
@@ -135,7 +135,7 @@ export const THUFIR_TOOLS: Tool[] = [
       properties: {
         query: {
           type: 'string',
-          description: 'Search query for Twitter (e.g., "Augur", "Bitcoin price")',
+          description: 'Search query for Twitter (e.g., "Bitcoin price")',
         },
         limit: {
           type: 'number',
@@ -149,6 +149,16 @@ export const THUFIR_TOOLS: Tool[] = [
     name: 'get_portfolio',
     description:
       'Get current portfolio: positions, balances, and P&L. Use before betting to understand available capital and exposure.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'get_positions',
+    description:
+      'Get current Hyperliquid positions and account summary.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -178,7 +188,7 @@ export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'get_open_orders',
     description:
-      'Get currently open orders. For Augur AMM trades this will typically be empty.',
+      'Get currently open orders.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -188,13 +198,13 @@ export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'get_order_book',
     description:
-      'Get indicative price snapshot for an Augur market (AMM markets do not have a traditional order book).',
+      'Get indicative price snapshot for a market (traditional depth may not be available).',
     input_schema: {
       type: 'object',
       properties: {
         market_id: {
           type: 'string',
-          description: 'The Augur market ID',
+          description: 'The market ID',
         },
         depth: {
           type: 'number',
@@ -207,13 +217,13 @@ export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'price_history',
     description:
-      'Get price snapshots for an Augur market. Augur Turbo does not expose full order-book history.',
+      'Get price snapshots for a market. Full order-book history may not be available.',
     input_schema: {
       type: 'object',
       properties: {
         market_id: {
           type: 'string',
-          description: 'The Augur market ID',
+          description: 'The market ID',
         },
         interval: {
           type: 'string',
@@ -266,17 +276,7 @@ export const THUFIR_TOOLS: Tool[] = [
       required: ['url'],
     },
   },
-  {
-    name: 'place_bet',
-    description:
-      'Place a bet on a prediction market. Use after researching a market to execute a trade. System spending/exposure limits apply automatically.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        market_id: {
-          type: 'string',
-          description: 'The Augur market ID to bet on',
-        },
+  
         outcome: {
           type: 'string',
           enum: ['YES', 'NO'],
@@ -524,6 +524,153 @@ export const THUFIR_TOOLS: Tool[] = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'perp_market_list',
+    description: 'List perp markets for the configured exchange.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: 'Maximum number of markets (default: 20)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'perp_market_get',
+    description: 'Get details for a perp market by symbol.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'Perp symbol (e.g., BTC)',
+        },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'perp_place_order',
+    description: 'Place a perp order on the configured exchange.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Perp symbol' },
+        side: { type: 'string', enum: ['buy', 'sell'], description: 'Order side' },
+        size: { type: 'number', description: 'Order size' },
+        order_type: { type: 'string', enum: ['market', 'limit'], description: 'Order type' },
+        price: { type: 'number', description: 'Limit price (required for limit orders)' },
+        leverage: { type: 'number', description: 'Leverage to apply' },
+        reduce_only: { type: 'boolean', description: 'Reduce-only order' },
+      },
+      required: ['symbol', 'side', 'size'],
+    },
+  },
+  {
+    name: 'perp_open_orders',
+    description: 'List open perp orders for the configured exchange.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'perp_cancel_order',
+    description: 'Cancel a perp order by id.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        order_id: { type: 'string', description: 'Order id to cancel' },
+      },
+      required: ['order_id'],
+    },
+  },
+  {
+    name: 'perp_positions',
+    description: 'Get open perp positions for the configured exchange.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'signal_price_vol_regime',
+    description: 'Compute price/vol regime signals for a symbol.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol in exchange format (e.g., BTC/USDT)' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'signal_cross_asset_divergence',
+    description: 'Compute cross-asset divergence signals for a set of symbols.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbols: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Symbols in exchange format (e.g., BTC/USDT)',
+        },
+      },
+      required: ['symbols'],
+    },
+  },
+  {
+    name: 'signal_hyperliquid_funding_oi_skew',
+    description: 'Compute funding/open-interest skew signal from Hyperliquid.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol in exchange format (e.g., BTC/USDT)' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'signal_hyperliquid_orderflow_imbalance',
+    description: 'Compute orderflow imbalance signal from Hyperliquid.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol in exchange format (e.g., BTC/USDT)' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'signal_hyperliquid_funding_oi_skew',
+    description: 'Compute Hyperliquid funding/open-interest skew signals for a symbol.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Hyperliquid symbol (e.g., BTC or BTC/USDT)' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'signal_hyperliquid_orderflow_imbalance',
+    description: 'Compute Hyperliquid orderflow imbalance signals for a symbol.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Hyperliquid symbol (e.g., BTC or BTC/USDT)' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'discovery_run',
+    description: 'Run the autonomous discovery loop and return clusters, hypotheses, and expressions.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Maximum number of clusters to return' },
+      },
+      required: [],
     },
   },
 ];

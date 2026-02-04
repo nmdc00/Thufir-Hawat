@@ -41,7 +41,7 @@ const ConfigSchema = z.object({
     maxPromptChars: z.number().default(120000),
     maxToolResultChars: z.number().default(8000),
     mentatAutoScan: z.boolean().default(false),
-    mentatSystem: z.string().default('Augur'),
+    mentatSystem: z.string().default('Markets'),
     mentatMarketQuery: z.string().optional(),
     mentatMarketLimit: z.number().optional(),
     mentatIntelLimit: z.number().optional(),
@@ -102,12 +102,14 @@ const ConfigSchema = z.object({
   execution: z
     .object({
       mode: z.enum(['paper', 'webhook', 'live']).default('paper'),
+      provider: z.enum(['hyperliquid']).default('hyperliquid'),
       webhookUrl: z.string().optional(),
     })
     .default({}),
   wallet: z
     .object({
       keystorePath: z.string().optional(),
+      rpcUrl: z.string().optional(),
       limits: z
         .object({
           daily: z.number().default(100),
@@ -123,13 +125,16 @@ const ConfigSchema = z.object({
         .default({}),
     })
     .default({}),
-  augur: z
+  hyperliquid: z
     .object({
       enabled: z.boolean().default(true),
-      subgraph: z.string().default('https://api.thegraph.com/subgraphs/name/augurproject/augur-turbo-matic'),
-      rpcUrl: z.string().optional(),
-      slippageTolerance: z.number().default(0.02),
-      marketTypes: z.array(z.enum(['crypto', 'sports', 'mma'])).default(['crypto']),
+      baseUrl: z.string().default('https://api.hyperliquid.xyz'),
+      wsUrl: z.string().default('wss://api.hyperliquid.xyz/ws'),
+      accountAddress: z.string().optional(),
+      privateKey: z.string().optional(),
+      maxLeverage: z.number().default(5),
+      defaultSlippageBps: z.number().default(10),
+      symbols: z.array(z.string()).default(['BTC', 'ETH']),
     })
     .default({}),
   technical: z
@@ -387,6 +392,8 @@ const ConfigSchema = z.object({
       watchlistOnly: z.boolean().default(true),
       eventDriven: z.boolean().default(false),
       eventDrivenMinItems: z.number().default(1),
+      strategy: z.enum(['opportunity', 'discovery']).default('discovery'),
+      probeRiskFraction: z.number().default(0.005),
       // Full autonomous mode options
       fullAuto: z.boolean().default(false),
       minEdge: z.number().default(0.05),
@@ -489,7 +496,7 @@ const ConfigSchema = z.object({
           time: z.string().default('09:00'),
           intervalMinutes: z.number().optional(),
           channels: z.array(z.string()).default([]),
-          system: z.string().default('Augur'),
+          system: z.string().default('Markets'),
           marketQuery: z.string().optional(),
           marketLimit: z.number().default(25),
           intelLimit: z.number().default(40),

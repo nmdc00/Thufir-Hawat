@@ -1,4 +1,5 @@
-export type MarketPlatform = 'augur';
+export type MarketPlatform = string;
+export type MarketKind = 'prediction' | 'perp';
 
 export interface Market {
   id: string;
@@ -14,13 +15,8 @@ export interface Market {
   resolution?: string;
   createdAt?: Date;
   platform: MarketPlatform;
-  augur?: {
-    marketFactory: string;
-    marketIndex: number;
-    type: 'crypto' | 'sports' | 'mma';
-    shareTokens: string[];
-    coinIndex?: number;
-    creationPrice?: number;
-    marketType?: string;
-  };
+  kind?: MarketKind;
+  symbol?: string;
+  markPrice?: number;
+  metadata?: Record<string, unknown>;
 }

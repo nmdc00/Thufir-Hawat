@@ -1,7 +1,7 @@
 /**
  * Chat Mode Configuration
  *
- * Default mode for general conversation about prediction markets.
+ * Default mode for general conversation about markets.
  * Read-only, no trading, quick responses.
  */
 
@@ -19,6 +19,8 @@ const CHAT_TOOLS = [
   'market_categories',
   'get_order_book',
   'price_history',
+  'perp_market_list',
+  'perp_market_get',
 
   // Intel tools
   'intel_search',
@@ -52,7 +54,7 @@ const CHAT_TOOLS = [
  */
 export const chatMode: ModeConfig = {
   name: 'chat',
-  description: 'General conversation about prediction markets. Read-only, no trading.',
+  description: 'General conversation about markets. Read-only, no trading.',
   allowedTools: CHAT_TOOLS,
   maxIterations: 8, // Increased from 4 - simple queries exit early anyway
   requireCritic: false,

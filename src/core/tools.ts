@@ -1,5 +1,6 @@
 import type { ThufirConfig } from './config.js';
-import type { Market, AugurMarketClient } from '../execution/augur/markets.js';
+import type { Market } from '../execution/markets.js';
+import type { MarketClient } from '../execution/market-client.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listMarketCategories } from '../memory/market_cache.js';
 import { listRecentIntel, searchIntel } from '../intel/store.js';
@@ -9,7 +10,7 @@ export type ToolResult = Record<string, unknown>;
 
 export interface ToolContext {
   config: ThufirConfig;
-  marketClient: AugurMarketClient;
+  marketClient: MarketClient;
 }
 
 type ToolHandler = (ctx: ToolContext, params: Record<string, unknown>) => Promise<ToolResult>;
@@ -40,15 +41,25 @@ export class ToolRegistry {
 
     this.handlers['market.get'] = async (ctx, params) => {
       const id = String(params.marketId ?? '');
-      const market = await ctx.marketClient.getMarket(id);
-      return { market };
+      try {
+        const market = await ctx.marketClient.getMarket(id);
+        return { market };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return { error: message };
+      }
     };
 
     this.handlers['market.search'] = async (ctx, params) => {
       const query = String(params.query ?? '');
       const limit = Number(params.limit ?? 5);
-      const markets = await ctx.marketClient.searchMarkets(query, limit);
-      return { markets };
+      try {
+        const markets = await ctx.marketClient.searchMarkets(query, limit);
+        return { markets };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return { error: message };
+      }
     };
 
     this.handlers['market.categories'] = async (_ctx, params) => {

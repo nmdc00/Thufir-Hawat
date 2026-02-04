@@ -13,10 +13,11 @@ import {
 import type { LlmClient } from './llm.js';
 import { decideTrade, buildDecisionPrompts, parseDecisionFromText, EXECUTOR_PROMPT } from './decision.js';
 import { Logger } from './logger.js';
-import { AugurMarketClient } from '../execution/augur/markets.js';
+import { createMarketClient, type MarketClient } from '../execution/market-client.js';
 import { PaperExecutor } from '../execution/modes/paper.js';
 import { WebhookExecutor } from '../execution/modes/webhook.js';
-import { AugurLiveExecutor } from '../execution/modes/augur-live.js';
+import { HyperliquidLiveExecutor } from '../execution/modes/hyperliquid-live.js';
+import { UnsupportedLiveExecutor } from '../execution/modes/unsupported-live.js';
 import type { ExecutionAdapter } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
 import { addWatchlist, listWatchlist } from '../memory/watchlist.js';
@@ -41,7 +42,7 @@ export class ThufirAgent {
   private infoLlm?: LlmClient;
   private executorLlm: ReturnType<typeof createExecutorClient>;
   private autonomyLlm: ReturnType<typeof createLlmClient>;
-  private marketClient: AugurMarketClient;
+  private marketClient: MarketClient;
   private executor: ExecutionAdapter;
   private limiter: DbSpendingLimitEnforcer;
   private logger: Logger;
@@ -59,7 +60,7 @@ export class ThufirAgent {
     this.llm = createLlmClient(this.config);
     this.infoLlm = createTrivialTaskClient(this.config) ?? undefined;
     this.executorLlm = createExecutorClient(this.config);
-    this.marketClient = new AugurMarketClient(this.config);
+    this.marketClient = createMarketClient(this.config);
     this.executor = this.createExecutor(config);
 
     this.limiter = new DbSpendingLimitEnforcer({
@@ -106,13 +107,10 @@ export class ThufirAgent {
 
   private createExecutor(config: ThufirConfig): ExecutionAdapter {
     if (config.execution.mode === 'live') {
-      const password = process.env.THUFIR_WALLET_PASSWORD;
-      if (!password) {
-        throw new Error(
-          'Live execution mode requires THUFIR_WALLET_PASSWORD environment variable'
-        );
+      if (config.execution.provider === 'hyperliquid') {
+        return new HyperliquidLiveExecutor({ config });
       }
-      return new AugurLiveExecutor({ config, password });
+      return new UnsupportedLiveExecutor();
     }
 
     if (config.execution.mode === 'webhook' && config.execution.webhookUrl) {
@@ -165,13 +163,19 @@ export class ThufirAgent {
 
   async handleMessage(sender: string, text: string): Promise<string> {
     const trimmed = text.trim();
+    const isQuestion = this.isQuestion(trimmed);
+    const isCapabilityQuestion = this.isCapabilityQuestion(trimmed);
+    const isAccessQuestion = this.isAccessQuestion(trimmed);
 
     const tradeIntent = /\b(bet|trade|buy|sell)\b/i.test(trimmed);
     if (tradeIntent && !trimmed.startsWith('/trade ') && !trimmed.startsWith('/bet ')) {
       const autoEnabled =
         (this.config.autonomy as any)?.enabled === true &&
         (this.config.autonomy as any)?.fullAuto === true;
-      if (!autoEnabled) {
+      if (!autoEnabled && !isCapabilityQuestion && !isAccessQuestion && !isQuestion) {
+        if (this.config.execution?.provider === 'hyperliquid') {
+          return 'To place a live perp trade, use `/perp <symbol> <buy|sell> <sizeUsd> [leverage]` (example: `/perp BTC buy 25 3`).';
+        }
         const hasAmount = /\b\d+(?:\.\d+)?\b/.test(trimmed);
         const hasOutcome = /\b(yes|no)\b/i.test(trimmed);
         const hasId = /\b\d{4,}\b/.test(trimmed);
@@ -179,6 +183,14 @@ export class ThufirAgent {
           return 'To place a live trade, use `/trade <marketId> <YES|NO> <amount>` (example: `/trade 12345 YES 5`).';
         }
       }
+    }
+
+    if (this.isSetupRequest(trimmed)) {
+      return this.buildLiveTradingSetupPrompt();
+    }
+
+    if (isCapabilityQuestion || isAccessQuestion) {
+      return this.buildAccessReport();
     }
 
     // Command: /watch <marketId>
@@ -276,6 +288,45 @@ export class ThufirAgent {
       }
       updateUserContext(sender, { preferences: { [key]: value } });
       return `Updated preference: ${key}`;
+    }
+
+    // Command: /perp <symbol> <buy|sell> <sizeUsd> [leverage]
+    if (trimmed.startsWith('/perp ')) {
+      const [, symbolRaw, sideRaw, sizeRaw, leverageRaw] = trimmed.split(' ');
+      const symbol = symbolRaw?.trim();
+      const side = sideRaw?.toLowerCase();
+      const sizeUsd = Number(sizeRaw);
+      const leverage = leverageRaw ? Number(leverageRaw) : undefined;
+      if (!symbol || (side !== 'buy' && side !== 'sell') || !Number.isFinite(sizeUsd)) {
+        return 'Usage: /perp <symbol> <buy|sell> <sizeUsd> [leverage]';
+      }
+      try {
+        const market = await this.marketClient.getMarket(symbol);
+        const markPrice = market.markPrice ?? 0;
+        const size = markPrice > 0 ? sizeUsd / markPrice : sizeUsd;
+        const limitCheck = await this.limiter.checkAndReserve(sizeUsd);
+        if (!limitCheck.allowed) {
+          return `Trade blocked: ${limitCheck.reason}`;
+        }
+        const decision = {
+          action: side as 'buy' | 'sell',
+          side: side as 'buy' | 'sell',
+          symbol,
+          size,
+          leverage,
+          orderType: 'market' as const,
+          reasoning: `Manual perp command from ${sender}`,
+        };
+        const result = await this.executor.execute(market, decision);
+        if (result.executed) {
+          this.limiter.confirm(sizeUsd);
+        } else {
+          this.limiter.release(sizeUsd);
+        }
+        return result.message;
+      } catch (error) {
+        return `Perp trade failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      }
     }
 
     // Command: /trade <marketId> <YES|NO> <amount>
@@ -618,6 +669,7 @@ Just type naturally to chat about predictions, events, or markets.
 
     if (!autoEnabled) return null;
 
+    const trimmed = message.trim();
     const hasTradeIntent = /\b(bet|trade|buy|sell)\b/i.test(message);
     if (!hasTradeIntent) return null;
 
@@ -629,6 +681,9 @@ Just type naturally to chat about predictions, events, or markets.
     const marketId = idMatch?.[1];
 
     const amountValid = Number.isFinite(amount) && amount > 0;
+    if (this.isCapabilityQuestion(trimmed)) return null;
+    if (this.isAccessQuestion(trimmed)) return null;
+    if (this.isQuestion(trimmed) && !amountValid && !marketId) return null;
 
     if (marketId) {
       return this.executeAutonomousTrade({
@@ -744,6 +799,98 @@ Just type naturally to chat about predictions, events, or markets.
       this.limiter.release(decision.amount);
     }
     return result.message;
+  }
+
+  private buildAccessReport(): string {
+    const executionMode = this.config.execution?.mode ?? 'paper';
+    const marketDataReady = this.marketClient.isAvailable();
+    const provider = this.config.execution?.provider ?? 'hyperliquid';
+    const hasHyperKey =
+      Boolean(this.config.hyperliquid?.privateKey) ||
+      Boolean(process.env.HYPERLIQUID_PRIVATE_KEY);
+
+    const lines: string[] = [];
+    lines.push('Access status (Markets):');
+    lines.push(`- Market data: ${marketDataReady ? 'enabled' : 'not configured'}.`);
+    lines.push(`- Execution mode: ${executionMode}.`);
+    lines.push(`- Execution provider: ${provider}.`);
+    if (provider === 'hyperliquid') {
+      lines.push(`- Hyperliquid key: ${hasHyperKey ? 'set' : 'missing'} (HYPERLIQUID_PRIVATE_KEY).`);
+    }
+
+    const tradingReady = executionMode === 'live' && (provider !== 'hyperliquid' || hasHyperKey);
+    lines.push(`- Live trading: ${tradingReady ? 'ready' : 'not ready'}.`);
+
+    if (!tradingReady) {
+      lines.push('');
+      lines.push('To enable live trading:');
+      lines.push('- Set `execution.mode: live` in config.');
+      if (provider === 'hyperliquid') {
+        lines.push('- Export `HYPERLIQUID_PRIVATE_KEY` (not stored in config).');
+      } else {
+        lines.push('- Ensure the keystore exists (or set `wallet.keystorePath`).');
+        lines.push('- Export `THUFIR_WALLET_PASSWORD` (not stored in config).');
+      }
+      lines.push('');
+      lines.push('If you want, tell me "set up live trading" and I will guide the setup.');
+    }
+
+    return lines.join('\n');
+  }
+
+  private buildLiveTradingSetupPrompt(): string {
+    const configPath =
+      process.env.THUFIR_CONFIG_PATH ?? join(homedir(), '.thufir', 'config.yaml');
+    const provider = this.config.execution?.provider ?? 'hyperliquid';
+    const keystorePath =
+      this.config.wallet?.keystorePath ??
+      process.env.THUFIR_KEYSTORE_PATH ??
+      `${process.env.HOME ?? ''}/.thufir/keystore.json`;
+
+    return [
+      'Live trading setup:',
+      `- Config file: ${configPath}`,
+      '- I can guide the steps, but I will not store secrets.',
+      '',
+      'Please provide:',
+      provider === 'hyperliquid'
+        ? '- Confirmation that you will export `HYPERLIQUID_PRIVATE_KEY` in your environment.'
+        : `- Keystore path (default: ${keystorePath}) or confirm the default.`,
+      provider === 'hyperliquid'
+        ? '- Confirm your Hyperliquid account address (optional).'
+        : '- Confirmation that you will export `THUFIR_WALLET_PASSWORD` in your environment.',
+      '',
+      'Once set, I will use `execution.mode: live` and verify access.',
+    ].join('\n');
+  }
+
+  private isQuestion(message: string): boolean {
+    return (
+      /\?\s*$/.test(message) ||
+      /^(should|can|could|would|do|does|did|are|is|am|will|may)\b/i.test(message)
+    );
+  }
+
+  private isCapabilityQuestion(message: string): boolean {
+    return (
+      this.isQuestion(message) &&
+      /\b(suited|capable|able)\b/i.test(message) &&
+      /\b(bet|trade|buy|sell)\b/i.test(message)
+    );
+  }
+
+  private isAccessQuestion(message: string): boolean {
+    return (
+      this.isQuestion(message) &&
+      (/\baccess\b/i.test(message) ||
+        /\bwhere\b.*\baccess\b/i.test(message) ||
+        /\bcan you\b.*\b(trade|bet|buy|sell)\b/i.test(message) ||
+        /\bdo you\b.*\b(access|trade|bet)\b/i.test(message))
+    );
+  }
+
+  private isSetupRequest(message: string): boolean {
+    return /\b(set\s*up|enable|configure)\b.*\b(live|trading|trade)\b/i.test(message);
   }
 }
 

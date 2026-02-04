@@ -1,12 +1,15 @@
 import type { ThufirConfig } from './config.js';
-import { AugurMarketClient } from '../execution/augur/markets.js';
+import { createMarketClient } from '../execution/market-client.js';
 import { upsertMarketCacheBatch } from '../memory/market_cache.js';
 
 export async function syncMarketCache(
-  config: ThufirConfig,
+  _config: ThufirConfig,
   limit = 200
 ): Promise<{ stored: number }> {
-  const client = new AugurMarketClient(config);
+  const client = createMarketClient(config);
+  if (!client.isAvailable()) {
+    return { stored: 0 };
+  }
   let stored = 0;
   const markets = await client.listMarkets(limit);
   const records = markets.map((market) => ({
@@ -32,10 +35,13 @@ export async function syncMarketCache(
 }
 
 export async function refreshMarketPrices(
-  config: ThufirConfig,
+  _config: ThufirConfig,
   limit = 500
 ): Promise<{ stored: number }> {
-  const client = new AugurMarketClient(config);
+  const client = createMarketClient(config);
+  if (!client.isAvailable()) {
+    return { stored: 0 };
+  }
   const markets = await client.listMarkets(limit);
 
   const records = markets.map((market) => ({

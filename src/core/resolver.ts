@@ -1,14 +1,17 @@
 import type { ThufirConfig } from './config.js';
-import { AugurMarketClient } from '../execution/augur/markets.js';
+import { createMarketClient } from '../execution/market-client.js';
 import { listUnresolvedPredictions } from '../memory/predictions.js';
 import { recordOutcome } from '../memory/calibration.js';
 
 export async function resolveOutcomes(
-  config: ThufirConfig,
+  _config: ThufirConfig,
   limit = 25
 ): Promise<number> {
   let updated = 0;
-  const marketClient = new AugurMarketClient(config);
+  const marketClient = createMarketClient(config);
+  if (!marketClient.isAvailable()) {
+    return 0;
+  }
   const unresolved = listUnresolvedPredictions(limit);
   for (const prediction of unresolved) {
     try {

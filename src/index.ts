@@ -7,10 +7,11 @@
 import { loadConfig, type ThufirConfig } from './core/config.js';
 import { createLlmClient, createTrivialTaskClient } from './core/llm.js';
 import { ConversationHandler } from './core/conversation.js';
-import { AugurMarketClient } from './execution/augur/markets.js';
+import { createMarketClient, type MarketClient } from './execution/market-client.js';
 import { PaperExecutor } from './execution/modes/paper.js';
 import { WebhookExecutor } from './execution/modes/webhook.js';
-import { AugurLiveExecutor } from './execution/modes/augur-live.js';
+import { UnsupportedLiveExecutor } from './execution/modes/unsupported-live.js';
+import { HyperliquidLiveExecutor } from './execution/modes/hyperliquid-live.js';
 import type { ExecutionAdapter } from './execution/executor.js';
 import { DbSpendingLimitEnforcer } from './execution/wallet/limits_db.js';
 import { listCalibrationSummaries } from './memory/calibration.js';
@@ -22,15 +23,6 @@ import { checkExposureLimits } from './core/exposure.js';
 
 // Re-export types
 export * from './types/index.js';
-
-// Re-export wallet security components
-export {
-  isWhitelisted,
-  assertWhitelisted,
-  WhitelistError,
-  getWhitelistedAddresses,
-  AUGUR_WHITELIST,
-} from './execution/wallet/whitelist.js';
 
 export {
   SpendingLimitEnforcer,
@@ -72,7 +64,7 @@ export class Thufir {
   private config!: ThufirConfig;
   private userId: string;
   private llm?: ReturnType<typeof createLlmClient>;
-  private marketClient?: AugurMarketClient;
+  private marketClient?: MarketClient;
   private executor?: ExecutionAdapter;
   private limiter?: DbSpendingLimitEnforcer;
   private conversation?: ConversationHandler;
@@ -98,7 +90,7 @@ export class Thufir {
     }
 
     this.llm = createLlmClient(config);
-    this.marketClient = new AugurMarketClient(config);
+    this.marketClient = createMarketClient(config);
     this.executor = this.createExecutor(config);
     this.limiter = new DbSpendingLimitEnforcer({
       daily: config.wallet?.limits?.daily ?? 100,
@@ -113,13 +105,10 @@ export class Thufir {
 
   private createExecutor(config: ThufirConfig): ExecutionAdapter {
     if (config.execution.mode === 'live') {
-      const password = process.env.THUFIR_WALLET_PASSWORD;
-      if (!password) {
-        throw new Error(
-          'Live execution mode requires THUFIR_WALLET_PASSWORD environment variable'
-        );
+      if (config.execution.provider === 'hyperliquid') {
+        return new HyperliquidLiveExecutor({ config });
       }
-      return new AugurLiveExecutor({ config, password });
+      return new UnsupportedLiveExecutor();
     }
 
     if (config.execution.mode === 'webhook' && config.execution.webhookUrl) {

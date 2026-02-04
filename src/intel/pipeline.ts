@@ -164,7 +164,7 @@ export async function runIntelPipelineDetailed(
   }
 
   if (commentsEnabled) {
-    // Augur Turbo does not provide public comment feeds.
+    // Some market platforms do not provide public comment feeds.
   }
 
   return { storedCount: stored, storedItems };

@@ -1,9 +1,9 @@
 import type { ThufirConfig } from './config.js';
-import { createLlmClient } from './llm.js';
+import { createLlmClient, createTrivialTaskClient } from './llm.js';
 import { withExecutionContextIfMissing } from './llm_infra.js';
 import { listWatchlist } from '../memory/watchlist.js';
 import { listRecentIntel, type StoredIntel } from '../intel/store.js';
-import { AugurMarketClient } from '../execution/augur/markets.js';
+import { createMarketClient } from '../execution/market-client.js';
 import { listQueryCapableRoamingSources } from '../intel/sources_registry.js';
 import {
   runIntelPipelineDetailedWithOverrides,
@@ -84,14 +84,17 @@ function extractEntities(text: string): string[] {
 }
 
 async function buildQueriesFromWatchlist(
-  config: ThufirConfig,
+  _config: ThufirConfig,
   watchlistLimit: number
 ): Promise<string[]> {
   const watchlist = listWatchlist();
   if (watchlist.length === 0) {
     return [];
   }
-  const client = new AugurMarketClient(config);
+  const client = createMarketClient(config);
+  if (!client.isAvailable()) {
+    return watchlist.slice(0, watchlistLimit).map((item) => item.marketId);
+  }
   const queries: string[] = [];
   for (const item of watchlist.slice(0, watchlistLimit)) {
     try {
@@ -129,7 +132,7 @@ async function refineQueriesWithLlm(
   maxQueries: number
 ): Promise<string[]> {
   if (rawQueries.length === 0) return [];
-  const llm = createLlmClient(config);
+  const llm = createTrivialTaskClient(config) ?? createLlmClient(config);
   const prompt = [
     'You are generating short, high-signal web search queries for market intelligence.',
     `Return a JSON array of up to ${maxQueries} queries.`,

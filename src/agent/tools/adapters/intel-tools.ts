@@ -85,7 +85,7 @@ export const twitterSearchTool: ToolDefinition = {
   description: 'Search recent tweets via Twitter API. Use to find real-time discussion on a topic.',
   category: 'intel',
   schema: z.object({
-    query: z.string().describe('Search query for Twitter (e.g., "Augur", "Palantir earnings")'),
+    query: z.string().describe('Search query for Twitter (e.g., "Palantir earnings")'),
     limit: z.number().optional().describe('Maximum number of results (default: 10, max: 50)'),
   }),
   execute: async (input, ctx): Promise<ToolResult> => {

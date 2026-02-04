@@ -19,11 +19,11 @@ function toExecutorContext(ctx: ToolContext): ToolExecutorContext {
 }
 
 /**
- * Market search tool - search for prediction markets.
+ * Market search tool - search for markets.
  */
 export const marketSearchTool: ToolDefinition = {
   name: 'market_search',
-  description: 'Search for prediction markets on Augur by query. Use when the user asks about a topic and you want relevant markets.',
+  description: 'Search for markets by query. Use when the user asks about a topic and you want relevant markets.',
   category: 'markets',
   schema: z.object({
     query: z.string().describe('Search query (e.g., "Fed rates", "Bitcoin price")'),
@@ -42,7 +42,7 @@ export const marketSearchTool: ToolDefinition = {
  */
 export const marketsSearchTool: ToolDefinition = {
   name: 'markets.search',
-  description: 'Search for prediction markets on Augur by query. Use when the user asks about a topic and you want relevant markets.',
+  description: 'Search for markets by query. Use when the user asks about a topic and you want relevant markets.',
   category: 'markets',
   schema: z.object({
     query: z.string().describe('Search query (e.g., "Fed rates", "Bitcoin price")'),
@@ -61,10 +61,10 @@ export const marketsSearchTool: ToolDefinition = {
  */
 export const marketGetTool: ToolDefinition = {
   name: 'market_get',
-  description: 'Get detailed information about a specific prediction market by ID.',
+  description: 'Get detailed information about a specific market by ID.',
   category: 'markets',
   schema: z.object({
-    market_id: z.string().describe('Augur market ID'),
+    market_id: z.string().describe('Market ID'),
   }),
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('market_get', input as Record<string, unknown>, toExecutorContext(ctx));
@@ -79,10 +79,10 @@ export const marketGetTool: ToolDefinition = {
  */
 export const marketsGetTool: ToolDefinition = {
   name: 'markets.get',
-  description: 'Get detailed information about a specific prediction market by ID.',
+  description: 'Get detailed information about a specific market by ID.',
   category: 'markets',
   schema: z.object({
-    market_id: z.string().describe('Augur market ID'),
+    market_id: z.string().describe('Market ID'),
   }),
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('market_get', input as Record<string, unknown>, toExecutorContext(ctx));
@@ -118,7 +118,7 @@ export const orderBookTool: ToolDefinition = {
   description: 'Get order book depth for a market. Shows bid/ask prices and liquidity at each level.',
   category: 'markets',
   schema: z.object({
-    market_id: z.string().describe('The Augur market ID'),
+    market_id: z.string().describe('The market ID'),
     depth: z.number().optional().describe('Number of price levels to return (default: 5)'),
   }),
   execute: async (input, ctx): Promise<ToolResult> => {
@@ -137,7 +137,7 @@ export const priceHistoryTool: ToolDefinition = {
   description: 'Get historical price data for a market. Shows how odds have changed over time.',
   category: 'markets',
   schema: z.object({
-    market_id: z.string().describe('The Augur market ID'),
+    market_id: z.string().describe('The market ID'),
     interval: z.enum(['1h', '4h', '1d', '1w']).optional().describe('Time interval between data points (default: 1d)'),
     limit: z.number().optional().describe('Number of data points (default: 30)'),
   }),

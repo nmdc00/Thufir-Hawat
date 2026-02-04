@@ -404,7 +404,7 @@ export function shouldRunCritic(context: {
   }
 
   // Run critic if trade tool was called
-  if (context.toolCalls?.some((tc) => tc.name === 'place_bet' || tc.name === 'trade.place')) {
+  if (context.toolCalls?.some((tc) => tc.name === 'perp_place_order')) {
     return true;
   }
 

@@ -7,7 +7,8 @@
 
 import type { LlmClient, ChatMessage } from './llm.js';
 import type { ThufirConfig } from './config.js';
-import type { Market, AugurMarketClient } from '../execution/augur/markets.js';
+import type { Market } from '../execution/markets.js';
+import type { MarketClient } from '../execution/market-client.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listPredictions } from '../memory/predictions.js';
 import { listWatchlist } from '../memory/watchlist.js';
@@ -56,10 +57,10 @@ export interface ConversationContext {
 // Base system prompt is minimal - identity comes from workspace files
 const SYSTEM_PROMPT_BASE = `## Operating Rules
 
-- Never claim a bet was placed unless the place_bet tool returned success
+- Never claim a trade was placed unless a trading tool returned success
 - Never say you lack wallet access without first using get_wallet_info and/or get_portfolio
 - Always provide probability estimates when asked about future events
-- Reference relevant prediction markets when discussing events
+- Reference relevant markets or instruments when discussing events
 - Be conversational, not robotic - use markdown when helpful`;
 
 
@@ -238,7 +239,7 @@ export class ConversationHandler {
   private infoLlm?: LlmClient;
   private agenticLlm?: LlmClient;
   private agenticOpenAi?: LlmClient;
-  private marketClient: AugurMarketClient;
+  private marketClient: MarketClient;
   private config: ThufirConfig;
   private sessions: SessionStore;
   private chatVectorStore: ChatVectorStore;
@@ -249,7 +250,7 @@ export class ConversationHandler {
 
   constructor(
     llm: LlmClient,
-    marketClient: AugurMarketClient,
+    marketClient: MarketClient,
     config: ThufirConfig,
     infoLlm?: LlmClient,
     toolContext?: ToolExecutorContext,
@@ -333,7 +334,7 @@ export class ConversationHandler {
             },
           };
 
-          const tradeToolNames = new Set(['place_bet', 'trade.place']);
+    const tradeToolNames = new Set(['perp_place_order']);
           const autoApproveTrades = Boolean(this.config.autonomy?.fullAuto);
           const resumePlan = this.shouldResumePlan(message);
           const priorPlan = resumePlan ? this.sessions.getPlan(userId) : null;
@@ -420,7 +421,7 @@ export class ConversationHandler {
 
         await this.sessions.compactIfNeeded({
           userId,
-          llm: this.llm,
+          llm: this.infoLlm ?? this.llm,
           maxMessages: maxHistory,
           compactAfterTokens,
           keepRecent,
@@ -535,7 +536,7 @@ export class ConversationHandler {
   private async runForcedTooling(message: string): Promise<string> {
     const text = message.toLowerCase();
     const wantsWallet = /\b(wallet|balance|funds|usdc|address|portfolio)\b/.test(text);
-    const wantsTrade = /\b(trade|bet|order|place|execute|augur|amm)\b/.test(text);
+    const wantsTrade = /\b(trade|bet|order|place|execute)\b/.test(text);
     if (!wantsWallet && !wantsTrade) {
       return '';
     }
@@ -571,7 +572,7 @@ export class ConversationHandler {
   private async runToolFirstGuard(message: string): Promise<string> {
     const text = message.toLowerCase();
     const wantsNews = /\b(news|headline|breaking|latest|today|yesterday|current events|recent updates)\b/.test(text);
-    const wantsMarket = /\b(price|odds|market|augur|probability|volume|liquidity|bid|ask)\b/.test(text);
+    const wantsMarket = /\b(price|odds|market|probability|volume|liquidity|bid|ask)\b/.test(text);
     const wantsTime = /\b(time|date|day)\b/.test(text);
 
     if (!wantsNews && !wantsMarket && !wantsTime) {
@@ -1037,8 +1038,9 @@ ${contextBlock}`.trim();
       const { generateMentatReport, formatMentatReport } = await import('../mentat/report.js');
 
       const scan = await runMentatScan({
-        system: this.config.agent?.mentatSystem ?? 'Augur',
+        system: this.config.agent?.mentatSystem ?? 'Markets',
         llm: this.llm,
+        config: this.config,
         marketClient: this.marketClient,
         marketQuery: this.config.agent?.mentatMarketQuery,
         limit: this.config.agent?.mentatMarketLimit,
@@ -1117,7 +1119,7 @@ ${contextBlock}`.trim();
           );
           const tools = new ToolRegistry();
           const plan = await createResearchPlan({
-            llm: this.llm,
+            llm: this.infoLlm ?? this.llm,
             subject: market.question ?? marketId,
           });
           const research = await runResearchPlan({
@@ -1203,7 +1205,7 @@ Give me:
         );
         const tools = new ToolRegistry();
         const plan = await createResearchPlan({
-          llm: this.llm,
+          llm: this.infoLlm ?? this.llm,
           subject: market.question ?? marketId,
         });
         const research = await runResearchPlan({
@@ -1294,7 +1296,7 @@ Category: ${market.category ?? 'unknown'}
         const semanticChatContext = await this.buildSemanticChatContext(topic, userId);
         const tools = new ToolRegistry();
         const plan = await createResearchPlan({
-          llm: this.llm,
+          llm: this.infoLlm ?? this.llm,
           subject: topic,
         });
         const research = await runResearchPlan({
