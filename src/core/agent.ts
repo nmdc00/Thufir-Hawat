@@ -257,8 +257,19 @@ export class ThufirAgent {
         updateUserContext(sender, { riskTolerance: value as 'conservative' | 'moderate' | 'aggressive' });
         return 'Updated risk tolerance.';
       }
+      if (key === 'probability_mode') {
+        updateUserContext(sender, { preferences: { probability_mode: value } });
+        return 'Updated probability mode.';
+      }
       updateUserContext(sender, { preferences: { [key]: value } });
       return `Updated preference: ${key}`;
+    }
+
+    const probModeMatch = trimmed.match(/\bprobability\s+mode\b.*\b(conservative|balanced|aggressive)\b/i);
+    if (probModeMatch) {
+      const mode = probModeMatch[1]!.toLowerCase();
+      updateUserContext(sender, { preferences: { probability_mode: mode } });
+      return `Probability mode set to ${mode}.`;
     }
 
     // Command: /perp <symbol> <buy|sell> <sizeUsd> [leverage]

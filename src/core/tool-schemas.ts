@@ -472,6 +472,11 @@ export const THUFIR_TOOLS: Tool[] = [
       properties: {
         symbol: { type: 'string', description: 'Perp symbol (e.g., BTC, ETH)' },
         horizon: { type: 'string', description: 'Time horizon (e.g., "hours", "days", "weeks")' },
+        probability_mode: {
+          type: 'string',
+          enum: ['conservative', 'balanced', 'aggressive'],
+          description: 'Probability calibration mode (default: balanced)',
+        },
       },
       required: ['symbol'],
     },
@@ -484,7 +489,15 @@ export const THUFIR_TOOLS: Tool[] = [
       properties: {
         min_liq_buffer_pct: {
           type: 'number',
-          description: 'Warn if liquidation buffer is below this percent (default: 10)',
+          description: 'Warn if liquidation buffer is below this percent (default: 12)',
+        },
+        max_concentration_pct: {
+          type: 'number',
+          description: 'Warn if a single symbol exceeds this share of notional (default: 40)',
+        },
+        leverage_warning: {
+          type: 'number',
+          description: 'Warn if leverage exceeds this value (default: 5)',
         },
       },
       required: [],
