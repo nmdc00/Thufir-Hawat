@@ -11,14 +11,7 @@ import type { ModeConfig } from './types.js';
  * Read-only tools allowed in chat mode.
  */
 const CHAT_TOOLS = [
-  // Market tools (read-only)
-  'market_search',
-  'market_get',
-  'markets.search',
-  'markets.get',
-  'market_categories',
-  'get_order_book',
-  'price_history',
+  // Perp market tools (read-only)
   'perp_market_list',
   'perp_market_get',
 
@@ -45,7 +38,7 @@ const CHAT_TOOLS = [
 
   // Portfolio viewing (no trading)
   'get_portfolio',
-  'get_predictions',
+  'get_positions',
 ];
 
 /**

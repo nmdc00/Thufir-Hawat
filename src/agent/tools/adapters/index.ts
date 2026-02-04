@@ -4,7 +4,6 @@
  * Re-exports all tool adapters and provides a combined tool list.
  */
 
-export { marketTools } from './market-tools.js';
 export { intelTools } from './intel-tools.js';
 export { tradingTools } from './trading-tools.js';
 export { memoryTools } from './memory-tools.js';
@@ -14,7 +13,6 @@ export { qmdTools } from './qmd-tools.js';
 export { mentatTools } from './mentat-tools.js';
 export { discoveryTools } from './discovery-tools.js';
 
-import { marketTools } from './market-tools.js';
 import { intelTools } from './intel-tools.js';
 import { tradingTools } from './trading-tools.js';
 import { memoryTools } from './memory-tools.js';
@@ -30,7 +28,6 @@ import type { AgentToolRegistry } from '../registry.js';
  * All available tools.
  */
 export const allTools: ToolDefinition[] = [
-  ...marketTools,
   ...intelTools,
   ...tradingTools,
   ...memoryTools,

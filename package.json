@@ -1,7 +1,7 @@
 {
   "name": "thufir",
   "version": "0.1.0",
-  "description": "Prediction Market AI Companion",
+  "description": "Autonomous Market Discovery Companion",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
@@ -70,11 +70,11 @@
     "url": "https://github.com/YOUR_USERNAME/thufir.git"
   },
   "keywords": [
-    "prediction-markets",
-    "augur",
+    "perps",
+    "hyperliquid",
+    "autonomous-discovery",
     "ai",
-    "trading",
-    "calibration"
+    "trading"
   ],
   "author": "",
   "license": "MIT"

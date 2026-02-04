@@ -2,53 +2,6 @@ import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 
 export const THUFIR_TOOLS: Tool[] = [
   {
-    name: 'market_search',
-    description:
-      'Search for prediction markets by query. Use when the user asks about a topic and you want relevant markets.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'Search query (e.g., "Fed rates", "Bitcoin price")',
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum number of results (default: 5, max: 20)',
-        },
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'market_get',
-    description: 'Get detailed information about a specific prediction market by ID.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        market_id: {
-          type: 'string',
-          description: 'Market ID',
-        },
-      },
-      required: ['market_id'],
-    },
-  },
-  {
-    name: 'market_categories',
-    description: 'List market categories with counts. Useful for browsing and filtering.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        limit: {
-          type: 'number',
-          description: 'Maximum number of categories (default: 20)',
-        },
-      },
-      required: [],
-    },
-  },
-  {
     name: 'intel_search',
     description:
       'Search the intel/news database for recent information about a topic.',
@@ -89,13 +42,13 @@ export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'calibration_stats',
     description:
-      "Get the user's prediction calibration stats (accuracy, Brier score, track record).",
+      "Get the user's historical trade calibration stats (accuracy, track record).",
     input_schema: {
       type: 'object',
       properties: {
         domain: {
           type: 'string',
-          description: 'Filter by domain (e.g., "politics", "crypto")',
+          description: 'Filter by domain (e.g., "macro", "crypto")',
         },
       },
       required: [],
@@ -148,7 +101,7 @@ export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'get_portfolio',
     description:
-      'Get current portfolio: positions, balances, and P&L. Use before betting to understand available capital and exposure.',
+      'Get current portfolio: positions, balances, P&L, and (if configured) perp positions. Use before trading to understand available capital and exposure.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -166,26 +119,6 @@ export const THUFIR_TOOLS: Tool[] = [
     },
   },
   {
-    name: 'get_predictions',
-    description:
-      'Get past predictions and their outcomes. Use to review betting history, learn from mistakes, and improve calibration.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        limit: {
-          type: 'number',
-          description: 'Maximum predictions to return (default: 20)',
-        },
-        status: {
-          type: 'string',
-          enum: ['all', 'pending', 'resolved', 'won', 'lost'],
-          description: 'Filter by status (default: all)',
-        },
-      },
-      required: [],
-    },
-  },
-  {
     name: 'get_open_orders',
     description:
       'Get currently open orders.',
@@ -193,49 +126,6 @@ export const THUFIR_TOOLS: Tool[] = [
       type: 'object',
       properties: {},
       required: [],
-    },
-  },
-  {
-    name: 'get_order_book',
-    description:
-      'Get indicative price snapshot for a market (traditional depth may not be available).',
-    input_schema: {
-      type: 'object',
-      properties: {
-        market_id: {
-          type: 'string',
-          description: 'The market ID',
-        },
-        depth: {
-          type: 'number',
-          description: 'Number of price levels to return (default: 5)',
-        },
-      },
-      required: ['market_id'],
-    },
-  },
-  {
-    name: 'price_history',
-    description:
-      'Get price snapshots for a market. Full order-book history may not be available.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        market_id: {
-          type: 'string',
-          description: 'The market ID',
-        },
-        interval: {
-          type: 'string',
-          enum: ['1h', '4h', '1d', '1w'],
-          description: 'Time interval between data points (default: 1d)',
-        },
-        limit: {
-          type: 'number',
-          description: 'Number of data points (default: 30)',
-        },
-      },
-      required: ['market_id'],
     },
   },
   {
@@ -274,24 +164,6 @@ export const THUFIR_TOOLS: Tool[] = [
         },
       },
       required: ['url'],
-    },
-  },
-  
-        outcome: {
-          type: 'string',
-          enum: ['YES', 'NO'],
-          description: 'The outcome to bet on (YES or NO)',
-        },
-        amount: {
-          type: 'number',
-          description: 'Amount in USD to bet',
-        },
-        reasoning: {
-          type: 'string',
-          description: 'Your reasoning for this bet (stored for calibration tracking)',
-        },
-      },
-      required: ['market_id', 'outcome', 'amount'],
     },
   },
   {
@@ -372,7 +244,7 @@ export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'mentat_store_assumption',
     description:
-      'Store an assumption for the mentat fragility analysis system. Assumptions are beliefs that underpin predictions and can be stress-tested.',
+      'Store an assumption for the mentat fragility analysis system. Assumptions are beliefs that underpin positions and can be stress-tested.',
     input_schema: {
       type: 'object',
       properties: {
@@ -419,7 +291,7 @@ export const THUFIR_TOOLS: Tool[] = [
   {
     name: 'mentat_store_fragility',
     description:
-      'Store a fragility card identifying tail-risk exposure. Fragility cards track structural vulnerabilities, not event predictions.',
+      'Store a fragility card identifying tail-risk exposure. Fragility cards track structural vulnerabilities, not event forecasts.',
     input_schema: {
       type: 'object',
       properties: {

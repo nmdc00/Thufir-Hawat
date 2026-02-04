@@ -20,7 +20,7 @@ import type {
 /**
  * System prompt for the planner.
  */
-const PLANNER_SYSTEM_PROMPT = `You are a planning agent for a mentat-style prediction market analyst.
+const PLANNER_SYSTEM_PROMPT = `You are a planning agent for a mentat-style perp market analyst.
 
 Your job is to create execution plans that achieve the user's goal.
 
@@ -246,20 +246,6 @@ function buildFallbackSteps(goal: string, availableTools: string[]): PlanStep[] 
     }
   }
 
-  if (/(predictions?|history|track record)/i.test(lower)) {
-    const toolName = firstAvailable(['get_predictions']);
-    if (toolName) {
-      steps.push({
-        id: String(stepId++),
-        description: 'Fetch recent predictions and outcomes',
-        requiresTool: true,
-        toolName,
-        toolInput: {},
-        status: 'pending',
-      });
-    }
-  }
-
   if (/(wallet|address|keystore)/i.test(lower)) {
     const toolName = firstAvailable(['get_wallet_info']);
     if (toolName) {
@@ -289,16 +275,15 @@ function buildFallbackSteps(goal: string, availableTools: string[]): PlanStep[] 
     }
   }
 
-  if (/(market|search|find)/i.test(lower)) {
-    const toolName = firstAvailable(['market_search', 'markets.search']);
+  if (/(market|search|find|symbol)/i.test(lower)) {
+    const toolName = firstAvailable(['perp_market_list']);
     if (toolName) {
-      const query = sanitizeQuery(goal);
       steps.push({
         id: String(stepId++),
-        description: `Search markets for "${query}"`,
+        description: 'List available perp markets to identify symbols',
         requiresTool: true,
         toolName,
-        toolInput: { query },
+        toolInput: { limit: 50 },
         status: 'pending',
       });
     }

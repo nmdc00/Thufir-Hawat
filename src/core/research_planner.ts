@@ -59,7 +59,7 @@ export async function createResearchPlan(params: {
 }): Promise<ResearchPlan> {
   const maxSteps = Math.max(2, params.maxSteps ?? 5);
   const prompt = [
-    'Create a short research plan for a prediction market analysis.',
+    'Create a short research plan for a perp market analysis.',
     `Return JSON with shape: {"steps":[{"action":"intel.search|intel.semantic|market.related|calibration.get|watchlist.check","query":"optional"}]}.`,
     `Use at most ${maxSteps} steps. Use "query" only when needed.`,
     `Subject: ${params.subject}`,

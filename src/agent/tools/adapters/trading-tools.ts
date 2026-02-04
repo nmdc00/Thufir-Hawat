@@ -18,7 +18,8 @@ function toExecutorContext(ctx: ToolContext): ToolExecutorContext {
 
 export const getPortfolioTool: ToolDefinition = {
   name: 'get_portfolio',
-  description: 'Get current portfolio: positions, balances, and P&L. Use before trading to understand available capital and exposure.',
+  description:
+    'Get current portfolio: positions, balances, P&L, and (if configured) perp positions. Use before trading to understand available capital and exposure.',
   category: 'trading',
   schema: z.object({}),
   execute: async (input, ctx): Promise<ToolResult> => {
@@ -45,24 +46,6 @@ export const getPositionsTool: ToolDefinition = {
   cacheTtlMs: 10_000,
 };
 
-/**
- * Get predictions tool - view prediction history.
- */
-export const getPredictionsTool: ToolDefinition = {
-  name: 'get_predictions',
-  description: 'Get past predictions and their outcomes. Use to review betting history, learn from mistakes, and improve calibration.',
-  category: 'trading',
-  schema: z.object({
-    limit: z.number().optional().describe('Maximum predictions to return (default: 20)'),
-    status: z.enum(['all', 'pending', 'resolved', 'won', 'lost']).optional().describe('Filter by status (default: all)'),
-  }),
-  execute: async (input, ctx): Promise<ToolResult> => {
-    return executeToolCall('get_predictions', input as Record<string, unknown>, toExecutorContext(ctx));
-  },
-  sideEffects: false,
-  requiresConfirmation: false,
-  cacheTtlMs: 30_000,
-};
 
 /**
  * Get open orders tool - view open orders from the executor.
@@ -86,6 +69,5 @@ export const getOpenOrdersTool: ToolDefinition = {
 export const tradingTools: ToolDefinition[] = [
   getPortfolioTool,
   getPositionsTool,
-  getPredictionsTool,
   getOpenOrdersTool,
 ];

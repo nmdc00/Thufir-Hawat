@@ -156,7 +156,7 @@ async function retrieveQmdContext(
 /**
  * System prompt for synthesis.
  */
-const SYNTHESIS_SYSTEM_PROMPT = `You are synthesizing a response for a mentat-style prediction market analyst.
+const SYNTHESIS_SYSTEM_PROMPT = `You are synthesizing a response for a mentat-style perp market analyst.
 
 Based on the tool results and analysis provided, generate a clear, actionable response.
 

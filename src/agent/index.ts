@@ -1,7 +1,7 @@
 /**
  * Agent Module
  *
- * Agentic Thufir Hawat - Mentat-style prediction market analyst.
+ * Agentic Thufir Hawat - Mentat-style perp market analyst.
  *
  * This module provides the agent orchestrator that transforms Thufir from
  * chat-first to agentic-first architecture.
@@ -61,7 +61,6 @@ export {
   DEFAULT_CACHE_TTL_MS,
 } from './tools/registry.js';
 
-export { marketTools } from './tools/adapters/market-tools.js';
 
 export { intelTools } from './tools/adapters/intel-tools.js';
 

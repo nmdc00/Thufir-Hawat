@@ -373,7 +373,7 @@ Before planning, retrieve relevant context:
 - Express probabilities that reflect actual confidence
 - Acknowledge uncertainty appropriately
 - Update on new information
-- Track prediction accuracy`;
+- Track trade accuracy`;
 }
 
 /**

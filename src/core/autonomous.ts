@@ -14,24 +14,12 @@ import type { ThufirConfig } from './config.js';
 import type { MarketClient } from '../execution/market-client.js';
 import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
-import { checkExposureLimits } from './exposure.js';
-import {
-  scanForOpportunities,
-  generateDailyReport,
-  formatDailyReport,
-  type Opportunity,
-  type OrchestratorAssets,
-} from './opportunities.js';
 import { runDiscovery } from '../discovery/engine.js';
 import { recordPerpTrade } from '../memory/perp_trades.js';
+import { checkPerpRiskLimits } from '../execution/perp-risk.js';
 import { getDailyPnLRollup } from './daily_pnl.js';
-import { createPrediction, listOpenPositions } from '../memory/predictions.js';
-import { recordDecisionAudit } from '../memory/decision_audit.js';
 import { openDatabase } from '../memory/db.js';
 import { Logger } from './logger.js';
-import { AgentToolRegistry } from '../agent/tools/registry.js';
-import { registerAllTools } from '../agent/tools/adapters/index.js';
-import { loadThufirIdentity } from '../agent/identity/identity.js';
 
 export interface AutonomousConfig {
   enabled: boolean;
@@ -41,20 +29,6 @@ export interface AutonomousConfig {
   pauseOnLossStreak: number;
   dailyReportTime: string;
   maxTradesPerScan: number;
-}
-
-export interface TradeRecord {
-  id: string;
-  marketId: string;
-  marketTitle: string;
-  direction: string;
-  amount: number;
-  entryPrice: number;
-  confidence: string;
-  reasoning: string;
-  timestamp: Date;
-  outcome?: 'win' | 'loss' | 'pending';
-  pnl?: number;
 }
 
 export interface DailyPnL {
@@ -68,8 +42,6 @@ export interface DailyPnL {
 }
 
 export interface AutonomousEvents {
-  'trade-executed': (trade: TradeRecord) => void;
-  'opportunity-found': (opportunities: Opportunity[]) => void;
   'daily-report': (report: string) => void;
   'paused': (reason: string) => void;
   'resumed': () => void;
@@ -84,7 +56,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   private limiter: DbSpendingLimitEnforcer;
   private logger: Logger;
   private thufirConfig: ThufirConfig;
-  private orchestratorAssets?: OrchestratorAssets;
 
   private isPaused = false;
   private pauseReason = '';
@@ -118,15 +89,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       dailyReportTime: (thufirConfig.autonomy as any)?.dailyReportTime ?? '20:00',
       maxTradesPerScan: (thufirConfig.autonomy as any)?.maxTradesPerScan ?? 3,
     };
-
-    if (thufirConfig.agent?.useOrchestrator) {
-      const registry = new AgentToolRegistry();
-      registerAllTools(registry);
-      const identity = loadThufirIdentity({
-        workspacePath: thufirConfig.agent?.workspace,
-      }).identity;
-      this.orchestratorAssets = { registry, identity };
-    }
 
     this.ensureTradesTable();
   }
@@ -236,57 +198,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return 'Daily spending limit reached. No trades executed.';
     }
 
-    if (this.thufirConfig.autonomy?.strategy === 'discovery') {
-      return this.runDiscoveryScan();
-    }
-
-    // Find opportunities (legacy prediction-market flow)
-    const opportunities = await scanForOpportunities(
-      this.llm,
-      this.marketClient,
-      this.thufirConfig,
-      50,
-      { orchestrator: this.orchestratorAssets }
-    );
-
-    this.emit('opportunity-found', opportunities);
-
-    if (opportunities.length === 0) {
-      return 'No significant opportunities found.';
-    }
-
-    // Filter by config requirements
-    let validOpportunities = opportunities.filter(o => o.edge >= this.config.minEdge);
-
-    if (this.config.requireHighConfidence) {
-      validOpportunities = validOpportunities.filter(o => o.confidence === 'high');
-    }
-
-    if (validOpportunities.length === 0) {
-      return `Found ${opportunities.length} opportunities but none meet criteria (minEdge: ${this.config.minEdge * 100}%, requireHigh: ${this.config.requireHighConfidence})`;
-    }
-
-    // If not full auto, just report
-    if (!this.config.fullAuto) {
-      return this.formatOpportunitySummary(validOpportunities.slice(0, 10));
-    }
-
-    // Execute trades (full auto mode)
-    const results: string[] = [];
-    const toExecute = validOpportunities.slice(0, this.config.maxTradesPerScan);
-
-    for (const opp of toExecute) {
-      const tradeResult = await this.executeTrade(opp);
-      results.push(tradeResult);
-
-      // Check if we should pause
-      if (this.consecutiveLosses >= this.config.pauseOnLossStreak) {
-        this.pause(`${this.consecutiveLosses} consecutive losses`);
-        break;
-      }
-    }
-
-    return results.join('\n');
+    return this.runDiscoveryScan();
   }
 
   private async runDiscoveryScan(): Promise<string> {
@@ -317,6 +229,25 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         continue;
       }
       const size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
+
+      const riskCheck = await checkPerpRiskLimits({
+        config: this.thufirConfig,
+        symbol,
+        side: expr.side,
+        size,
+        leverage: expr.leverage,
+        reduceOnly: false,
+        markPrice: markPrice || null,
+        notionalUsd: Number.isFinite(probeUsd) ? probeUsd : undefined,
+        marketMaxLeverage:
+          typeof market.metadata?.maxLeverage === 'number'
+            ? (market.metadata.maxLeverage as number)
+            : null,
+      });
+      if (!riskCheck.allowed) {
+        outputs.push(`${symbol}: Blocked (${riskCheck.reason ?? 'perp risk limits exceeded'})`);
+        continue;
+      }
 
       const limitCheck = await this.limiter.checkAndReserve(probeUsd);
       if (!limitCheck.allowed) {
@@ -354,124 +285,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     }
 
     return outputs.join('\n');
-  }
-
-  /**
-   * Execute a trade for an opportunity
-   */
-  private async executeTrade(opp: Opportunity): Promise<string> {
-    const amount = Math.min(opp.suggestedAmount, this.limiter.getRemainingDaily());
-
-    if (amount < 5) {
-      return `${opp.market.id}: Skipped (insufficient budget)`;
-    }
-
-    const exposureCheck = checkExposureLimits({
-      config: this.thufirConfig,
-      market: opp.market,
-      outcome: opp.direction.includes('YES') ? 'YES' : 'NO',
-      amount,
-      side: opp.direction.includes('LONG') ? 'buy' : 'sell',
-    });
-    if (!exposureCheck.allowed) {
-      return `${opp.market.id}: Blocked (${exposureCheck.reason ?? 'exposure limit exceeded'})`;
-    }
-
-    // Check limits
-    const limitCheck = await this.limiter.checkAndReserve(amount);
-    if (!limitCheck.allowed) {
-      return `${opp.market.id}: Blocked (${limitCheck.reason})`;
-    }
-
-    // Build trade decision
-    const decision: TradeDecision = {
-      action: opp.direction.includes('LONG') ? 'buy' : 'sell',
-      outcome: opp.direction.includes('YES') ? 'YES' : 'NO',
-      amount,
-      confidence: opp.confidence,
-      reasoning: opp.reasoning,
-    };
-
-    // Execute
-    const result = await this.executor.execute(opp.market, decision);
-
-    if (result.executed) {
-      this.limiter.confirm(amount);
-
-      // Record trade
-      const trade = this.recordTrade(opp, amount);
-      this.emit('trade-executed', trade);
-
-      // Record prediction for calibration
-      const predictionId = createPrediction({
-        marketId: opp.market.id,
-        marketTitle: opp.market.question,
-        predictedOutcome: decision.outcome,
-        predictedProbability: opp.myEstimate,
-        confidenceLevel: opp.confidence,
-        domain: opp.market.category,
-        reasoning: opp.reasoning,
-        executed: true,
-        executionPrice: opp.marketPrice,
-        positionSize: amount,
-      });
-
-      recordDecisionAudit({
-        source: 'autonomous',
-        mode: 'trade',
-        goal: opp.market.question,
-        marketId: opp.market.id,
-        predictionId,
-        tradeAction: decision.action,
-        tradeOutcome: decision.outcome,
-        tradeAmount: amount,
-        confidence: mapConfidence(opp.confidence),
-        edge: typeof opp.edge === 'number' ? opp.edge : null,
-        criticApproved: null,
-        fragilityScore: null,
-        toolCalls: null,
-        iterations: null,
-        notes: {
-          marketPrice: opp.marketPrice,
-          myEstimate: opp.myEstimate,
-          direction: opp.direction,
-        },
-      });
-
-      return `✅ ${opp.market.question.slice(0, 40)}... | ${decision.action.toUpperCase()} ${decision.outcome} $${amount} | Edge: ${(opp.edge * 100).toFixed(1)}%`;
-    } else {
-      this.limiter.release(amount);
-      return `❌ ${opp.market.id}: ${result.message}`;
-    }
-  }
-
-  /**
-   * Record a trade in the database
-   */
-  private recordTrade(opp: Opportunity, amount: number): TradeRecord {
-    const trade: TradeRecord = {
-      id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      marketId: opp.market.id,
-      marketTitle: opp.market.question,
-      direction: opp.direction,
-      amount,
-      entryPrice: opp.marketPrice,
-      confidence: opp.confidence,
-      reasoning: opp.reasoning,
-      timestamp: new Date(),
-      outcome: 'pending',
-    };
-
-    const db = openDatabase();
-    db.prepare(`
-      INSERT INTO autonomous_trades (id, market_id, market_title, direction, amount, entry_price, confidence, reasoning, timestamp, outcome)
-      VALUES (@id, @marketId, @marketTitle, @direction, @amount, @entryPrice, @confidence, @reasoning, @timestamp, @outcome)
-    `).run({
-      ...trade,
-      timestamp: trade.timestamp.toISOString(),
-    });
-
-    return trade;
   }
 
   /**
@@ -528,12 +341,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   async generateDailyPnLReport(): Promise<string> {
     const pnl = this.getDailyPnL();
     const rollup = getDailyPnLRollup(pnl.date);
-    const report = await generateDailyReport(
-      this.llm,
-      this.marketClient,
-      this.thufirConfig,
-      { orchestrator: this.orchestratorAssets }
-    );
+    const discovery = await runDiscovery(this.thufirConfig);
+    const expressions = discovery.expressions.slice(0, 5);
 
     const lines: string[] = [];
     lines.push(`📈 **Daily Autonomous Trading Report** (${pnl.date})`);
@@ -562,30 +371,17 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       }
     }
     lines.push('');
-    lines.push('─'.repeat(40));
-    lines.push('');
-    lines.push(formatDailyReport(report));
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Format opportunity summary (for non-auto mode)
-   */
-  private formatOpportunitySummary(opportunities: Opportunity[]): string {
-    const lines: string[] = [];
-    lines.push(`Found ${opportunities.length} opportunities:`);
-    lines.push('');
-
-    for (const opp of opportunities) {
-      const emoji = opp.direction.startsWith('LONG') ? '📈' : '📉';
-      lines.push(`${emoji} **${opp.market.question.slice(0, 50)}...**`);
-      lines.push(`   Edge: ${(opp.edge * 100).toFixed(1)}% | ${opp.confidence} confidence`);
-      lines.push(`   ${opp.reasoning.slice(0, 80)}...`);
-      lines.push('');
+    lines.push('**Discovery Snapshot:**');
+    if (expressions.length === 0) {
+      lines.push('• No discovery expressions generated.');
+    } else {
+      for (const expr of expressions) {
+        lines.push(
+          `• ${expr.symbol} ${expr.side.toUpperCase()} probe=$${expr.probeSizeUsd.toFixed(2)} leverage=${expr.leverage}`
+        );
+      }
     }
 
-    lines.push('Full auto is OFF. Use `/fullauto on` to enable automatic execution.');
     return lines.join('\n');
   }
 

@@ -88,6 +88,14 @@ wallet:
     maxPositionPercent: 20   # Max % of portfolio in one market
     maxDomainPercent: 40     # Max % in one domain
 
+  # Perp risk controls
+  perps:
+    maxLeverage: 5              # Max leverage allowed on perps
+    maxOrderNotionalUsd: 250    # Max notional per perp order (USD)
+    maxTotalNotionalUsd: 1000   # Max total perp notional across positions (USD)
+    minLiquidationDistanceBps: 500 # Minimum liquidation distance (bps) when data available
+    correlationCaps: []         # Optional: [{ name, symbols, maxNotionalUsd }]
+
   # Loss protection
   cooldown:
     lossThresholdPercent: 10  # Trigger at 10% daily loss
@@ -210,10 +218,6 @@ notifications:
   dailyReport:
     enabled: false
     channels: []
-  resolver:
-    enabled: false
-    time: "02:00"
-    limit: 50
   intelFetch:
     enabled: false
     time: "06:00"
@@ -272,7 +276,7 @@ notifications:
     time: "09:00"
     # intervalMinutes: 60
     channels: []
-    system: Augur
+    system: Hyperliquid
     # marketQuery: "macro"
     marketLimit: 25
     intelLimit: 40
@@ -295,7 +299,7 @@ qmd:
   knowledgePath: ~/.thufir/knowledge
   collections:
     - name: thufir-research
-      description: Web search results and articles for prediction market research
+      description: Web search results and articles for market research
     - name: thufir-intel
       description: News, social media intel, market commentary
     - name: thufir-markets

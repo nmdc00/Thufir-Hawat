@@ -1,8 +1,8 @@
 /**
  * Conversational Chat Handler
  *
- * Enables free-form conversation with Thufir about prediction markets,
- * future events, opinions, and market analysis.
+ * Enables free-form conversation with Thufir about perp markets,
+ * macro/crypto conditions, and market analysis.
  */
 
 import type { LlmClient, ChatMessage } from './llm.js';
@@ -10,7 +10,6 @@ import type { ThufirConfig } from './config.js';
 import type { Market } from '../execution/markets.js';
 import type { MarketClient } from '../execution/market-client.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
-import { listPredictions } from '../memory/predictions.js';
 import { listWatchlist } from '../memory/watchlist.js';
 import { getUserContext, updateUserContext } from '../memory/user.js';
 import { listRecentIntel, listIntelByIds } from '../intel/store.js';
@@ -59,8 +58,8 @@ const SYSTEM_PROMPT_BASE = `## Operating Rules
 
 - Never claim a trade was placed unless a trading tool returned success
 - Never say you lack wallet access without first using get_wallet_info and/or get_portfolio
-- Always provide probability estimates when asked about future events
-- Reference relevant markets or instruments when discussing events
+- Provide probability estimates when asked about directional outcomes
+- Reference relevant perp markets or instruments when discussing events
 - Be conversational, not robotic - use markdown when helpful`;
 
 
@@ -84,7 +83,7 @@ const PERSONALITY_MODES: Record<string, { label: string; instruction: string }> 
 };
 
 /**
- * Build context about the user and their prediction history
+ * Build context about the user and their trading preferences
  */
 function buildUserContext(userId: string, _config: ThufirConfig): string {
   const lines: string[] = [];
@@ -112,10 +111,10 @@ function buildUserContext(userId: string, _config: ThufirConfig): string {
     }
   }
 
-  // Calibration data
+  // Calibration data (legacy)
   const calibration = listCalibrationSummaries();
   if (calibration.length > 0 && calibration.some((c) => c.resolvedPredictions > 0)) {
-    lines.push('## User\'s Prediction Track Record');
+    lines.push('## User Track Record');
     for (const summary of calibration) {
       if (summary.resolvedPredictions === 0) continue;
       const accuracy =
@@ -124,24 +123,6 @@ function buildUserContext(userId: string, _config: ThufirConfig): string {
       lines.push(
         `- ${summary.domain ?? 'general'}: ${accuracy} accuracy, Brier ${brier} (${summary.resolvedPredictions} resolved)`
       );
-    }
-    lines.push('');
-  }
-
-  // Recent predictions
-  const recentPredictions = listPredictions({ limit: 5 });
-  if (recentPredictions.length > 0) {
-    lines.push('## Recent Predictions');
-    for (const pred of recentPredictions) {
-      const status = pred.outcome
-        ? pred.predictedOutcome === pred.outcome
-          ? 'correct'
-          : 'wrong'
-        : 'pending';
-      const prob = pred.predictedProbability
-        ? `${(pred.predictedProbability * 100).toFixed(0)}%`
-        : '?';
-      lines.push(`- "${pred.marketTitle.slice(0, 60)}..." → ${pred.predictedOutcome} @ ${prob} (${status})`);
     }
     lines.push('');
   }
@@ -536,7 +517,7 @@ export class ConversationHandler {
   private async runForcedTooling(message: string): Promise<string> {
     const text = message.toLowerCase();
     const wantsWallet = /\b(wallet|balance|funds|usdc|address|portfolio)\b/.test(text);
-    const wantsTrade = /\b(trade|bet|order|place|execute)\b/.test(text);
+    const wantsTrade = /\b(trade|order|place|execute)\b/.test(text);
     if (!wantsWallet && !wantsTrade) {
       return '';
     }
@@ -600,9 +581,9 @@ export class ConversationHandler {
     }
 
     if (wantsMarket) {
-      const marketResult = await executeToolCall('market_search', { query: message, limit: 5 }, this.toolContext);
+      const marketResult = await executeToolCall('perp_market_list', { limit: 20 }, this.toolContext);
       if (marketResult.success) {
-        sections.push(`### market_search\n${JSON.stringify(marketResult.data, null, 2)}`);
+        sections.push(`### perp_market_list\n${JSON.stringify(marketResult.data, null, 2)}`);
       }
     }
 
@@ -1134,19 +1115,19 @@ ${contextBlock}`.trim();
             tools,
           });
 
-          const prompt = `Please analyze this prediction market and give me your probability estimate with reasoning:
+          const prompt = `Please analyze this perp market and give me a directional thesis with reasoning:
 
 **${market.question}**
-- Outcomes: ${market.outcomes.join(', ')}
-- Current prices: YES ${((market.prices['Yes'] ?? market.prices['YES'] ?? market.prices[0] ?? 0) * 100).toFixed(0)}% / NO ${((market.prices['No'] ?? market.prices['NO'] ?? market.prices[1] ?? 0) * 100).toFixed(0)}%
-- Volume: $${(market.volume ?? 0).toLocaleString()}
+- Symbol: ${market.symbol ?? market.id}
+- Mark price: ${market.markPrice ?? 'N/A'}
+- Max leverage: ${market.metadata?.maxLeverage ?? 'N/A'}
 - Category: ${market.category ?? 'unknown'}
 
 Give me:
-1. Your probability estimate (be specific, e.g., "65%")
+1. Your directional probability estimate (e.g., "60% upside")
 2. Key factors driving your estimate
 3. What would change your mind
-4. Whether you see edge vs. the market price`;
+4. Whether you see edge vs. current price`;
 
           const contextBlock = [
             userContext,
@@ -1310,14 +1291,14 @@ Category: ${market.category ?? 'unknown'}
         });
         const marketContext =
           markets.length > 0
-            ? `\n## Relevant Prediction Markets\n${formatMarketsForChat(markets)}`
-            : '\n(No prediction markets found for this topic)';
+            ? `\n## Relevant Perp Markets\n${formatMarketsForChat(markets)}`
+            : '\n(No relevant perp symbols found for this topic)';
 
         const prompt = `The user wants to know about: "${topic}"
 
 Please:
-1. Share your analysis and probability estimates for outcomes related to this topic
-2. Reference the prediction markets shown below if relevant
+1. Share your analysis and directional probability estimates related to this topic
+2. Reference the perp markets shown below if relevant
 3. Explain your reasoning and key uncertainties
 4. Suggest what information would help refine the estimate
 

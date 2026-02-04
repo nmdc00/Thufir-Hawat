@@ -61,21 +61,19 @@ export function listModes(): ModeConfig[] {
  * Patterns that indicate trade intent.
  */
 const TRADE_PATTERNS = [
-  /\b(buy|sell|trade|bet|place)\b.*\b(yes|no)\b/i,
-  /\b(yes|no)\b.*\b(buy|sell|trade|bet|place)\b/i,
-  /\b(place|execute|make)\s+(a\s+)?(bet|trade|order)\b/i,
-  /\b(bet|wager|trade)\s+\$?\d+/i,
-  /\$\d+.*\b(on|yes|no)\b/i,
-  /\bgo\s+(long|short)\b/i,
+  /\b(buy|sell|trade|order)\b/i,
+  /\b(go|going)\s+(long|short)\b/i,
   /\btake\s+(a\s+)?position\b/i,
+  /\b(perp|perps|perpetual|futures)\b/i,
+  /\b(leverage)\b/i,
   // Additional patterns for trade intent
-  /\b(start|begin|enable|activate)\s+(trading|betting)\b/i,
-  /\b(autonomous|auto)\s*(trading|trade|bet|betting)\b/i,
-  /\b(find|look\s+for|identify)\s+(a\s+)?(bet|trade|opportunity)\b/i,
-  /\b(trading|betting)\s+(mode|enabled?)\b/i,
-  /\bmake\s+(some\s+)?(money|bets?|trades?)\b/i,
-  /\b(can\s+you|please)\s+(trade|bet|place)\b/i,
-  /\bwant\s+(to\s+)?(trade|bet|place)\b/i,
+  /\b(start|begin|enable|activate)\s+trading\b/i,
+  /\b(autonomous|auto)\s*(trading|execution)\b/i,
+  /\b(find|look\s+for|identify)\s+(a\s+)?(trade|opportunity)\b/i,
+  /\btrading\s+(mode|enabled?)\b/i,
+  /\bmake\s+(some\s+)?(money|trades?)\b/i,
+  /\b(can\s+you|please)\s+(trade|place)\b/i,
+  /\bwant\s+(to\s+)?(trade|place)\b/i,
 ];
 
 /**

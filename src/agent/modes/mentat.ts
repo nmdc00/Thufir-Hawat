@@ -11,14 +11,10 @@ import type { ModeConfig } from './types.js';
  * All analysis tools allowed in mentat mode (no trading).
  */
 const MENTAT_TOOLS = [
-  // Market tools
-  'market_search',
-  'market_get',
-  'markets.search',
-  'markets.get',
-  'market_categories',
-  'get_order_book',
-  'price_history',
+  // Perp market tools (read-only)
+  'perp_market_list',
+  'perp_market_get',
+  'perp_positions',
 
   // Intel tools
   'intel_search',
@@ -43,7 +39,11 @@ const MENTAT_TOOLS = [
 
   // Portfolio analysis (no trading)
   'get_portfolio',
-  'get_predictions',
+  'get_positions',
+  'signal_price_vol_regime',
+  'signal_cross_asset_divergence',
+  'signal_hyperliquid_funding_oi_skew',
+  'signal_hyperliquid_orderflow_imbalance',
 
   // No trade.place - mentat mode is analysis only
 ];

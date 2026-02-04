@@ -10,10 +10,12 @@ export interface HyperliquidLiveExecutorOptions {
 export class HyperliquidLiveExecutor implements ExecutionAdapter {
   private client: HyperliquidClient;
   private maxLeverage: number;
+  private defaultSlippageBps: number;
 
   constructor(options: HyperliquidLiveExecutorOptions) {
     this.client = new HyperliquidClient(options.config);
     this.maxLeverage = options.config.hyperliquid?.maxLeverage ?? 5;
+    this.defaultSlippageBps = options.config.hyperliquid?.defaultSlippageBps ?? 10;
   }
 
   async execute(market: Market, decision: TradeDecision): Promise<TradeResult> {
@@ -28,7 +30,10 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
       return { executed: false, message: 'Invalid decision: missing symbol/side/size.' };
     }
 
-    const leverage = Math.min(decision.leverage ?? this.maxLeverage, this.maxLeverage);
+    const leverage = Math.min(
+      decision.leverage ?? this.maxLeverage,
+      this.maxLeverage
+    );
     const orderType = decision.orderType ?? 'market';
     const price = decision.price ?? null;
     const reduceOnly = decision.reduceOnly ?? false;
@@ -40,22 +45,56 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
       if (!marketMeta) {
         return { executed: false, message: `Unknown Hyperliquid symbol: ${symbol}` };
       }
+
+      const leverageCap = marketMeta.maxLeverage ?? this.maxLeverage;
+      const appliedLeverage = Math.min(leverage, leverageCap);
+      if (decision.leverage != null) {
+        await exchange.updateLeverage({
+          asset: marketMeta.assetId,
+          isCross: true,
+          leverage: appliedLeverage,
+        });
+      }
+
+      const sizeStr = formatDecimal(size, marketMeta.szDecimals ?? 6);
+      if (!Number.isFinite(Number(sizeStr)) || Number(sizeStr) <= 0) {
+        return { executed: false, message: 'Invalid decision: size rounds to zero.' };
+      }
+
+      const orderPx =
+        orderType === 'limit'
+          ? price
+          : price ?? (await this.estimateMarketPrice(symbol, side));
+      if (!orderPx || orderPx <= 0) {
+        return { executed: false, message: 'Invalid decision: missing or invalid price.' };
+      }
+
+      const priceStr = formatDecimal(orderPx, 8);
       const payload = {
-        asset: marketMeta.assetId,
-        isBuy: side === 'buy',
-        sz: size,
-        limitPx: orderType === 'limit' ? price ?? 0 : undefined,
-        orderType: orderType === 'limit' ? 'limit' : 'market',
-        reduceOnly,
-        leverage,
+        orders: [
+          {
+            a: marketMeta.assetId,
+            b: side === 'buy',
+            p: priceStr,
+            s: sizeStr,
+            r: reduceOnly,
+            t: { limit: { tif: orderType === 'market' ? 'Ioc' : 'Gtc' } },
+          },
+        ],
+        grouping: 'na' as const,
       };
-      const result =
-        typeof (exchange as any).placeOrder === 'function'
-          ? await (exchange as any).placeOrder(payload)
-          : await (exchange as any).order(payload);
+
+      const result = await exchange.order(payload);
+      const status = (result as any)?.response?.data?.statuses?.[0];
+      const statusMessage = summarizeOrderStatus(status);
+      if (statusMessage?.error) {
+        return { executed: false, message: `Hyperliquid trade failed: ${statusMessage.error}` };
+      }
       return {
         executed: true,
-        message: `Hyperliquid order placed: ${symbol} ${side} size=${size} ${orderType}`,
+        message:
+          statusMessage?.message ??
+          `Hyperliquid order placed: ${symbol} ${side} size=${sizeStr} ${orderType}`,
       };
     } catch (error) {
       return {
@@ -63,6 +102,16 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
         message: `Hyperliquid trade failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       };
     }
+  }
+
+  private async estimateMarketPrice(symbol: string, side: 'buy' | 'sell'): Promise<number> {
+    const mids = await this.client.getAllMids();
+    const mid = mids[symbol];
+    if (!Number.isFinite(mid)) {
+      throw new Error(`Missing mid price for ${symbol}.`);
+    }
+    const slippage = this.defaultSlippageBps / 10000;
+    return side === 'buy' ? mid * (1 + slippage) : mid * (1 - slippage);
   }
 
   async getOpenOrders(): Promise<Order[]> {
@@ -114,4 +163,28 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
       cancels: [{ a: marketMeta.assetId, o: oid }],
     });
   }
+}
+
+function formatDecimal(value: number, decimals: number): string {
+  const bounded = Math.max(0, value);
+  const fixed = bounded.toFixed(decimals);
+  return fixed.replace(/\.?0+$/, '');
+}
+
+function summarizeOrderStatus(
+  status: unknown
+): { message?: string; error?: string } | null {
+  if (!status || typeof status !== 'object') return null;
+  if ('error' in status && typeof (status as { error?: unknown }).error === 'string') {
+    return { error: (status as { error: string }).error };
+  }
+  if ('resting' in status && (status as { resting?: { oid?: number | string } }).resting) {
+    const oid = (status as { resting?: { oid?: number | string } }).resting?.oid;
+    return { message: `Hyperliquid order resting (oid=${oid ?? 'unknown'}).` };
+  }
+  if ('filled' in status && (status as { filled?: { oid?: number | string } }).filled) {
+    const oid = (status as { filled?: { oid?: number | string } }).filled?.oid;
+    return { message: `Hyperliquid order filled (oid=${oid ?? 'unknown'}).` };
+  }
+  return null;
 }

@@ -1,5 +1,5 @@
 /**
- * Thufir - Prediction Market AI Companion
+ * Thufir - Autonomous Market Discovery Companion
  *
  * Main entry point for the Thufir library.
  */
@@ -15,11 +15,8 @@ import { HyperliquidLiveExecutor } from './execution/modes/hyperliquid-live.js';
 import type { ExecutionAdapter } from './execution/executor.js';
 import { DbSpendingLimitEnforcer } from './execution/wallet/limits_db.js';
 import { listCalibrationSummaries } from './memory/calibration.js';
-import { listOpenPositions } from './memory/predictions.js';
-import { listOpenPositionsFromTrades } from './memory/trades.js';
-import { getCashBalance } from './memory/portfolio.js';
-import { explainPrediction } from './core/explain.js';
-import { checkExposureLimits } from './core/exposure.js';
+import { checkPerpRiskLimits } from './execution/perp-risk.js';
+import { executeToolCall } from './core/tool-executor.js';
 
 // Re-export types
 export * from './types/index.js';
@@ -51,11 +48,12 @@ export const VERSION = '0.1.0';
  * // Analyze a market
  * const analysis = await thufir.analyze('fed-rate-decision');
  *
- * // Execute a trade (with confirmation)
+ * // Execute a perp trade (with confirmation)
  * const result = await thufir.trade({
- *   marketId: 'abc123',
- *   outcome: 'YES',
- *   amount: 25
+ *   symbol: 'BTC',
+ *   side: 'buy',
+ *   sizeUsd: 25,
+ *   leverage: 3
  * });
  * ```
  */
@@ -160,30 +158,50 @@ export class Thufir {
    * Execute a trade.
    */
   async trade(_params: {
-    marketId: string;
-    outcome: 'YES' | 'NO';
-    amount: number;
+    symbol: string;
+    side: 'buy' | 'sell';
+    sizeUsd: number;
+    leverage?: number;
+    orderType?: 'market' | 'limit';
+    price?: number;
+    reduceOnly?: boolean;
   }): Promise<unknown> {
     this.ensureStarted();
     if (!this.marketClient || !this.executor || !this.limiter) {
       throw new Error('Trading components not initialized');
     }
 
-    const market = await this.marketClient.getMarket(_params.marketId);
-    const exposureCheck = checkExposureLimits({
+    const symbol = _params.symbol;
+    const side = _params.side;
+    const sizeUsd = _params.sizeUsd;
+    const market = await this.marketClient.getMarket(symbol);
+    const markPrice = market.markPrice ?? _params.price ?? null;
+    if (!markPrice || markPrice <= 0) {
+      return { executed: false, message: 'Missing or invalid mark price for sizing.' };
+    }
+    const size = sizeUsd / markPrice;
+
+    const riskCheck = await checkPerpRiskLimits({
       config: this.config,
-      market,
-      outcome: _params.outcome,
-      amount: _params.amount,
-      side: 'buy',
+      symbol,
+      side,
+      size,
+      leverage: _params.leverage,
+      reduceOnly: _params.reduceOnly ?? false,
+      markPrice,
+      notionalUsd: sizeUsd,
+      marketMaxLeverage:
+        typeof market.metadata?.maxLeverage === 'number'
+          ? (market.metadata.maxLeverage as number)
+          : null,
     });
-    if (!exposureCheck.allowed) {
+    if (!riskCheck.allowed) {
       return {
         executed: false,
-        message: exposureCheck.reason ?? 'Trade blocked by exposure limits',
+        message: riskCheck.reason ?? 'Trade blocked by perp risk limits',
       };
     }
-    const limitCheck = await this.limiter.checkAndReserve(_params.amount);
+    const limitCheck = await this.limiter.checkAndReserve(sizeUsd);
     if (!limitCheck.allowed) {
       return {
         executed: false,
@@ -192,17 +210,22 @@ export class Thufir {
     }
 
     const result = await this.executor.execute(market, {
-      action: 'buy',
-      outcome: _params.outcome,
-      amount: _params.amount,
+      action: side,
+      side,
+      symbol,
+      size,
+      orderType: _params.orderType ?? 'market',
+      price: _params.price,
+      leverage: _params.leverage,
+      reduceOnly: _params.reduceOnly,
       confidence: 'medium',
       reasoning: `Programmatic trade for ${this.userId}`,
     });
 
     if (result.executed) {
-      this.limiter.confirm(_params.amount);
+      this.limiter.confirm(sizeUsd);
     } else {
-      this.limiter.release(_params.amount);
+      this.limiter.release(sizeUsd);
     }
 
     return result;
@@ -213,76 +236,16 @@ export class Thufir {
    */
   async getPortfolio(): Promise<unknown> {
     this.ensureStarted();
-    const positions = (() => {
-      const fromTrades = listOpenPositionsFromTrades(200);
-      return fromTrades.length > 0 ? fromTrades : listOpenPositions(200);
-    })();
-    const cashBalance = getCashBalance();
-
-    const formatted = positions.map((position) => {
-      const outcome = position.predictedOutcome ?? 'YES';
-      const prices = position.currentPrices ?? null;
-      let currentPrice: number | null = null;
-      if (Array.isArray(prices)) {
-        currentPrice = outcome === 'YES' ? prices[0] ?? null : prices[1] ?? null;
-      } else if (prices) {
-        currentPrice =
-          prices[outcome] ??
-          prices[outcome.toUpperCase()] ??
-          prices[outcome.toLowerCase()] ??
-          prices[outcome === 'YES' ? 'Yes' : 'No'] ??
-          prices[outcome === 'YES' ? 'yes' : 'no'] ??
-          null;
-      }
-
-      const averagePrice = position.executionPrice ?? currentPrice ?? 0;
-      const positionSize = position.positionSize ?? 0;
-      const netShares =
-        typeof (position as { netShares?: number | null }).netShares === 'number'
-          ? Number((position as { netShares?: number | null }).netShares)
-          : null;
-      const shares =
-        netShares !== null ? netShares : averagePrice > 0 ? positionSize / averagePrice : 0;
-      const price = currentPrice ?? averagePrice;
-      const value = shares * price;
-      const unrealizedPnl = value - positionSize;
-      const unrealizedPnlPercent =
-        positionSize > 0 ? (unrealizedPnl / positionSize) * 100 : 0;
-      const realizedPnl =
-        typeof (position as { realizedPnl?: number | null }).realizedPnl === 'number'
-          ? Number((position as { realizedPnl?: number | null }).realizedPnl)
-          : undefined;
-
-      return {
-        marketId: position.marketId,
-        marketTitle: position.marketTitle,
-        outcome,
-        shares,
-        averagePrice,
-        currentPrice: price,
-        value,
-        unrealizedPnl,
-        unrealizedPnlPercent,
-        realizedPnl,
-      };
-    });
-
-    const totalValue = formatted.reduce((sum, p) => sum + p.value, 0);
-    const totalCost = formatted.reduce((sum, p) => sum + p.shares * p.averagePrice, 0);
-    const totalPnl = totalValue - totalCost;
-    const totalPnlPercent = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
-
-    const totalEquity = cashBalance + totalValue;
-
-    return {
-      positions: formatted,
-      totalValue,
-      totalCost,
-      totalPnl,
-      totalPnlPercent,
-      cashBalance,
-      totalEquity,
+    if (!this.marketClient || !this.executor || !this.limiter) {
+      throw new Error('Trading components not initialized');
+    }
+    const toolContext = {
+      config: this.config,
+      marketClient: this.marketClient,
+      executor: this.executor,
+      limiter: this.limiter,
     };
+    return executeToolCall('get_portfolio', {}, toolContext);
   }
 
   /**
@@ -295,14 +258,6 @@ export class Thufir {
       return summaries.filter((summary) => summary.domain === _domain);
     }
     return summaries;
-  }
-
-  /**
-   * Explain a prediction decision.
-   */
-  async explainPrediction(predictionId: string): Promise<string> {
-    this.ensureStarted();
-    return explainPrediction({ predictionId, config: this.config, llm: this.llm });
   }
 
   /**

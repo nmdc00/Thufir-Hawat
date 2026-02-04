@@ -11,7 +11,6 @@ const execAsync = promisify(exec);
 import { Logger } from '../core/logger.js';
 import { TelegramAdapter } from '../interface/telegram.js';
 import { WhatsAppAdapter } from '../interface/whatsapp.js';
-import { resolveOutcomes } from '../core/resolver.js';
 import { runIntelPipelineDetailed } from '../intel/pipeline.js';
 import { pruneChatMessages } from '../memory/chat.js';
 import { listWatchlist } from '../memory/watchlist.js';
@@ -134,33 +133,6 @@ if (briefingConfig?.enabled) {
       }
     }
     lastBriefingDate = today;
-  }, 60_000);
-}
-
-const resolverConfig = config.notifications?.resolver;
-let lastResolverDate = '';
-if (resolverConfig?.enabled) {
-  setInterval(async () => {
-    const now = new Date();
-    const [hours, minutes] = resolverConfig.time.split(':').map((part) => Number(part));
-    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-      return;
-    }
-    const today = now.toISOString().split('T')[0]!;
-    if (lastResolverDate === today) {
-      return;
-    }
-    if (now.getHours() !== hours || now.getMinutes() !== minutes) {
-      return;
-    }
-
-    try {
-      const updated = await resolveOutcomes(config, resolverConfig.limit);
-      logger.info(`Resolved ${updated} prediction(s).`);
-    } catch (error) {
-      logger.error('Outcome resolver failed', error);
-    }
-    lastResolverDate = today;
   }, 60_000);
 }
 

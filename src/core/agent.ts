@@ -11,7 +11,6 @@ import {
   OrchestratorClient,
 } from './llm.js';
 import type { LlmClient } from './llm.js';
-import { decideTrade, buildDecisionPrompts, parseDecisionFromText, EXECUTOR_PROMPT } from './decision.js';
 import { Logger } from './logger.js';
 import { createMarketClient, type MarketClient } from '../execution/market-client.js';
 import { PaperExecutor } from '../execution/modes/paper.js';
@@ -22,19 +21,12 @@ import type { ExecutionAdapter } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
 import { addWatchlist, listWatchlist } from '../memory/watchlist.js';
 import { runIntelPipeline } from '../intel/pipeline.js';
-import { resolveOutcomes } from './resolver.js';
 import { buildBriefing } from './briefing.js';
 import { getUserContext, updateUserContext } from '../memory/user.js';
 import { ConversationHandler } from './conversation.js';
 import { AutonomousManager } from './autonomous.js';
-import { generateDailyReport, formatDailyReport } from './opportunities.js';
-import { explainPrediction } from './explain.js';
-import { checkExposureLimits } from './exposure.js';
+import { runDiscovery } from '../discovery/engine.js';
 import type { ToolExecutorContext } from './tool-executor.js';
-import { runOrchestrator } from '../agent/orchestrator/orchestrator.js';
-import { AgentToolRegistry } from '../agent/tools/registry.js';
-import { registerAllTools } from '../agent/tools/adapters/index.js';
-import { loadThufirIdentity } from '../agent/identity/identity.js';
 import { withExecutionContext } from './llm_infra.js';
 
 export class ThufirAgent {
@@ -167,20 +159,14 @@ export class ThufirAgent {
     const isCapabilityQuestion = this.isCapabilityQuestion(trimmed);
     const isAccessQuestion = this.isAccessQuestion(trimmed);
 
-    const tradeIntent = /\b(bet|trade|buy|sell)\b/i.test(trimmed);
-    if (tradeIntent && !trimmed.startsWith('/trade ') && !trimmed.startsWith('/bet ')) {
+    const tradeIntent = /\b(trade|buy|sell|long|short)\b/i.test(trimmed);
+    if (tradeIntent && !trimmed.startsWith('/perp ')) {
       const autoEnabled =
         (this.config.autonomy as any)?.enabled === true &&
         (this.config.autonomy as any)?.fullAuto === true;
       if (!autoEnabled && !isCapabilityQuestion && !isAccessQuestion && !isQuestion) {
         if (this.config.execution?.provider === 'hyperliquid') {
           return 'To place a live perp trade, use `/perp <symbol> <buy|sell> <sizeUsd> [leverage]` (example: `/perp BTC buy 25 3`).';
-        }
-        const hasAmount = /\b\d+(?:\.\d+)?\b/.test(trimmed);
-        const hasOutcome = /\b(yes|no)\b/i.test(trimmed);
-        const hasId = /\b\d{4,}\b/.test(trimmed);
-        if (!hasAmount || !hasOutcome || !hasId) {
-          return 'To place a live trade, use `/trade <marketId> <YES|NO> <amount>` (example: `/trade 12345 YES 5`).';
         }
       }
     }
@@ -224,21 +210,6 @@ export class ThufirAgent {
     if (trimmed === '/intel') {
       const stored = await runIntelPipeline(this.config);
       return `Intel updated. New items stored: ${stored}.`;
-    }
-
-    // Command: /resolve
-    if (trimmed === '/resolve') {
-      const updated = await resolveOutcomes(this.config);
-      return `Resolved ${updated} prediction(s).`;
-    }
-
-    // Command: /explain <predictionId>
-    if (trimmed.startsWith('/explain ')) {
-      const predictionId = trimmed.replace('/explain ', '').trim();
-      if (!predictionId) {
-        return 'Usage: /explain <predictionId>';
-      }
-      return this.explainPrediction(predictionId);
     }
 
     // Command: /profile
@@ -304,6 +275,24 @@ export class ThufirAgent {
         const market = await this.marketClient.getMarket(symbol);
         const markPrice = market.markPrice ?? 0;
         const size = markPrice > 0 ? sizeUsd / markPrice : sizeUsd;
+        const { checkPerpRiskLimits } = await import('../execution/perp-risk.js');
+        const riskCheck = await checkPerpRiskLimits({
+          config: this.config,
+          symbol,
+          side: side as 'buy' | 'sell',
+          size,
+          leverage,
+          reduceOnly: false,
+          markPrice: markPrice || null,
+          notionalUsd: Number.isFinite(sizeUsd) ? sizeUsd : undefined,
+          marketMaxLeverage:
+            typeof market.metadata?.maxLeverage === 'number'
+              ? (market.metadata.maxLeverage as number)
+              : null,
+        });
+        if (!riskCheck.allowed) {
+          return `Trade blocked: ${riskCheck.reason ?? 'perp risk limits exceeded'}`;
+        }
         const limitCheck = await this.limiter.checkAndReserve(sizeUsd);
         if (!limitCheck.allowed) {
           return `Trade blocked: ${limitCheck.reason}`;
@@ -329,22 +318,6 @@ export class ThufirAgent {
       }
     }
 
-    // Command: /trade <marketId> <YES|NO> <amount>
-    if (trimmed.startsWith('/trade ')) {
-      const [, marketId, outcome, amountRaw] = trimmed.split(' ');
-      const amount = Number(amountRaw);
-      if (!marketId || !outcome || Number.isNaN(amount)) {
-        return 'Usage: /trade <marketId> <YES|NO> <amount>';
-      }
-      return this.executeManualTrade({
-        marketId,
-        outcome: outcome.toUpperCase() as 'YES' | 'NO',
-        amount,
-        sender,
-        reason: `Manual command from ${sender}`,
-      });
-    }
-
     // Command: /analyze <marketId> - Deep analysis of a specific market
     if (trimmed.startsWith('/analyze ')) {
       const marketId = trimmed.replace('/analyze ', '').trim();
@@ -366,20 +339,19 @@ export class ThufirAgent {
       return this.conversation.askAbout(sender, topic);
     }
 
-    // Command: /markets <query> - Search for markets
+    // Command: /markets <query> - Search for perp markets
     if (trimmed.startsWith('/markets ')) {
       const query = trimmed.replace('/markets ', '').trim();
       try {
         const markets = await this.marketClient.searchMarkets(query, 10);
         if (markets.length === 0) {
-          return `No markets found for "${query}"`;
+          return `No perp symbols found for "${query}"`;
         }
         const lines = markets.map((m) => {
-          const yesPrice = m.prices['Yes'] ?? m.prices['YES'] ?? m.prices[0] ?? 0;
-          const pct = typeof yesPrice === 'number' ? `${(yesPrice * 100).toFixed(0)}%` : '?';
-          return `**${m.question}**\n  YES: ${pct} | ID: \`${m.id}\``;
+          const price = m.markPrice ?? 'N/A';
+          return `**${m.question}**\n  Symbol: \`${m.symbol ?? m.id}\` | Mark: ${price}`;
         });
-        return `Found ${markets.length} market(s):\n\n${lines.join('\n\n')}`;
+        return `Found ${markets.length} perp market(s):\n\n${lines.join('\n\n')}`;
       } catch (error) {
         return `Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
       }
@@ -396,12 +368,20 @@ export class ThufirAgent {
       return 'Want to set up intel alerts? Reply "yes" or "no".';
     }
 
-    // Command: /top10 - Get daily top 10 opportunities
+    // Command: /top10 - Get discovery expressions snapshot
     if (trimmed === '/top10' || trimmed === '/opportunities') {
       this.logger.info(`Generating top 10 opportunities for ${sender}`);
       try {
-        const report = await generateDailyReport(this.llm, this.marketClient, this.config);
-        return formatDailyReport(report);
+        const discovery = await runDiscovery(this.config);
+        const expressions = discovery.expressions.slice(0, 10);
+        if (expressions.length === 0) {
+          return 'No discovery expressions generated.';
+        }
+        const lines = expressions.map(
+          (expr) =>
+            `- ${expr.symbol} ${expr.side.toUpperCase()} probe=$${expr.probeSizeUsd.toFixed(2)} leverage=${expr.leverage}`
+        );
+        return `Top discovery expressions:\n${lines.join('\n')}`;
       } catch (error) {
         return `Failed to generate opportunities: ${error instanceof Error ? error.message : 'Unknown error'}`;
       }
@@ -472,39 +452,37 @@ export class ThufirAgent {
       return `**Thufir Commands**
 
 **Conversation:**
-Just type naturally to chat about predictions, events, or markets.
-/ask <topic> - Ask about a topic and find relevant markets
-/analyze <id> - Deep analysis of a specific market
-/analyze-json <id> - Structured analysis (JSON)
-/explain <predictionId> - Explain a prediction decision
-/markets <query> - Search for prediction markets
+Just type naturally to chat about markets, risks, or positioning.
+/ask <topic> - Ask about a topic and find relevant perp markets
+/analyze <symbol> - Deep analysis of a specific perp market
+/analyze-json <symbol> - Structured analysis (JSON)
+/markets <query> - Search for perp symbols
 /clear - Clear conversation history
 
 **Autonomous Mode:**
-/top10 - Get today's top 10 trading opportunities
+/top10 - Get today's top 10 discovery expressions
 /status - Show autonomous mode status and P&L
-/report - Full daily report with opportunities
+/report - Full daily report
 /fullauto [on|off] - Toggle autonomous execution
 /pause - Pause autonomous trading
 /resume - Resume autonomous trading
 
 **Trading:**
-/watch <id> - Add market to watchlist
-/watchlist - Show watched markets
-/scan - Run autonomous market scan
-/trade <id> <YES|NO> <amount> - Execute a trade
+/watch <symbol> - Add symbol to watchlist
+/watchlist - Show watched symbols
+/scan - Run autonomous discovery scan
+/perp <symbol> <buy|sell> <sizeUsd> [leverage] - Execute a perp trade
 
 **Info:**
 /briefing - Daily briefing
 /intel - Fetch latest news
-/resolve - Resolve pending predictions
 /profile - Show your profile
 /persona [mode|list|off] - Set personality mode
 /setpref key=value - Set preferences
 
 **Examples:**
-"What do you think about the Fed raising rates?"
-"Will AI cause significant unemployment by 2030?"
+"What do you think about BTC volatility?"
+"What matters most for ETH this week?"
 /top10
 /fullauto on`;
     }
@@ -528,124 +506,13 @@ Just type naturally to chat about predictions, events, or markets.
     return buildBriefing(10);
   }
 
-  private async explainPrediction(predictionId: string): Promise<string> {
-    return explainPrediction({ predictionId, config: this.config, llm: this.llm });
-  }
-
-
   private async autonomousScan(): Promise<string> {
     return withExecutionContext(
       { mode: 'FULL_AGENT', critical: true, reason: 'autonomous_scan', source: 'agent' },
       async () => {
-        const markets = await this.getMarketsForScan();
-        if (markets.length === 0) {
-          return 'No markets found to scan.';
-        }
-
-        const useOrchestrator = this.config.agent?.useOrchestrator === true;
-        let orchestratorRegistry: AgentToolRegistry | null = null;
-        let orchestratorIdentity: ReturnType<typeof loadThufirIdentity>['identity'] | null = null;
-        if (useOrchestrator) {
-          orchestratorRegistry = new AgentToolRegistry();
-          registerAllTools(orchestratorRegistry);
-          orchestratorIdentity = loadThufirIdentity({
-            workspacePath: this.config.agent?.workspace,
-          }).identity;
-        }
-
-        const decisions: string[] = [];
-        for (const market of markets) {
-          const remaining = this.limiter.getRemainingDaily();
-          if (remaining <= 0) {
-            decisions.push('Daily limit reached; skipping remaining markets.');
-            break;
-          }
-
-          let decision: Awaited<ReturnType<typeof decideTrade>>;
-          if (useOrchestrator && orchestratorRegistry && orchestratorIdentity) {
-            const { plannerPrompt } = buildDecisionPrompts(market, remaining);
-            let plan = '';
-            try {
-              const plannerResponse = await this.llm.complete(
-                [
-                  { role: 'system', content: 'You are a concise trading planner.' },
-                  { role: 'user', content: plannerPrompt },
-                ],
-                { temperature: 0.2 }
-              );
-              plan = plannerResponse.content.trim();
-            } catch {
-              plan = '';
-            }
-
-            const { executorPrompt } = buildDecisionPrompts(market, remaining, plan);
-            const result = await runOrchestrator(
-              'Return a trade decision JSON for the provided market.',
-              {
-                llm: this.executorLlm,
-                toolRegistry: orchestratorRegistry,
-                identity: orchestratorIdentity,
-                toolContext: this.toolContext,
-              },
-              {
-                skipPlanning: true,
-                skipCritic: true,
-                maxIterations: 1,
-                synthesisSystemPrompt: `${EXECUTOR_PROMPT}\n\nUser Prompt:\n${executorPrompt}`,
-              }
-            );
-
-            decision = parseDecisionFromText(result.response) ?? {
-              action: 'hold',
-              reasoning: 'Failed to parse orchestrator decision JSON',
-            };
-          } else {
-            decision = await decideTrade(this.llm, this.executorLlm, market, remaining, this.logger);
-          }
-          if (decision.action === 'hold') {
-            decisions.push(`${market.id}: hold`);
-            continue;
-          }
-
-          const amount = decision.amount ?? Math.min(10, remaining);
-          const limitCheck = await this.limiter.checkAndReserve(amount);
-          if (!limitCheck.allowed) {
-            decisions.push(`${market.id}: blocked (${limitCheck.reason})`);
-            continue;
-          }
-
-          const result = await this.executor.execute(market, {
-            action: decision.action,
-            outcome: decision.outcome,
-            amount,
-            confidence: decision.confidence,
-            reasoning: decision.reasoning,
-          });
-
-          if (result.executed) {
-            this.limiter.confirm(amount);
-            decisions.push(`${market.id}: executed (${decision.action} ${decision.outcome})`);
-          } else {
-            this.limiter.release(amount);
-            decisions.push(`${market.id}: ${result.message}`);
-          }
-        }
-
-        return decisions.join('\n');
+        return this.autonomous.runScan();
       }
     );
-  }
-
-  private async getMarketsForScan() {
-    if (this.config.autonomy.watchlistOnly) {
-      const watchlist = listWatchlist(this.config.autonomy.maxMarketsPerScan);
-      const markets = [];
-      for (const item of watchlist) {
-        markets.push(await this.marketClient.getMarket(item.marketId));
-      }
-      return markets;
-    }
-    return this.marketClient.listMarkets(this.config.autonomy.maxMarketsPerScan);
   }
 
   private async maybeHandleNaturalLanguageTrade(
@@ -656,9 +523,8 @@ Just type naturally to chat about predictions, events, or markets.
       (this.config.autonomy as any)?.enabled === true &&
       (this.config.autonomy as any)?.fullAuto === true;
     const wantsAutoScan =
-      /\b(find|look\s+for|scan|search|identify)\b.*\b(bet|bets|trade|trades|opportunit|edge)\b/i.test(message) ||
-      /\b(start|begin|run|kick\s*off)\b.*\b(trading|auto|autonomous)\b/i.test(message) ||
-      /\bplace\b.*\b(bets|trades)\b/i.test(message);
+      /\b(find|look\s+for|scan|search|identify)\b.*\b(trade|trades|opportunit|edge)\b/i.test(message) ||
+      /\b(start|begin|run|kick\s*off)\b.*\b(trading|auto|autonomous)\b/i.test(message);
 
     if (wantsAutoScan) {
       if (!autoEnabled) {
@@ -667,138 +533,9 @@ Just type naturally to chat about predictions, events, or markets.
       return this.autonomousScan();
     }
 
-    if (!autoEnabled) return null;
-
-    const trimmed = message.trim();
-    const hasTradeIntent = /\b(bet|trade|buy|sell)\b/i.test(message);
-    if (!hasTradeIntent) return null;
-
-    const amountMatch = message.match(/\$?\s?(\d+(?:\.\d+)?)/);
-    const amount = amountMatch ? Number(amountMatch[1]) : NaN;
-    const outcomeMatch = message.match(/\b(yes|no)\b/i);
-    const outcome = outcomeMatch ? (outcomeMatch[1]!.toUpperCase() as 'YES' | 'NO') : null;
-    const idMatch = message.match(/\b(\d{4,})\b/);
-    const marketId = idMatch?.[1];
-
-    const amountValid = Number.isFinite(amount) && amount > 0;
-    if (this.isCapabilityQuestion(trimmed)) return null;
-    if (this.isAccessQuestion(trimmed)) return null;
-    if (this.isQuestion(trimmed) && !amountValid && !marketId) return null;
-
-    if (marketId) {
-      return this.executeAutonomousTrade({
-        marketId,
-        outcome: outcome ?? undefined,
-        amount: amountValid ? amount : undefined,
-        sender,
-      });
-    }
-
-    const query = message
-      .replace(/\$?\s?\d+(?:\.\d+)?/g, ' ')
-      .replace(/\b(yes|no|bet|trade|buy|sell|on|for|market)\b/gi, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (!query) {
-      return 'Please include a market ID or a clear market description.';
-    }
-
-    const matches = await this.marketClient.searchMarkets(query, 5);
-    if (matches.length === 0) {
-      return `No markets found for "${query}". Try /markets <query> or provide a market ID.`;
-    }
-    if (matches.length === 1) {
-      return this.executeAutonomousTrade({
-        marketId: matches[0]!.id,
-        outcome: outcome ?? undefined,
-        amount: amountValid ? amount : undefined,
-        sender,
-      });
-    }
-
-    const chosen = matches[0]!;
-    const result = await this.executeAutonomousTrade({
-      marketId: chosen.id,
-      outcome: outcome ?? undefined,
-      amount: amountValid ? amount : undefined,
-      sender,
-    });
-    return `Multiple markets matched; auto-selected top result ${chosen.id}: ${chosen.question}\n${result}`;
-  }
-
-  private async executeAutonomousTrade(params: {
-    marketId: string;
-    outcome?: 'YES' | 'NO';
-    amount?: number;
-    sender: string;
-  }): Promise<string> {
-    const market = await this.marketClient.getMarket(params.marketId);
-    const remaining = this.limiter.getRemainingDaily();
-    let outcome = params.outcome;
-    let amount = params.amount;
-
-    if (!outcome || !amount) {
-      const decision = await decideTrade(this.llm, this.executorLlm, market, remaining, this.logger);
-      if (decision.action === 'hold') {
-        return decision.reasoning ?? 'No clear edge; holding.';
-      }
-      outcome = outcome ?? decision.outcome ?? 'YES';
-      if (!amount || !Number.isFinite(amount) || amount <= 0) {
-        amount =
-          decision.amount ??
-          Math.min(this.config.wallet?.limits?.perTrade ?? 10, remaining);
-      }
-    }
-
-    return this.executeManualTrade({
-      marketId: params.marketId,
-      outcome,
-      amount,
-      sender: params.sender,
-      reason: `Autonomous NL trade from ${params.sender}`,
-    });
-  }
-
-  private async executeManualTrade(params: {
-    marketId: string;
-    outcome: 'YES' | 'NO';
-    amount: number;
-    sender: string;
-    reason: string;
-  }): Promise<string> {
-    const market = await this.marketClient.getMarket(params.marketId);
-    const decision = {
-      action: 'buy' as const,
-      outcome: params.outcome,
-      amount: params.amount,
-      confidence: 'medium' as const,
-      reasoning: params.reason,
-    };
-
-    const exposureCheck = checkExposureLimits({
-      config: this.config,
-      market,
-      outcome: decision.outcome,
-      amount: decision.amount,
-      side: decision.action,
-    });
-    if (!exposureCheck.allowed) {
-      return `Trade blocked: ${exposureCheck.reason ?? 'exposure limit exceeded'}`;
-    }
-
-    const limitCheck = await this.limiter.checkAndReserve(decision.amount);
-    if (!limitCheck.allowed) {
-      return `Trade blocked: ${limitCheck.reason ?? 'limit exceeded'}`;
-    }
-
-    const result = await this.executor.execute(market, decision);
-    if (result.executed) {
-      this.limiter.confirm(decision.amount);
-    } else {
-      this.limiter.release(decision.amount);
-    }
-    return result.message;
+    void sender;
+    void message;
+    return null;
   }
 
   private buildAccessReport(): string {
@@ -875,7 +612,7 @@ Just type naturally to chat about predictions, events, or markets.
     return (
       this.isQuestion(message) &&
       /\b(suited|capable|able)\b/i.test(message) &&
-      /\b(bet|trade|buy|sell)\b/i.test(message)
+      /\b(trade|buy|sell|long|short)\b/i.test(message)
     );
   }
 
@@ -884,8 +621,8 @@ Just type naturally to chat about predictions, events, or markets.
       this.isQuestion(message) &&
       (/\baccess\b/i.test(message) ||
         /\bwhere\b.*\baccess\b/i.test(message) ||
-        /\bcan you\b.*\b(trade|bet|buy|sell)\b/i.test(message) ||
-        /\bdo you\b.*\b(access|trade|bet)\b/i.test(message))
+        /\bcan you\b.*\b(trade|buy|sell|long|short)\b/i.test(message) ||
+        /\bdo you\b.*\b(access|trade)\b/i.test(message))
     );
   }
 

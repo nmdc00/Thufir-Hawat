@@ -3,10 +3,9 @@ import type { Market } from '../execution/markets.js';
 import type { MarketClient } from '../execution/market-client.js';
 import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import type { LimitCheckResult } from '../execution/wallet/limits.js';
+import { checkPerpRiskLimits } from '../execution/perp-risk.js';
 import { listCalibrationSummaries } from '../memory/calibration.js';
 import { listRecentIntel, searchIntel, type StoredIntel } from '../intel/store.js';
-import { listOpenPositions, listPredictions } from '../memory/predictions.js';
-import { listMarketCategories } from '../memory/market_cache.js';
 import { upsertAssumption, upsertFragilityCard, upsertMechanism } from '../memory/mentat.js';
 import { HyperliquidClient } from '../execution/hyperliquid/client.js';
 
@@ -50,30 +49,6 @@ export async function executeToolCall(
 ): Promise<ToolResult> {
   try {
     switch (toolName) {
-      case 'market_search': {
-        const query = String(toolInput.query ?? '');
-        const limit = Math.min(Number(toolInput.limit ?? 5), 20);
-        const markets = await ctx.marketClient.searchMarkets(query, limit);
-        return { success: true, data: formatMarketsForTool(markets) };
-      }
-
-      case 'market_get': {
-        const marketId = String(toolInput.market_id ?? '');
-        try {
-          const market = await ctx.marketClient.getMarket(marketId);
-          return { success: true, data: formatMarketForTool(market) };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          return { success: false, error: message };
-        }
-      }
-
-      case 'market_categories': {
-        const limit = Math.min(Number(toolInput.limit ?? 20), 100);
-        const categories = listMarketCategories(limit);
-        return { success: true, data: categories };
-      }
-
       case 'perp_market_list': {
         const limit = Math.min(Number(toolInput.limit ?? 20), 200);
         const markets = await ctx.marketClient.listMarkets(limit);
@@ -112,6 +87,22 @@ export async function executeToolCall(
           return { success: false, error: 'Missing or invalid order fields' };
         }
         const market = await ctx.marketClient.getMarket(symbol);
+        const riskCheck = await checkPerpRiskLimits({
+          config: ctx.config,
+          symbol,
+          side: side as 'buy' | 'sell',
+          size,
+          leverage,
+          reduceOnly,
+          markPrice: market.markPrice ?? null,
+          marketMaxLeverage:
+            typeof market.metadata?.maxLeverage === 'number'
+              ? (market.metadata.maxLeverage as number)
+              : null,
+        });
+        if (!riskCheck.allowed) {
+          return { success: false, error: riskCheck.reason ?? 'perp risk limits exceeded' };
+        }
         const limitCheck = await ctx.limiter.checkAndReserve(size);
         if (!limitCheck.allowed) {
           return { success: false, error: limitCheck.reason ?? 'limit exceeded' };
@@ -384,82 +375,12 @@ export async function executeToolCall(
 
       case 'get_positions': {
         try {
-          const client = new HyperliquidClient(ctx.config);
-          const state = (await client.getClearinghouseState()) as {
-            assetPositions?: Array<{ position?: Record<string, unknown> }>;
-            marginSummary?: Record<string, unknown>;
-            crossMarginSummary?: Record<string, unknown>;
-            withdrawable?: string | number;
-            crossMaintenanceMarginUsed?: string | number;
-          };
-
-          const toNumber = (value: unknown): number | null => {
-            const num = Number(value);
-            return Number.isFinite(num) ? num : null;
-          };
-
-          const positions = (state.assetPositions ?? [])
-            .map((entry) => entry?.position ?? {})
-            .map((position) => {
-              const size = toNumber((position as { szi?: unknown }).szi);
-              if (size == null || size === 0) return null;
-              const side = size > 0 ? 'long' : 'short';
-              const leverage = (position as { leverage?: { type?: string; value?: number | string } })
-                .leverage;
-              const leverageValue = toNumber(leverage?.value);
-              return {
-                symbol: String((position as { coin?: unknown }).coin ?? ''),
-                side,
-                size: Math.abs(size),
-                entry_price: toNumber((position as { entryPx?: unknown }).entryPx),
-                position_value: toNumber((position as { positionValue?: unknown }).positionValue),
-                unrealized_pnl: toNumber((position as { unrealizedPnl?: unknown }).unrealizedPnl),
-                return_on_equity: toNumber((position as { returnOnEquity?: unknown }).returnOnEquity),
-                liquidation_price: toNumber((position as { liquidationPx?: unknown }).liquidationPx),
-                margin_used: toNumber((position as { marginUsed?: unknown }).marginUsed),
-                leverage_type: leverage?.type ?? null,
-                leverage: leverageValue,
-                max_leverage: toNumber((position as { maxLeverage?: unknown }).maxLeverage),
-              };
-            })
-            .filter((position): position is NonNullable<typeof position> => Boolean(position));
-
-          const marginSummary = state.marginSummary ?? {};
-          const crossSummary = state.crossMarginSummary ?? {};
-          return {
-            success: true,
-            data: {
-              positions,
-              summary: {
-                account_value: toNumber((marginSummary as { accountValue?: unknown }).accountValue),
-                total_notional: toNumber((marginSummary as { totalNtlPos?: unknown }).totalNtlPos),
-                total_margin_used: toNumber(
-                  (marginSummary as { totalMarginUsed?: unknown }).totalMarginUsed
-                ),
-                cross_account_value: toNumber(
-                  (crossSummary as { accountValue?: unknown }).accountValue
-                ),
-                cross_total_notional: toNumber(
-                  (crossSummary as { totalNtlPos?: unknown }).totalNtlPos
-                ),
-                cross_total_margin_used: toNumber(
-                  (crossSummary as { totalMarginUsed?: unknown }).totalMarginUsed
-                ),
-                cross_maintenance_margin_used: toNumber(state.crossMaintenanceMarginUsed),
-                withdrawable: toNumber(state.withdrawable),
-              },
-            },
-          };
+          const data = await loadPerpPositions(ctx);
+          return { success: true, data };
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
           return { success: false, error: message };
         }
-      }
-
-      case 'get_predictions': {
-        const limit = Math.max(Number(toolInput.limit ?? 20), 1);
-        const status = String(toolInput.status ?? 'all');
-        return getPredictions(limit, status);
       }
 
       case 'get_open_orders': {
@@ -473,25 +394,6 @@ export async function executeToolCall(
           const message = error instanceof Error ? error.message : 'Unknown error';
           return { success: false, error: message };
         }
-      }
-
-      case 'get_order_book': {
-        const marketId = String(toolInput.market_id ?? '').trim();
-        const depth = Math.min(Math.max(Number(toolInput.depth ?? 5), 1), 20);
-        if (!marketId) {
-          return { success: false, error: 'Missing market_id' };
-        }
-        return getOrderBook(ctx, marketId, depth);
-      }
-
-      case 'price_history': {
-        const marketId = String(toolInput.market_id ?? '').trim();
-        const interval = String(toolInput.interval ?? '1d');
-        const limit = Math.min(Math.max(Number(toolInput.limit ?? 30), 1), 365);
-        if (!marketId) {
-          return { success: false, error: 'Missing market_id' };
-        }
-        return getPriceHistory(ctx, marketId, interval, limit);
       }
 
       case 'web_fetch': {
@@ -672,67 +574,6 @@ function getWalletInfo(ctx: ToolExecutorContext): ToolResult {
 
 async function getPortfolio(ctx: ToolExecutorContext): Promise<ToolResult> {
   try {
-    const positionRows = await Promise.all(
-      listOpenPositions(50).map(async (position) => {
-        const outcome = (position.predictedOutcome ?? 'YES').toUpperCase();
-        let currentPrice = resolveCurrentPrice(position);
-
-        if (currentPrice == null) {
-          try {
-            const market = await ctx.marketClient.getMarket(position.marketId);
-            currentPrice =
-              market.prices?.[outcome] ??
-              market.prices?.[outcome.toUpperCase()] ??
-              (Array.isArray(market.prices)
-                ? outcome === 'YES'
-                  ? market.prices[0]
-                  : market.prices[1]
-                : null) ??
-              null;
-          } catch {
-            currentPrice = null;
-          }
-        }
-
-        const executionPrice = position.executionPrice ?? null;
-        const positionSize = position.positionSize ?? 0;
-        const shares =
-          executionPrice && executionPrice > 0 ? positionSize / executionPrice : null;
-        const currentValue =
-          shares != null && currentPrice != null ? shares * currentPrice : null;
-        const costBasis = positionSize;
-        const unrealizedPnl =
-          currentValue != null ? currentValue - costBasis : null;
-
-        return {
-          market_id: position.marketId,
-          market_question: position.marketTitle,
-          outcome,
-          shares,
-          avg_price: executionPrice,
-          current_price: currentPrice,
-          cost_basis: costBasis,
-          current_value: currentValue,
-          unrealized_pnl: unrealizedPnl,
-          pnl_percent:
-            executionPrice && currentPrice != null
-              ? `${(((currentPrice - executionPrice) / executionPrice) * 100).toFixed(1)}%`
-              : null,
-        };
-      })
-    );
-
-    const totals = positionRows.reduce(
-      (acc, position) => {
-        acc.totalCost += position.cost_basis ?? 0;
-        if (position.current_value != null) {
-          acc.totalValue += position.current_value;
-        }
-        return acc;
-      },
-      { totalCost: 0, totalValue: 0 }
-    );
-
     const balances = await getBalances(ctx);
     const limiterState = ctx.limiter?.getState?.();
     const dailyLimit = ctx.config.wallet?.limits?.daily ?? 100;
@@ -740,21 +581,39 @@ async function getPortfolio(ctx: ToolExecutorContext): Promise<ToolResult> {
       limiterState != null
         ? Math.max(0, dailyLimit - limiterState.todaySpent - limiterState.reserved)
         : null;
+    const hasHyperliquid =
+      Boolean(ctx.config.hyperliquid?.enabled) ||
+      Boolean(ctx.config.hyperliquid?.accountAddress) ||
+      Boolean(ctx.config.hyperliquid?.privateKey) ||
+      Boolean(process.env.HYPERLIQUID_ACCOUNT_ADDRESS) ||
+      Boolean(process.env.HYPERLIQUID_PRIVATE_KEY);
+    let perpPositions: {
+      positions: Array<Record<string, unknown>>;
+      summary: Record<string, unknown>;
+    } | null = null;
+    let perpError: string | null = null;
+    if (hasHyperliquid) {
+      try {
+        perpPositions = await loadPerpPositions(ctx);
+      } catch (error) {
+        perpError = error instanceof Error ? error.message : 'Unknown error';
+      }
+    }
 
     return {
       success: true,
       data: {
         balances,
-        positions: positionRows,
+        positions: [],
         summary: {
-          total_positions: positionRows.length,
-          total_value: totals.totalValue,
-          total_cost: totals.totalCost,
-          unrealized_pnl: totals.totalValue - totals.totalCost,
           available_balance: balances.usdc ?? 0,
           remaining_daily_limit: remainingDaily,
-          positions_source: 'local',
+          positions_source: 'none',
+          perp_enabled: hasHyperliquid,
         },
+        perp_positions: perpPositions?.positions ?? [],
+        perp_summary: perpPositions?.summary ?? null,
+        perp_error: perpError,
       },
     };
   } catch (error) {
@@ -763,27 +622,93 @@ async function getPortfolio(ctx: ToolExecutorContext): Promise<ToolResult> {
   }
 }
 
-function resolveCurrentPrice(position: {
-  currentPrices?: Record<string, unknown> | number[] | null;
-  predictedOutcome?: string;
-}): number | null {
-  const currentPrices = position.currentPrices ?? undefined;
-  if (!currentPrices) return null;
-  const outcome = (position.predictedOutcome ?? 'YES').toUpperCase();
+async function loadPerpPositions(
+  ctx: ToolExecutorContext
+): Promise<{
+  positions: Array<{
+    symbol: string;
+    side: string;
+    size: number;
+    entry_price: number | null;
+    position_value: number | null;
+    unrealized_pnl: number | null;
+    return_on_equity: number | null;
+    liquidation_price: number | null;
+    margin_used: number | null;
+    leverage_type: string | null;
+    leverage: number | null;
+    max_leverage: number | null;
+  }>;
+  summary: {
+    account_value: number | null;
+    total_notional: number | null;
+    total_margin_used: number | null;
+    cross_account_value: number | null;
+    cross_total_notional: number | null;
+    cross_total_margin_used: number | null;
+    cross_maintenance_margin_used: number | null;
+    withdrawable: number | null;
+  };
+}> {
+  const client = new HyperliquidClient(ctx.config);
+  const state = (await client.getClearinghouseState()) as {
+    assetPositions?: Array<{ position?: Record<string, unknown> }>;
+    marginSummary?: Record<string, unknown>;
+    crossMarginSummary?: Record<string, unknown>;
+    withdrawable?: string | number;
+    crossMaintenanceMarginUsed?: string | number;
+  };
 
-  // Handle array format [yesPrice, noPrice]
-  if (Array.isArray(currentPrices)) {
-    const index = outcome === 'YES' ? 0 : 1;
-    const value = currentPrices[index];
-    return typeof value === 'number' ? value : null;
-  }
+  const toNumber = (value: unknown): number | null => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
 
-  // Handle record format { YES: price, NO: price }
-  const direct = currentPrices[outcome] ?? currentPrices[outcome.toLowerCase()];
-  if (typeof direct === 'number') {
-    return direct;
-  }
-  return null;
+  const positions = (state.assetPositions ?? [])
+    .map((entry) => entry?.position ?? {})
+    .map((position) => {
+      const size = toNumber((position as { szi?: unknown }).szi);
+      if (size == null || size === 0) return null;
+      const side = size > 0 ? 'long' : 'short';
+      const leverage = (position as { leverage?: { type?: string; value?: number | string } })
+        .leverage;
+      const leverageValue = toNumber(leverage?.value);
+      return {
+        symbol: String((position as { coin?: unknown }).coin ?? ''),
+        side,
+        size: Math.abs(size),
+        entry_price: toNumber((position as { entryPx?: unknown }).entryPx),
+        position_value: toNumber((position as { positionValue?: unknown }).positionValue),
+        unrealized_pnl: toNumber((position as { unrealizedPnl?: unknown }).unrealizedPnl),
+        return_on_equity: toNumber((position as { returnOnEquity?: unknown }).returnOnEquity),
+        liquidation_price: toNumber((position as { liquidationPx?: unknown }).liquidationPx),
+        margin_used: toNumber((position as { marginUsed?: unknown }).marginUsed),
+        leverage_type: leverage?.type ?? null,
+        leverage: leverageValue,
+        max_leverage: toNumber((position as { maxLeverage?: unknown }).maxLeverage),
+      };
+    })
+    .filter((position): position is NonNullable<typeof position> => Boolean(position));
+
+  const marginSummary = state.marginSummary ?? {};
+  const crossSummary = state.crossMarginSummary ?? {};
+  return {
+    positions,
+    summary: {
+      account_value: toNumber((marginSummary as { accountValue?: unknown }).accountValue),
+      total_notional: toNumber((marginSummary as { totalNtlPos?: unknown }).totalNtlPos),
+      total_margin_used: toNumber(
+        (marginSummary as { totalMarginUsed?: unknown }).totalMarginUsed
+      ),
+      cross_account_value: toNumber((crossSummary as { accountValue?: unknown }).accountValue),
+      cross_total_notional: toNumber((crossSummary as { totalNtlPos?: unknown }).totalNtlPos),
+      cross_total_margin_used: toNumber(
+        (crossSummary as { totalMarginUsed?: unknown }).totalMarginUsed
+      ),
+      cross_maintenance_margin_used: toNumber(state.crossMaintenanceMarginUsed),
+      withdrawable: toNumber(state.withdrawable),
+    },
+  };
 }
 
 async function getBalances(ctx: ToolExecutorContext): Promise<{
@@ -809,170 +734,6 @@ async function getBalances(ctx: ToolExecutorContext): Promise<{
     return { usdc: balances.usdc ?? 0, matic: balances.matic ?? 0, source: 'chain' };
   } catch {
     return { usdc: getCashBalance(), matic: 0, source: 'memory' };
-  }
-}
-
-function getPredictions(limit: number, status: string): ToolResult {
-  const fetchLimit = Math.max(limit, 50);
-  const predictions = listPredictions({ limit: fetchLimit });
-
-  const normalizedStatus = status.toLowerCase();
-  const filtered = predictions.filter((prediction) => {
-    const resolved = prediction.outcome != null;
-    const correct =
-      resolved &&
-      prediction.predictedOutcome != null &&
-      prediction.predictedOutcome.toUpperCase() === prediction.outcome?.toUpperCase();
-
-    switch (normalizedStatus) {
-      case 'pending':
-        return !resolved;
-      case 'resolved':
-        return resolved;
-      case 'won':
-        return Boolean(correct);
-      case 'lost':
-        return resolved && !correct;
-      case 'all':
-      default:
-        return true;
-    }
-  });
-
-  const sliced = filtered.slice(0, limit);
-  const resolved = sliced.filter((prediction) => prediction.outcome != null);
-  const wins = resolved.filter(
-    (prediction) =>
-      prediction.predictedOutcome != null &&
-      prediction.outcome != null &&
-      prediction.predictedOutcome.toUpperCase() === prediction.outcome.toUpperCase()
-  );
-  const losses = resolved.filter(
-    (prediction) =>
-      prediction.predictedOutcome != null &&
-      prediction.outcome != null &&
-      prediction.predictedOutcome.toUpperCase() !== prediction.outcome.toUpperCase()
-  );
-
-  const totalBet = sliced.reduce((sum, prediction) => {
-    return sum + (prediction.positionSize ?? 0);
-  }, 0);
-  const totalReturn = resolved.reduce((sum, prediction) => {
-    if (
-      prediction.positionSize &&
-      prediction.executionPrice &&
-      prediction.executionPrice > 0 &&
-      prediction.predictedOutcome &&
-      prediction.outcome &&
-      prediction.predictedOutcome.toUpperCase() === prediction.outcome.toUpperCase()
-    ) {
-      return sum + prediction.positionSize / prediction.executionPrice;
-    }
-    return sum;
-  }, 0);
-
-  return {
-    success: true,
-    data: {
-      predictions: sliced.map((prediction) => ({
-        id: prediction.id,
-        market: prediction.marketTitle,
-        outcome: prediction.predictedOutcome ?? null,
-        amount: prediction.positionSize ?? null,
-        entry_price: prediction.executionPrice ?? null,
-        reasoning: prediction.reasoning ?? null,
-        timestamp: prediction.createdAt,
-        resolved: prediction.outcome != null,
-        correct:
-          prediction.outcome != null &&
-          prediction.predictedOutcome != null &&
-          prediction.predictedOutcome.toUpperCase() === prediction.outcome.toUpperCase(),
-        resolution: prediction.outcome ?? null,
-      })),
-      stats: {
-        total: sliced.length,
-        pending: sliced.length - resolved.length,
-        resolved: resolved.length,
-        wins: wins.length,
-        losses: losses.length,
-        win_rate:
-          resolved.length > 0
-            ? `${((wins.length / resolved.length) * 100).toFixed(1)}%`
-            : 'N/A',
-        total_bet: totalBet,
-        total_return: totalReturn,
-        roi:
-          totalBet > 0 ? `${(((totalReturn - totalBet) / totalBet) * 100).toFixed(1)}%` : 'N/A',
-      },
-    },
-  };
-}
-
-async function getOrderBook(
-  ctx: ToolExecutorContext,
-  marketId: string,
-  depth: number
-): Promise<ToolResult> {
-  try {
-    const market = await ctx.marketClient.getMarket(marketId);
-    const yesPrice = market.prices?.YES ?? market.prices?.Yes ?? 0.5;
-    const noPrice = market.prices?.NO ?? market.prices?.No ?? 0.5;
-    return {
-      success: true,
-      data: {
-        market_id: marketId,
-        question: market.question,
-        yes: {
-          best_bid: yesPrice,
-          best_ask: yesPrice,
-          spread: 0,
-          bids: Array.from({ length: depth }, () => ({ price: yesPrice, size: 0 })),
-          asks: Array.from({ length: depth }, () => ({ price: yesPrice, size: 0 })),
-        },
-        no: {
-          best_bid: noPrice,
-          best_ask: noPrice,
-          spread: 0,
-          bids: Array.from({ length: depth }, () => ({ price: noPrice, size: 0 })),
-          asks: Array.from({ length: depth }, () => ({ price: noPrice, size: 0 })),
-        },
-        liquidity_warning: 'Order book depth is not available; values are indicative only.',
-      },
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return { success: false, error: message };
-  }
-}
-
-async function getPriceHistory(
-  ctx: ToolExecutorContext,
-  marketId: string,
-  interval: string,
-  limit: number
-): Promise<ToolResult> {
-  try {
-    const market = await ctx.marketClient.getMarket(marketId);
-    const series = [
-      {
-        timestamp: market.endDate?.toISOString() ?? new Date().toISOString(),
-        prices: market.prices,
-        interval,
-      },
-    ];
-    return {
-      success: true,
-      data: {
-        market_id: marketId,
-        interval,
-        limit,
-        series,
-        note: 'Price history is not available; returning latest snapshot only.',
-      },
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return { success: false, error: message };
   }
 }
 

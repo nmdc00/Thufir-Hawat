@@ -22,11 +22,11 @@ function toExecutorContext(ctx: ToolContext): ToolExecutorContext {
 }
 
 /**
- * Calibration stats tool - get prediction track record.
+ * Calibration stats tool - get trade track record.
  */
 export const calibrationStatsTool: ToolDefinition = {
   name: 'calibration_stats',
-  description: "Get the user's prediction calibration stats (accuracy, Brier score, track record).",
+  description: "Get the user's trade calibration stats (accuracy, track record).",
   category: 'memory',
   schema: z.object({
     domain: z.string().optional().describe('Filter by domain (e.g., "politics", "crypto")'),

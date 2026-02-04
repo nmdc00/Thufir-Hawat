@@ -50,7 +50,7 @@ export interface OrchestratorAssets {
   identity: AgentIdentity;
 }
 
-const OPPORTUNITY_SYSTEM_PROMPT = `You are Thufir, an expert prediction market analyst. Your job is to find trading opportunities by comparing market prices to your probability estimates.
+const OPPORTUNITY_SYSTEM_PROMPT = `You are Thufir, an expert perp market analyst. Your job is to find trading opportunities by comparing market prices to your probability estimates.
 
 For each market, you will:
 1. Analyze the question and current price

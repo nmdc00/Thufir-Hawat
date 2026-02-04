@@ -42,7 +42,7 @@ export class TwitterFetcher {
       queries.push(handles.join(' OR '));
     }
     if (queries.length === 0) {
-      queries.push('prediction market');
+      queries.push('perp market');
     }
 
     for (const query of queries) {

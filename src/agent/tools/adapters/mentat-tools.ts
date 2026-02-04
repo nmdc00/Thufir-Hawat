@@ -25,7 +25,7 @@ function toExecutorContext(ctx: ToolContext): ToolExecutorContext {
 export const mentatStoreAssumptionTool: ToolDefinition = {
   name: 'mentat_store_assumption',
   description:
-    'Store an assumption for mentat fragility analysis. Assumptions underpin predictions and can be stress-tested.',
+    'Store an assumption for mentat fragility analysis. Assumptions underpin positions and can be stress-tested.',
   category: 'memory',
   schema: z.object({
     statement: z.string().describe('The assumption statement'),
@@ -51,7 +51,7 @@ export const mentatStoreAssumptionTool: ToolDefinition = {
 export const mentatStoreFragilityTool: ToolDefinition = {
   name: 'mentat_store_fragility',
   description:
-    'Store a fragility card identifying tail-risk exposure. Tracks structural vulnerabilities, not event predictions.',
+    'Store a fragility card identifying tail-risk exposure. Tracks structural vulnerabilities, not event forecasts.',
   category: 'memory',
   schema: z.object({
     system: z.string().describe('The system being analyzed'),

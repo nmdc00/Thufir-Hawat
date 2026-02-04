@@ -123,6 +123,23 @@ const ConfigSchema = z.object({
           maxDomainPercent: z.number().default(40),
         })
         .default({}),
+      perps: z
+        .object({
+          maxLeverage: z.number().optional(),
+          maxOrderNotionalUsd: z.number().optional(),
+          maxTotalNotionalUsd: z.number().optional(),
+          minLiquidationDistanceBps: z.number().optional(),
+          correlationCaps: z
+            .array(
+              z.object({
+                name: z.string(),
+                symbols: z.array(z.string()),
+                maxNotionalUsd: z.number(),
+              })
+            )
+            .default([]),
+        })
+        .default({}),
     })
     .default({}),
   hyperliquid: z

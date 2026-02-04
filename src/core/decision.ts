@@ -219,7 +219,7 @@ function suggestPositionSize(
   return { suggested: Math.round(suggested * 100) / 100, reasoning };
 }
 
-export const EXECUTOR_PROMPT = `You are Thufir, an autonomous prediction market trader.
+export const EXECUTOR_PROMPT = `You are Thufir, an autonomous perp market trader.
 
 Your key principles:
 1. Be CALIBRATED - adjust confidence based on your historical accuracy

@@ -19,7 +19,7 @@ import { DEFAULT_CRITIC_CONFIG } from './types.js';
 /**
  * System prompt for the critic.
  */
-const CRITIC_SYSTEM_PROMPT = `You are a critical reviewer for a mentat-style prediction market analyst.
+const CRITIC_SYSTEM_PROMPT = `You are a critical reviewer for a mentat-style perp market analyst.
 
 Your job is to identify issues in the agent's output before it's delivered to the user.
 
