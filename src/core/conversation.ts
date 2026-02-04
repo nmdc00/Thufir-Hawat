@@ -60,6 +60,7 @@ const SYSTEM_PROMPT_BASE = `## Operating Rules
 - Never say you lack wallet access without first using get_wallet_info and/or get_portfolio
 - Provide probability estimates when asked about directional outcomes
 - Reference relevant perp markets or instruments when discussing events
+- If tool outputs are JSON, interpret them and respond with a concise narrative summary
 - Be conversational, not robotic - use markdown when helpful`;
 
 
@@ -97,6 +98,10 @@ function buildUserContext(userId: string, _config: ThufirConfig): string {
     }
     if (profile.riskTolerance) {
       lines.push(`Risk tolerance: ${profile.riskTolerance}`);
+    }
+    const probMode = profile.preferences?.probability_mode;
+    if (typeof probMode === 'string' && probMode) {
+      lines.push(`Probability mode: ${probMode}`);
     }
     lines.push('');
   }

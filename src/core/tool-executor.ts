@@ -179,11 +179,17 @@ export async function executeToolCall(
       case 'perp_analyze': {
         const symbol = String(toolInput.symbol ?? '').trim();
         const horizon = String(toolInput.horizon ?? '').trim();
+        const probabilityMode = String(toolInput.probability_mode ?? '').trim();
         if (!symbol) {
           return { success: false, error: 'Missing symbol' };
         }
         try {
-          const analysis = await analyzePerpMarket(ctx, symbol, horizon || undefined);
+          const analysis = await analyzePerpMarket(
+            ctx,
+            symbol,
+            horizon || undefined,
+            probabilityMode || undefined
+          );
           return { success: true, data: analysis };
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
@@ -193,8 +199,15 @@ export async function executeToolCall(
 
       case 'position_analysis': {
         const minBufferPct = Number(toolInput.min_liq_buffer_pct ?? 10);
+        const maxConcentrationPct = Number(toolInput.max_concentration_pct ?? 40);
+        const leverageWarning = Number(toolInput.leverage_warning ?? 5);
         try {
-          const analysis = await analyzePositions(ctx, Number.isFinite(minBufferPct) ? minBufferPct : 10);
+          const analysis = await analyzePositions(
+            ctx,
+            Number.isFinite(minBufferPct) ? minBufferPct : 12,
+            Number.isFinite(maxConcentrationPct) ? maxConcentrationPct : 40,
+            Number.isFinite(leverageWarning) ? leverageWarning : 5
+          );
           return { success: true, data: analysis };
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
@@ -787,7 +800,8 @@ function clamp(value: number, min: number, max: number): number {
 async function analyzePerpMarket(
   ctx: ToolExecutorContext,
   symbol: string,
-  horizon?: string
+  horizon?: string,
+  probabilityMode?: string
 ): Promise<Record<string, unknown>> {
   const market = await ctx.marketClient.getMarket(symbol);
   const baseSymbol = market.symbol ?? market.id;
@@ -813,8 +827,15 @@ async function analyzePerpMarket(
   const avgConfidence = signals.length
     ? signals.reduce((acc, s) => acc + (s.confidence ?? 0), 0) / signals.length
     : 0;
+  const mode = probabilityMode?.toLowerCase() ?? 'balanced';
+  const [capLow, capHigh] =
+    mode === 'conservative'
+      ? [0.35, 0.65]
+      : mode === 'aggressive'
+        ? [0.1, 0.9]
+        : [0.2, 0.8];
   const probUp =
-    signals.length === 0 ? 0.5 : clamp(0.5 + biasScore * 0.15, 0.2, 0.8);
+    signals.length === 0 ? 0.5 : clamp(0.5 + biasScore * 0.15, capLow, capHigh);
   const direction =
     probUp > 0.55 ? 'up' : probUp < 0.45 ? 'down' : 'neutral';
 
@@ -834,6 +855,7 @@ async function analyzePerpMarket(
     horizon: horizon ?? 'hours',
     mark_price: market.markPrice ?? null,
     max_leverage: market.metadata?.maxLeverage ?? null,
+    probability_mode: mode,
     direction,
     prob_up: Number(probUp.toFixed(2)),
     confidence: Number(avgConfidence.toFixed(2)),
@@ -849,7 +871,9 @@ async function analyzePerpMarket(
 
 async function analyzePositions(
   ctx: ToolExecutorContext,
-  minLiqBufferPct: number
+  minLiqBufferPct: number,
+  maxConcentrationPct: number,
+  leverageWarning: number
 ): Promise<Record<string, unknown>> {
   const data = await loadPerpPositions(ctx);
   const positions = data.positions ?? [];
@@ -873,12 +897,15 @@ async function analyzePositions(
       const notional =
         pos.position_value ??
         (markPrice != null ? Math.abs(pos.size) * markPrice : null);
+      const leverageFlag =
+        typeof pos.leverage === 'number' && pos.leverage > leverageWarning;
       return {
         ...pos,
         mark_price: markPrice,
         notional,
         liq_buffer_pct: bufferPct,
         liq_risk: bufferPct != null && bufferPct < minLiqBufferPct,
+        leverage_warning: leverageFlag,
       };
     })
   );
@@ -891,9 +918,22 @@ async function analyzePositions(
     }))
     .sort((a, b) => b.share - a.share);
 
-  const warnings = enriched
-    .filter((p) => p.liq_risk)
-    .map((p) => `${p.symbol}: liquidation buffer ${p.liq_buffer_pct?.toFixed(1)}%`);
+  const warnings: string[] = [];
+  for (const p of enriched) {
+    if (p.liq_risk) {
+      warnings.push(`${p.symbol}: liquidation buffer ${p.liq_buffer_pct?.toFixed(1)}%`);
+    }
+    if (p.leverage_warning) {
+      warnings.push(`${p.symbol}: leverage ${p.leverage}x exceeds ${leverageWarning}x`);
+    }
+  }
+  if ((concentration[0]?.share ?? 0) * 100 > maxConcentrationPct) {
+    warnings.push(
+      `Concentration risk: ${concentration[0]!.symbol} at ${(concentration[0]!.share * 100).toFixed(
+        1
+      )}%`
+    );
+  }
 
   return {
     summary: {
@@ -901,6 +941,8 @@ async function analyzePositions(
       total_notional: totalNotional,
       max_concentration: concentration[0]?.share ?? 0,
       min_liq_buffer_pct: minLiqBufferPct,
+      max_concentration_pct: maxConcentrationPct,
+      leverage_warning: leverageWarning,
     },
     concentration,
     warnings,
