@@ -70,6 +70,59 @@ export const THUFIR_TOOLS: Tool[] = [
     },
   },
   {
+    name: 'system_exec',
+    description:
+      'Execute an allowed local command with explicit arguments. Controlled by agent.systemTools config.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: 'Command name (must be in allowlist, e.g., "node", "pnpm", "qmd")',
+        },
+        args: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Command arguments as a string array',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Optional working directory',
+        },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'system_install',
+    description:
+      'Install packages with an allowed package manager. Controlled by agent.systemTools config.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        manager: {
+          type: 'string',
+          enum: ['pnpm', 'npm', 'bun'],
+          description: 'Package manager to use',
+        },
+        packages: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Package specs to install',
+        },
+        global: {
+          type: 'boolean',
+          description: 'Whether to install globally (must be allowed in config)',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Optional working directory',
+        },
+      },
+      required: ['manager', 'packages'],
+    },
+  },
+  {
     name: 'get_wallet_info',
     description:
       'Get wallet address, chain, and token for funding. Use when asking where to deposit funds.',
@@ -570,28 +623,6 @@ export const THUFIR_TOOLS: Tool[] = [
       type: 'object',
       properties: {
         symbol: { type: 'string', description: 'Symbol in exchange format (e.g., BTC/USDT)' },
-      },
-      required: ['symbol'],
-    },
-  },
-  {
-    name: 'signal_hyperliquid_funding_oi_skew',
-    description: 'Compute Hyperliquid funding/open-interest skew signals for a symbol.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        symbol: { type: 'string', description: 'Hyperliquid symbol (e.g., BTC or BTC/USDT)' },
-      },
-      required: ['symbol'],
-    },
-  },
-  {
-    name: 'signal_hyperliquid_orderflow_imbalance',
-    description: 'Compute Hyperliquid orderflow imbalance signals for a symbol.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        symbol: { type: 'string', description: 'Hyperliquid symbol (e.g., BTC or BTC/USDT)' },
       },
       required: ['symbol'],
     },

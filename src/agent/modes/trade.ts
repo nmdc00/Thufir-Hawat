@@ -42,6 +42,8 @@ const TRADE_TOOLS = [
   'current_time',
   'get_wallet_info',
   'calculator',
+  'system_exec',
+  'system_install',
 
   // Trading tools
   'get_portfolio',

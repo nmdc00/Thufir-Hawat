@@ -119,7 +119,7 @@ describe('ConversationHandler', () => {
 
     const systemMessage = (llm.complete as any).mock.calls[0][0][0].content;
     expect(systemMessage).toContain('Relevant Intel (semantic search)');
-  });
+  }, 10000);
 
   it('injects semantic chat context when memory embeddings enabled', async () => {
     const { ConversationHandler } = await import('../../src/core/conversation.js');

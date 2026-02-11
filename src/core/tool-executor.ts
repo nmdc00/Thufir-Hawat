@@ -26,10 +26,11 @@ export interface ToolSpendingLimiter {
 import { getCashBalance } from '../memory/portfolio.js';
 import { getWalletBalances } from '../execution/wallet/balances.js';
 import { loadWallet } from '../execution/wallet/manager.js';
+import { loadKeystore } from '../execution/wallet/keystore.js';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import { isIP } from 'node:net';
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -37,6 +38,17 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 const execAsync = promisify(exec);
+
+type InstallManager = 'npm' | 'pnpm' | 'bun';
+
+interface SystemToolPolicy {
+  enabled: boolean;
+  allowedCommands: Set<string>;
+  allowedManagers: Set<InstallManager>;
+  allowGlobalInstall: boolean;
+  timeoutMs: number;
+  maxOutputChars: number;
+}
 
 export interface ToolExecutorContext {
   config: ThufirConfig;
@@ -48,6 +60,120 @@ export interface ToolExecutorContext {
 export type ToolResult =
   | { success: true; data: unknown }
   | { success: false; error: string };
+
+function getSystemToolPolicy(config: ThufirConfig): SystemToolPolicy {
+  const settings = config.agent?.systemTools;
+  const allowedCommands = Array.isArray(settings?.allowedCommands)
+    ? settings.allowedCommands
+    : ['node', 'npm', 'pnpm', 'bun', 'qmd'];
+  const allowedManagersRaw = Array.isArray(settings?.allowedManagers)
+    ? settings.allowedManagers
+    : ['pnpm', 'npm', 'bun'];
+  const allowedManagers = new Set<InstallManager>(
+    allowedManagersRaw.filter((manager): manager is InstallManager =>
+      manager === 'npm' || manager === 'pnpm' || manager === 'bun'
+    )
+  );
+
+  return {
+    enabled: settings?.enabled ?? false,
+    allowedCommands: new Set(
+      allowedCommands
+        .map((command) => command.trim())
+        .filter((command) => command.length > 0)
+    ),
+    allowedManagers,
+    allowGlobalInstall: settings?.allowGlobalInstall ?? false,
+    timeoutMs: Math.min(Math.max(settings?.timeoutMs ?? 120000, 1000), 10 * 60 * 1000),
+    maxOutputChars: Math.min(Math.max(settings?.maxOutputChars ?? 12000, 1000), 200000),
+  };
+}
+
+function isSafeCommandName(command: string): boolean {
+  if (!command) return false;
+  if (command.includes('/') || command.includes('\\')) return false;
+  return /^[a-zA-Z0-9._-]+$/.test(command);
+}
+
+function isSafePackageSpec(spec: string): boolean {
+  if (!spec) return false;
+  if (spec.length > 150) return false;
+  return /^[a-zA-Z0-9@._/:+\-#~]+$/.test(spec);
+}
+
+async function runCommand(
+  command: string,
+  args: string[],
+  options: {
+    timeoutMs: number;
+    maxOutputChars: number;
+    cwd?: string;
+  }
+): Promise<{
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      shell: false,
+      cwd: options.cwd,
+      env: process.env,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    let timedOut = false;
+
+    const trimToLimit = (text: string): string => {
+      if (text.length <= options.maxOutputChars) return text;
+      return text.slice(text.length - options.maxOutputChars);
+    };
+
+    const finish = (exitCode: number) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode,
+        stdout: trimToLimit(stdout),
+        stderr: trimToLimit(stderr),
+        timedOut,
+      });
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 1500).unref();
+    }, options.timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > options.maxOutputChars * 2) {
+        stdout = stdout.slice(stdout.length - options.maxOutputChars * 2);
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > options.maxOutputChars * 2) {
+        stderr = stderr.slice(stderr.length - options.maxOutputChars * 2);
+      }
+    });
+
+    child.on('error', (error) => {
+      stderr += error.message;
+      finish(1);
+    });
+
+    child.on('close', (code) => {
+      finish(code ?? 0);
+    });
+  });
+}
 
 export async function executeToolCall(
   toolName: string,
@@ -86,7 +212,8 @@ export async function executeToolCall(
         const symbol = String(toolInput.symbol ?? '');
         const side = String(toolInput.side ?? '').toLowerCase();
         const size = Number(toolInput.size ?? 0);
-        const orderType = String(toolInput.order_type ?? 'market').toLowerCase();
+        const orderTypeRaw = String(toolInput.order_type ?? 'market').toLowerCase();
+        const orderType: 'market' | 'limit' = orderTypeRaw === 'limit' ? 'limit' : 'market';
         const price = toolInput.price !== undefined ? Number(toolInput.price) : undefined;
         const leverage = toolInput.leverage !== undefined ? Number(toolInput.leverage) : undefined;
         const reduceOnly = Boolean(toolInput.reduce_only ?? false);
@@ -114,12 +241,12 @@ export async function executeToolCall(
         if (!limitCheck.allowed) {
           return { success: false, error: limitCheck.reason ?? 'limit exceeded' };
         }
-        const decision = {
+        const decision: TradeDecision = {
           action: side as 'buy' | 'sell',
           symbol,
           side: side as 'buy' | 'sell',
           size,
-          orderType: orderType === 'limit' ? 'limit' : 'market',
+          orderType,
           price,
           leverage,
           reduceOnly,
@@ -301,32 +428,6 @@ export async function executeToolCall(
         return { success: true, data: signal };
       }
 
-      case 'signal_hyperliquid_funding_oi_skew': {
-        const symbol = String(toolInput.symbol ?? '');
-        if (!symbol) {
-          return { success: false, error: 'Missing symbol' };
-        }
-        const { signalHyperliquidFundingOISkew } = await import('../discovery/signals.js');
-        const signal = await signalHyperliquidFundingOISkew(ctx.config, symbol);
-        if (!signal) {
-          return { success: false, error: 'Insufficient data for signal' };
-        }
-        return { success: true, data: signal };
-      }
-
-      case 'signal_hyperliquid_orderflow_imbalance': {
-        const symbol = String(toolInput.symbol ?? '');
-        if (!symbol) {
-          return { success: false, error: 'Missing symbol' };
-        }
-        const { signalHyperliquidOrderflowImbalance } = await import('../discovery/signals.js');
-        const signal = await signalHyperliquidOrderflowImbalance(ctx.config, symbol);
-        if (!signal) {
-          return { success: false, error: 'Insufficient data for signal' };
-        }
-        return { success: true, data: signal };
-      }
-
       case 'discovery_run': {
         const { runDiscovery } = await import('../discovery/engine.js');
         const result = await runDiscovery(ctx.config);
@@ -373,6 +474,139 @@ export async function executeToolCall(
             formatted,
             timezone,
             day_of_week: now.toLocaleDateString('en-US', { weekday: 'long' }),
+          },
+        };
+      }
+
+      case 'system_exec': {
+        const policy = getSystemToolPolicy(ctx.config);
+        if (!policy.enabled) {
+          return { success: false, error: 'System tools are disabled in config (agent.systemTools.enabled=false)' };
+        }
+
+        const command = String(toolInput.command ?? '').trim();
+        if (!isSafeCommandName(command)) {
+          return { success: false, error: 'Invalid command' };
+        }
+        if (!policy.allowedCommands.has(command)) {
+          return { success: false, error: `Command not allowed: ${command}` };
+        }
+
+        const argsInput = Array.isArray(toolInput.args) ? toolInput.args : [];
+        const args = argsInput.map((arg) => String(arg)).map((arg) => arg.trim());
+        if (args.length > 50) {
+          return { success: false, error: 'Too many arguments' };
+        }
+        for (const arg of args) {
+          if (arg.length > 1000 || /[\r\n]/.test(arg)) {
+            return { success: false, error: 'Invalid argument content' };
+          }
+        }
+
+        const cwdRaw = typeof toolInput.cwd === 'string' ? toolInput.cwd.trim() : '';
+        const cwd = cwdRaw.length > 0 ? cwdRaw : undefined;
+        const run = await runCommand(command, args, {
+          timeoutMs: policy.timeoutMs,
+          maxOutputChars: policy.maxOutputChars,
+          cwd,
+        });
+        if (run.exitCode !== 0) {
+          const error = [
+            `Command failed (exit ${run.exitCode})`,
+            run.timedOut ? 'Timed out' : '',
+            run.stderr,
+          ]
+            .filter(Boolean)
+            .join(': ');
+          return { success: false, error };
+        }
+        return {
+          success: true,
+          data: {
+            command,
+            args,
+            stdout: run.stdout,
+            stderr: run.stderr,
+            exitCode: run.exitCode,
+            timedOut: run.timedOut,
+          },
+        };
+      }
+
+      case 'system_install': {
+        const policy = getSystemToolPolicy(ctx.config);
+        if (!policy.enabled) {
+          return { success: false, error: 'System tools are disabled in config (agent.systemTools.enabled=false)' };
+        }
+
+        const manager = String(toolInput.manager ?? 'pnpm').trim().toLowerCase() as InstallManager;
+        if (!policy.allowedManagers.has(manager)) {
+          return { success: false, error: `Package manager not allowed: ${manager}` };
+        }
+
+        const isGlobal = Boolean(toolInput.global ?? false);
+        if (isGlobal && !policy.allowGlobalInstall) {
+          return { success: false, error: 'Global installs are disabled (agent.systemTools.allowGlobalInstall=false)' };
+        }
+
+        const packages = Array.isArray(toolInput.packages)
+          ? toolInput.packages.map((entry) => String(entry).trim()).filter(Boolean)
+          : [];
+        if (packages.length === 0) {
+          return { success: false, error: 'Missing packages' };
+        }
+        if (packages.length > 20) {
+          return { success: false, error: 'Too many packages' };
+        }
+        if (!packages.every(isSafePackageSpec)) {
+          return { success: false, error: 'Package spec contains invalid characters' };
+        }
+
+        let args: string[];
+        switch (manager) {
+          case 'pnpm':
+            args = ['add', ...(isGlobal ? ['-g'] : []), ...packages];
+            break;
+          case 'npm':
+            args = ['install', ...(isGlobal ? ['-g'] : []), ...packages];
+            break;
+          case 'bun':
+            args = ['add', ...(isGlobal ? ['-g'] : []), ...packages];
+            break;
+          default:
+            return { success: false, error: `Unsupported manager: ${manager}` };
+        }
+
+        const cwdRaw = typeof toolInput.cwd === 'string' ? toolInput.cwd.trim() : '';
+        const cwd = cwdRaw.length > 0 ? cwdRaw : undefined;
+        const run = await runCommand(manager, args, {
+          timeoutMs: policy.timeoutMs,
+          maxOutputChars: policy.maxOutputChars,
+          cwd,
+        });
+
+        if (run.exitCode !== 0) {
+          const error = [
+            `Install failed (exit ${run.exitCode})`,
+            run.timedOut ? 'Timed out' : '',
+            run.stderr,
+          ]
+            .filter(Boolean)
+            .join(': ');
+          return { success: false, error };
+        }
+
+        return {
+          success: true,
+          data: {
+            manager,
+            packages,
+            global: isGlobal,
+            args,
+            stdout: run.stdout,
+            stderr: run.stderr,
+            exitCode: run.exitCode,
+            timedOut: run.timedOut,
           },
         };
       }
@@ -432,9 +666,17 @@ export async function executeToolCall(
           return braveResult;
         }
 
+        const ddgResult = await searchWebViaDuckDuckGo(query, limit);
+        if (ddgResult.success) {
+          if (ctx.config.qmd?.enabled && ctx.config.qmd?.autoIndexWebSearch) {
+            autoIndexWebSearchResults(query, ddgResult.data, ctx).catch(() => {});
+          }
+          return ddgResult;
+        }
+
         return {
           success: false,
-          error: `Web search failed: SerpAPI: ${serpResult.error}. Brave: ${braveResult.error}`,
+          error: `Web search failed: SerpAPI: ${serpResult.error}. Brave: ${braveResult.error}. DuckDuckGo: ${ddgResult.error}`,
         };
       }
 
@@ -1255,6 +1497,103 @@ async function searchWebViaBrave(
     }));
 
     return { success: true, data: { query, provider: 'brave', results } };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+type DuckDuckGoTopic = {
+  Text?: string;
+  FirstURL?: string;
+  Result?: string;
+  Name?: string;
+  Topics?: DuckDuckGoTopic[];
+};
+
+function flattenDuckDuckGoTopics(topics: DuckDuckGoTopic[]): DuckDuckGoTopic[] {
+  const result: DuckDuckGoTopic[] = [];
+  for (const topic of topics) {
+    if (Array.isArray(topic.Topics) && topic.Topics.length > 0) {
+      result.push(...flattenDuckDuckGoTopics(topic.Topics));
+      continue;
+    }
+    result.push(topic);
+  }
+  return result;
+}
+
+async function searchWebViaDuckDuckGo(
+  query: string,
+  limit: number
+): Promise<ToolResult> {
+  try {
+    const url = new URL('https://api.duckduckgo.com/');
+    url.searchParams.set('q', query);
+    url.searchParams.set('format', 'json');
+    url.searchParams.set('no_redirect', '1');
+    url.searchParams.set('no_html', '1');
+    url.searchParams.set('skip_disambig', '1');
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+    if (!response.ok) {
+      return { success: false, error: `DuckDuckGo: ${response.status}` };
+    }
+
+    const data = (await response.json()) as {
+      AbstractText?: string;
+      AbstractURL?: string;
+      Heading?: string;
+      RelatedTopics?: DuckDuckGoTopic[];
+    };
+
+    const results: Array<{
+      title: string;
+      url: string;
+      snippet: string;
+      date: null;
+      source: string;
+    }> = [];
+
+    if (data.AbstractURL && data.AbstractText) {
+      results.push({
+        title: data.Heading?.trim() || query,
+        url: data.AbstractURL,
+        snippet: data.AbstractText,
+        date: null,
+        source: 'duckduckgo',
+      });
+    }
+
+    const flat = flattenDuckDuckGoTopics(data.RelatedTopics ?? []);
+    for (const topic of flat) {
+      if (results.length >= limit) {
+        break;
+      }
+      const text = (topic.Text ?? '').trim();
+      const link = (topic.FirstURL ?? '').trim();
+      if (!text || !link) {
+        continue;
+      }
+      const title = text.split(' - ')[0]?.trim() || text.slice(0, 80);
+      results.push({
+        title,
+        url: link,
+        snippet: text,
+        date: null,
+        source: 'duckduckgo',
+      });
+    }
+
+    const trimmed = results.slice(0, limit);
+    if (trimmed.length === 0) {
+      return { success: false, error: 'DuckDuckGo returned no results' };
+    }
+    return { success: true, data: { query, provider: 'duckduckgo', results: trimmed } };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: message };

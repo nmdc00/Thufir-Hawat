@@ -316,7 +316,7 @@ export async function decideTrade(
   remainingDaily: number,
   logger?: Logger
 ): Promise<Decision> {
-  return withExecutionContextIfMissing(
+  return withExecutionContextIfMissing<Decision>(
     { mode: 'FULL_AGENT', critical: true, reason: 'trade_decision', source: 'decision' },
     async () => {
       const fingerprint = buildDecisionFingerprint(market, remainingDaily);
@@ -326,7 +326,8 @@ export async function decideTrade(
         fingerprint,
         maxAgeMs: 6 * 60 * 60 * 1000,
       });
-      const cachedDecision = cached?.payload && (cached.payload as { decision?: Decision }).decision;
+      const cachedPayload = cached?.payload as { decision?: Decision } | null | undefined;
+      const cachedDecision = cachedPayload?.decision;
       if (cachedDecision) {
         return cachedDecision;
       }

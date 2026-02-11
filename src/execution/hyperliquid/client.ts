@@ -28,7 +28,7 @@ export class HyperliquidClient {
 
   constructor(private config: ThufirConfig) {
     const baseUrl = config.hyperliquid?.baseUrl ?? 'https://api.hyperliquid.xyz';
-    this.transport = new HttpTransport({ baseUrl });
+    this.transport = new HttpTransport({ apiUrl: baseUrl });
     this.info = new InfoClient({ transport: this.transport });
   }
 

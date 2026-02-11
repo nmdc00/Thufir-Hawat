@@ -36,6 +36,10 @@ function mergeConfig(
   const mergedAgent = {
     ...base.agent,
     ...(agentOverride ?? {}),
+    systemTools: {
+      ...base.agent.systemTools,
+      ...(agentOverride?.systemTools ?? {}),
+    },
     trivial: {
       ...base.agent.trivial,
       ...(agentOverride?.trivial ?? {}),

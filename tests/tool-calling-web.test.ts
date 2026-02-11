@@ -82,6 +82,40 @@ describe('web tools', () => {
     }
   });
 
+  it('falls back to DuckDuckGo when SerpAPI and Brave are unavailable', async () => {
+    delete process.env.SERPAPI_KEY;
+    delete process.env.BRAVE_API_KEY;
+
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('api.duckduckgo.com')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            RelatedTopics: [
+              { Text: 'Duck Topic - summary', FirstURL: 'https://duck.example/topic' },
+            ],
+          }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 500 });
+    });
+    // @ts-expect-error test stub
+    globalThis.fetch = fetchMock;
+
+    const result = await executeToolCall(
+      'web_search',
+      { query: 'duck query', limit: 1 },
+      { config: {} as any, marketClient: {} as any }
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as { provider: string; results: Array<{ url: string }> };
+      expect(data.provider).toBe('duckduckgo');
+      expect(data.results[0].url).toBe('https://duck.example/topic');
+    }
+  });
+
   it('blocks unsafe URLs for web_fetch', async () => {
     const result = await executeToolCall(
       'web_fetch',

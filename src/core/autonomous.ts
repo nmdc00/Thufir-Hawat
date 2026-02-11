@@ -19,6 +19,7 @@ import { recordPerpTrade } from '../memory/perp_trades.js';
 import { checkPerpRiskLimits } from '../execution/perp-risk.js';
 import { getDailyPnLRollup } from './daily_pnl.js';
 import { openDatabase } from '../memory/db.js';
+import { listOpenPositionsFromTrades } from '../memory/trades.js';
 import { Logger } from './logger.js';
 
 export interface AutonomousConfig {
@@ -50,7 +51,6 @@ export interface AutonomousEvents {
 
 export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   private config: AutonomousConfig;
-  private llm: LlmClient;
   private marketClient: MarketClient;
   private executor: ExecutionAdapter;
   private limiter: DbSpendingLimitEnforcer;
@@ -64,7 +64,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   private reportTimer: NodeJS.Timeout | null = null;
 
   constructor(
-    llm: LlmClient,
+    _llm: LlmClient,
     marketClient: MarketClient,
     executor: ExecutionAdapter,
     limiter: DbSpendingLimitEnforcer,
@@ -72,7 +72,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     logger?: Logger
   ) {
     super();
-    this.llm = llm;
     this.marketClient = marketClient;
     this.executor = executor;
     this.limiter = limiter;
@@ -419,7 +418,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   }
 
   private calculateUnrealizedPnl(): number {
-    const positions = listOpenPositions(200);
+    const positions = listOpenPositionsFromTrades(200);
     let total = 0;
 
     for (const position of positions) {
@@ -475,18 +474,5 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON autonomous_trades(timestamp);
       CREATE INDEX IF NOT EXISTS idx_trades_outcome ON autonomous_trades(outcome);
     `);
-  }
-}
-
-function mapConfidence(confidence?: string): number | null {
-  switch ((confidence ?? '').toLowerCase()) {
-    case 'low':
-      return 0.3;
-    case 'medium':
-      return 0.6;
-    case 'high':
-      return 0.85;
-    default:
-      return null;
   }
 }

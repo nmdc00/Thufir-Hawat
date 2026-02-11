@@ -182,25 +182,34 @@ export async function signalHyperliquidOrderflowImbalance(
 
   const client = new HyperliquidClient(config);
   const trades = await client.getRecentTrades(coin);
-  if (trades.length < 10) return null;
+  if (trades.length === 0) return null;
 
   let buyNotional = 0;
   let sellNotional = 0;
+  let tradeCount = 0;
   for (const trade of trades) {
     const px = toNumber(trade.px);
     const sz = toNumber(trade.sz);
     const notional = px * sz;
-    if (trade.side === 'B') {
+    if (!Number.isFinite(notional) || notional <= 0) {
+      continue;
+    }
+    const side = String(trade.side ?? '').toUpperCase();
+    if (side === 'B' || side === 'BUY') {
       buyNotional += notional;
-    } else {
+      tradeCount += 1;
+    } else if (side === 'A' || side === 'S' || side === 'SELL') {
       sellNotional += notional;
+      tradeCount += 1;
     }
   }
+  if (tradeCount === 0) return null;
   const total = buyNotional + sellNotional;
   if (total <= 0) return null;
   const imbalance = (buyNotional - sellNotional) / total;
   const directionalBias = imbalance > 0.1 ? 'up' : imbalance < -0.1 ? 'down' : 'neutral';
-  const confidence = Math.min(1, Math.abs(imbalance) * 2);
+  const sampleStrength = Math.min(1, tradeCount / 12);
+  const confidence = Math.min(1, Math.abs(imbalance) * 2 * sampleStrength);
 
   return {
     id: `orderflow_${coin}_${Date.now()}`,
@@ -213,7 +222,7 @@ export async function signalHyperliquidOrderflowImbalance(
       buyNotional,
       sellNotional,
       imbalance,
-      tradeCount: trades.length,
+      tradeCount,
     },
   };
 }

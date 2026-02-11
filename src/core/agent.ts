@@ -4,7 +4,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   createAgenticExecutorClient,
-  createExecutorClient,
   createLlmClient,
   createTrivialTaskClient,
   clearIdentityCache,
@@ -32,7 +31,6 @@ import { withExecutionContext } from './llm_infra.js';
 export class ThufirAgent {
   private llm: ReturnType<typeof createLlmClient>;
   private infoLlm?: LlmClient;
-  private executorLlm: ReturnType<typeof createExecutorClient>;
   private autonomyLlm: ReturnType<typeof createLlmClient>;
   private marketClient: MarketClient;
   private executor: ExecutionAdapter;
@@ -51,7 +49,6 @@ export class ThufirAgent {
     bootstrapWorkspaceIdentity(this.config);
     this.llm = createLlmClient(this.config);
     this.infoLlm = createTrivialTaskClient(this.config) ?? undefined;
-    this.executorLlm = createExecutorClient(this.config);
     this.marketClient = createMarketClient(this.config);
     this.executor = this.createExecutor(config);
 
@@ -120,10 +117,6 @@ export class ThufirAgent {
     this.autonomous.on('daily-report', (_report) => {
       this.logger.info('Daily report generated');
       // Reports will be pushed to channels by the gateway
-    });
-
-    this.autonomous.on('trade-executed', (trade) => {
-      this.logger.info(`Auto-trade executed: ${trade.marketTitle} ${trade.direction} $${trade.amount}`);
     });
 
     // Legacy scan loop (for backwards compatibility when fullAuto is off)

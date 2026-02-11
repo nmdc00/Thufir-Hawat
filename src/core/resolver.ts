@@ -8,7 +8,7 @@ export async function resolveOutcomes(
   limit = 25
 ): Promise<number> {
   let updated = 0;
-  const marketClient = createMarketClient(config);
+  const marketClient = createMarketClient(_config);
   if (!marketClient.isAvailable()) {
     return 0;
   }

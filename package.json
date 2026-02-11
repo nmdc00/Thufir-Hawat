@@ -15,9 +15,9 @@
     "gateway": "tsx src/gateway/index.ts",
     "gateway:watch": "tsx watch src/gateway/index.ts",
     "test": "vitest",
-    "test:coverage": "vitest --coverage",
+    "test:coverage": "vitest run --coverage",
     "install:vendor-deps": "PNPM_STORE_DIR=/home/nmdc/.local/share/pnpm/store/v10 pnpm install --store-dir $PNPM_STORE_DIR && PNPM_STORE_DIR=/home/nmdc/.local/share/pnpm/store/v10 pnpm add -D tslog json5 chalk @aws-sdk/client-bedrock @sinclair/typebox --store-dir $PNPM_STORE_DIR",
-    "lint": "eslint src/",
+    "lint": "eslint \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -54,6 +54,7 @@
     "@types/ws": "^8.5.10",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^1.6.1",
     "chalk": "^5.3.0",
     "eslint": "^8.56.0",
     "json5": "^2.2.3",

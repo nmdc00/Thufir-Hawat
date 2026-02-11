@@ -39,6 +39,8 @@ const CHAT_TOOLS = [
   'current_time',
   'get_wallet_info',
   'calculator',
+  'system_exec',
+  'system_install',
 
   // Portfolio viewing (no trading)
   'get_portfolio',

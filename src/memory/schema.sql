@@ -218,6 +218,23 @@ CREATE INDEX IF NOT EXISTS idx_learning_prediction ON learning_events(prediction
 CREATE INDEX IF NOT EXISTS idx_learning_domain ON learning_events(domain);
 CREATE INDEX IF NOT EXISTS idx_learning_resolved ON learning_events(resolved_at);
 
+-- Proactive query learning memory
+CREATE TABLE IF NOT EXISTS proactive_query_stats (
+    query TEXT PRIMARY KEY,
+    runs INTEGER DEFAULT 0,
+    successes INTEGER DEFAULT 0,
+    total_new_items INTEGER DEFAULT 0,
+    total_web_results INTEGER DEFAULT 0,
+    total_web_fetches INTEGER DEFAULT 0,
+    score REAL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_run_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_proactive_query_score ON proactive_query_stats(score);
+CREATE INDEX IF NOT EXISTS idx_proactive_query_last_run ON proactive_query_stats(last_run_at);
+
 -- Signal weights
 CREATE TABLE IF NOT EXISTS signal_weights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

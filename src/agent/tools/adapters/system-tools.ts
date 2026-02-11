@@ -89,10 +89,55 @@ export const calculatorTool: ToolDefinition = {
 };
 
 /**
+ * System exec tool - run allowlisted local commands.
+ */
+export const systemExecTool: ToolDefinition = {
+  name: 'system_exec',
+  description:
+    'Execute an allowed local command with explicit args. Controlled by agent.systemTools config.',
+  category: 'system',
+  schema: z.object({
+    command: z.string().describe('Command name from allowlist'),
+    args: z.array(z.string()).optional().describe('Command args'),
+    cwd: z.string().optional().describe('Optional working directory'),
+  }),
+  execute: async (input, ctx): Promise<ToolResult> => {
+    return executeToolCall('system_exec', input as Record<string, unknown>, toExecutorContext(ctx));
+  },
+  sideEffects: true,
+  requiresConfirmation: false,
+  cacheTtlMs: 0,
+};
+
+/**
+ * System install tool - install packages via allowed package managers.
+ */
+export const systemInstallTool: ToolDefinition = {
+  name: 'system_install',
+  description:
+    'Install packages with an allowed package manager. Controlled by agent.systemTools config.',
+  category: 'system',
+  schema: z.object({
+    manager: z.enum(['pnpm', 'npm', 'bun']).describe('Package manager'),
+    packages: z.array(z.string()).min(1).describe('Package specs to install'),
+    global: z.boolean().optional().describe('Install globally'),
+    cwd: z.string().optional().describe('Optional working directory'),
+  }),
+  execute: async (input, ctx): Promise<ToolResult> => {
+    return executeToolCall('system_install', input as Record<string, unknown>, toExecutorContext(ctx));
+  },
+  sideEffects: true,
+  requiresConfirmation: false,
+  cacheTtlMs: 0,
+};
+
+/**
  * All system tools.
  */
 export const systemTools: ToolDefinition[] = [
   currentTimeTool,
   getWalletInfoTool,
   calculatorTool,
+  systemExecTool,
+  systemInstallTool,
 ];

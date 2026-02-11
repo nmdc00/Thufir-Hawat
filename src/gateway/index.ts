@@ -234,10 +234,16 @@ if (proactiveConfig?.enabled && proactiveConfig.mode !== 'heartbeat') {
     try {
       const result = await runProactiveSearch(config, {
         maxQueries: proactiveConfig.maxQueries,
+        iterations: proactiveConfig.iterations,
         watchlistLimit: proactiveConfig.watchlistLimit,
         useLlm: proactiveConfig.useLlm,
         recentIntelLimit: proactiveConfig.recentIntelLimit,
         extraQueries: proactiveConfig.extraQueries,
+        includeLearnedQueries: proactiveConfig.includeLearnedQueries,
+        learnedQueryLimit: proactiveConfig.learnedQueryLimit,
+        webLimitPerQuery: proactiveConfig.webLimitPerQuery,
+        fetchPerQuery: proactiveConfig.fetchPerQuery,
+        fetchMaxChars: proactiveConfig.fetchMaxChars,
       });
       logger.info(`Proactive search stored ${result.storedCount} item(s).`);
 
@@ -312,10 +318,16 @@ if (heartbeatConfig?.enabled) {
       try {
         const result = await runProactiveSearch(config, {
           maxQueries: proactiveConfig.maxQueries,
+          iterations: proactiveConfig.iterations,
           watchlistLimit: proactiveConfig.watchlistLimit,
           useLlm: proactiveConfig.useLlm,
           recentIntelLimit: proactiveConfig.recentIntelLimit,
           extraQueries: proactiveConfig.extraQueries,
+          includeLearnedQueries: proactiveConfig.includeLearnedQueries,
+          learnedQueryLimit: proactiveConfig.learnedQueryLimit,
+          webLimitPerQuery: proactiveConfig.webLimitPerQuery,
+          fetchPerQuery: proactiveConfig.fetchPerQuery,
+          fetchMaxChars: proactiveConfig.fetchMaxChars,
         });
         const titles = result.storedItems
           .map((item) => item.title)
@@ -323,6 +335,10 @@ if (heartbeatConfig?.enabled) {
           .slice(0, 5);
         proactiveSummary = [
           `Proactive search stored ${result.storedCount} item(s).`,
+          `Rounds: ${result.rounds}`,
+          result.learnedSeedQueries.length > 0
+            ? `Learned seeds: ${result.learnedSeedQueries.slice(0, 5).join('; ')}`
+            : '',
           result.queries.length > 0 ? `Queries: ${result.queries.join('; ')}` : '',
           titles.length > 0 ? `Top items: ${titles.join(' | ')}` : '',
         ]

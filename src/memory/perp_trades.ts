@@ -86,7 +86,10 @@ export function listPerpTrades(params?: { symbol?: string; limit?: number }): Pe
     size: Number(row.size ?? 0),
     price: row.price == null ? null : Number(row.price),
     leverage: row.leverage == null ? null : Number(row.leverage),
-    orderType: row.order_type == null ? null : String(row.order_type),
+    orderType:
+      row.order_type === 'market' || row.order_type === 'limit'
+        ? (row.order_type as 'market' | 'limit')
+        : null,
     status: row.status == null ? null : String(row.status),
   }));
 }

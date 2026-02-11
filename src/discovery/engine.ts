@@ -1,6 +1,6 @@
 import type { ThufirConfig } from '../core/config.js';
 import { storeDecisionArtifact } from '../memory/decision_artifacts.js';
-import type { SignalCluster } from './types.js';
+import type { SignalCluster, SignalPrimitive } from './types.js';
 import {
   signalPriceVolRegime,
   signalCrossAssetDivergence,
@@ -10,7 +10,7 @@ import {
 import { generateHypotheses } from './hypotheses.js';
 import { mapExpressionPlan } from './expressions.js';
 
-function clusterSignals(symbol: string, signals: ReturnType<typeof signalPriceVolRegime>[]): SignalCluster {
+function clusterSignals(symbol: string, signals: Array<SignalPrimitive | null>): SignalCluster {
   const flat = signals.filter((s): s is NonNullable<typeof s> => !!s);
   const biasScore = flat.reduce((acc, s) => acc + (s.directionalBias === 'up' ? 1 : s.directionalBias === 'down' ? -1 : 0), 0);
   const directionalBias = biasScore > 0 ? 'up' : biasScore < 0 ? 'down' : 'neutral';

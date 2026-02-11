@@ -1,5 +1,10 @@
 # Implementation Plan (Hyperliquid Pivot)
 
+## Status (2026-02-11)
+- Phases 1-3 are implemented in code.
+- Phase 4 is partially complete: tests/build are passing on Node 22, coverage thresholds are configured, and a live smoke-check command exists; authenticated live account verification remains.
+- Phase 5 remains ongoing iteration work.
+
 ## Phase 1: Perp Integration
 - Hyperliquid client + market list
 - Live executor

@@ -56,6 +56,14 @@ agent:
   # Trivial task offload (local LLM)
   trivialTaskProvider: local
   trivialTaskModel: qwen2.5:1.5b-instruct
+  # Controlled system-side-effect tools (install/exec)
+  systemTools:
+    enabled: false
+    allowedCommands: [node, npm, pnpm, bun, qmd]
+    allowedManagers: [pnpm, npm, bun]
+    allowGlobalInstall: false
+    timeoutMs: 120000
+    maxOutputChars: 12000
   trivial:
     enabled: true
     maxTokens: 256
@@ -234,10 +242,16 @@ notifications:
     mode: schedule
     time: "07:30"
     maxQueries: 8
+    iterations: 2
     watchlistLimit: 20
     useLlm: true
     recentIntelLimit: 25
     extraQueries: []
+    includeLearnedQueries: true
+    learnedQueryLimit: 8
+    webLimitPerQuery: 5
+    fetchPerQuery: 1
+    fetchMaxChars: 4000
     channels: []
   heartbeat:
     enabled: false

@@ -2,13 +2,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 let rows: Array<Record<string, unknown>> = [];
 
+function sqliteNow(): string {
+  return new Date().toISOString().replace('T', ' ').slice(0, 19);
+}
+
 const fakeDb = {
   exec: vi.fn(),
   prepare: (sql: string) => {
     if (sql.includes('INSERT INTO decision_artifacts')) {
       return {
         run: (params: Record<string, unknown>) => {
-          const now = '2026-02-04 00:00:00';
+          const now = sqliteNow();
           rows.push({
             id: rows.length + 1,
             created_at: now,
@@ -39,7 +43,7 @@ const fakeDb = {
             if (cutoff && String(row.created_at) < cutoff) return false;
             if (requireNotExpired) {
               const expires = row.expires_at as string | null;
-              if (expires && expires <= '2026-02-04 00:00:00') return false;
+              if (expires && expires <= sqliteNow()) return false;
             }
             return true;
           });

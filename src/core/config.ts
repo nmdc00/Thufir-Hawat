@@ -48,6 +48,16 @@ const ConfigSchema = z.object({
     enablePreTradeFragility: z.boolean().default(true),
     trivialTaskProvider: z.enum(['local', 'openai', 'anthropic']).default('local'),
     trivialTaskModel: z.string().default('qwen2.5:1.5b-instruct'),
+    systemTools: z
+      .object({
+        enabled: z.boolean().default(false),
+        allowedCommands: z.array(z.string()).default(['node', 'npm', 'pnpm', 'bun', 'qmd']),
+        allowedManagers: z.array(z.enum(['npm', 'pnpm', 'bun'])).default(['pnpm', 'npm', 'bun']),
+        allowGlobalInstall: z.boolean().default(false),
+        timeoutMs: z.number().default(120000),
+        maxOutputChars: z.number().default(12000),
+      })
+      .default({}),
     trivial: z
       .object({
         enabled: z.boolean().default(true),
@@ -332,6 +342,16 @@ const ConfigSchema = z.object({
                   proxyBaseUrl: z.string().optional(),
                   trivialTaskProvider: z.enum(['local', 'openai', 'anthropic']).optional(),
                   trivialTaskModel: z.string().optional(),
+                  systemTools: z
+                    .object({
+                      enabled: z.boolean().optional(),
+                      allowedCommands: z.array(z.string()).optional(),
+                      allowedManagers: z.array(z.enum(['npm', 'pnpm', 'bun'])).optional(),
+                      allowGlobalInstall: z.boolean().optional(),
+                      timeoutMs: z.number().optional(),
+                      maxOutputChars: z.number().optional(),
+                    })
+                    .default({}),
                   trivial: z
                     .object({
                       enabled: z.boolean().optional(),
@@ -464,10 +484,16 @@ const ConfigSchema = z.object({
           mode: z.enum(['schedule', 'heartbeat', 'direct']).default('schedule'),
           time: z.string().default('07:30'),
           maxQueries: z.number().default(8),
+          iterations: z.number().default(2),
           watchlistLimit: z.number().default(20),
           useLlm: z.boolean().default(true),
           recentIntelLimit: z.number().default(25),
           extraQueries: z.array(z.string()).default([]),
+          includeLearnedQueries: z.boolean().default(true),
+          learnedQueryLimit: z.number().default(8),
+          webLimitPerQuery: z.number().default(5),
+          fetchPerQuery: z.number().default(1),
+          fetchMaxChars: z.number().default(4000),
           channels: z.array(z.string()).default([]),
         })
         .default({}),

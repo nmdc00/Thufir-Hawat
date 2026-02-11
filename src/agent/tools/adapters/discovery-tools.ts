@@ -6,6 +6,12 @@ function toExecutorContext(ctx: ToolContext): ToolExecutorContext {
   return ctx as unknown as ToolExecutorContext;
 }
 
+const READ_TOOL_META = {
+  sideEffects: false,
+  requiresConfirmation: false,
+  cacheTtlMs: 10_000,
+} as const;
+
 export const perpMarketListTool: ToolDefinition = {
   name: 'perp_market_list',
   description: 'List perp markets for the configured exchange.',
@@ -16,6 +22,7 @@ export const perpMarketListTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('perp_market_list', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const perpMarketGetTool: ToolDefinition = {
@@ -28,6 +35,7 @@ export const perpMarketGetTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('perp_market_get', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const perpPlaceOrderTool: ToolDefinition = {
@@ -102,6 +110,7 @@ export const signalPriceVolRegimeTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('signal_price_vol_regime', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const signalCrossAssetDivergenceTool: ToolDefinition = {
@@ -114,6 +123,7 @@ export const signalCrossAssetDivergenceTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('signal_cross_asset_divergence', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const signalHyperliquidFundingOISkewTool: ToolDefinition = {
@@ -130,6 +140,7 @@ export const signalHyperliquidFundingOISkewTool: ToolDefinition = {
       toExecutorContext(ctx)
     );
   },
+  ...READ_TOOL_META,
 };
 
 export const signalHyperliquidOrderflowImbalanceTool: ToolDefinition = {
@@ -146,6 +157,7 @@ export const signalHyperliquidOrderflowImbalanceTool: ToolDefinition = {
       toExecutorContext(ctx)
     );
   },
+  ...READ_TOOL_META,
 };
 
 export const discoveryRunTool: ToolDefinition = {
@@ -158,6 +170,7 @@ export const discoveryRunTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('discovery_run', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const perpAnalyzeTool: ToolDefinition = {
@@ -171,6 +184,7 @@ export const perpAnalyzeTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('perp_analyze', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const positionAnalysisTool: ToolDefinition = {
@@ -183,6 +197,7 @@ export const positionAnalysisTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('position_analysis', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const discoveryReportTool: ToolDefinition = {
@@ -195,6 +210,7 @@ export const discoveryReportTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('discovery_report', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const tradeReviewTool: ToolDefinition = {
@@ -208,6 +224,7 @@ export const tradeReviewTool: ToolDefinition = {
   execute: async (input, ctx): Promise<ToolResult> => {
     return executeToolCall('trade_review', input as Record<string, unknown>, toExecutorContext(ctx));
   },
+  ...READ_TOOL_META,
 };
 
 export const discoveryTools: ToolDefinition[] = [

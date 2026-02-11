@@ -116,7 +116,7 @@ function buildUserContext(userId: string, _config: ThufirConfig): string {
     }
   }
 
-  // Calibration data (legacy)
+  // Calibration data
   const calibration = listCalibrationSummaries();
   if (calibration.length > 0 && calibration.some((c) => c.resolvedPredictions > 0)) {
     lines.push('## User Track Record');

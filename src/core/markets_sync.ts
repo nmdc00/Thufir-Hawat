@@ -6,7 +6,7 @@ export async function syncMarketCache(
   _config: ThufirConfig,
   limit = 200
 ): Promise<{ stored: number }> {
-  const client = createMarketClient(config);
+  const client = createMarketClient(_config);
   if (!client.isAvailable()) {
     return { stored: 0 };
   }
@@ -38,7 +38,7 @@ export async function refreshMarketPrices(
   _config: ThufirConfig,
   limit = 500
 ): Promise<{ stored: number }> {
-  const client = createMarketClient(config);
+  const client = createMarketClient(_config);
   if (!client.isAvailable()) {
     return { stored: 0 };
   }

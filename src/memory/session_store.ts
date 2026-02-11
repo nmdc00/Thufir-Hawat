@@ -1,5 +1,5 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ChatMessage } from '../core/llm.js';
@@ -24,21 +24,41 @@ export interface TranscriptEntry {
 }
 
 export class SessionStore {
-  private baseDir: string;
-  private sessionsPath: string;
-  private transcriptsDir: string;
-  private plansDir: string;
+  private baseDir = '';
+  private sessionsPath = '';
+  private transcriptsDir = '';
+  private plansDir = '';
   private meta: Record<string, SessionMeta> = {};
 
   constructor(_config: ThufirConfig) {
-    const base =
-      _config.memory?.sessionsPath ?? join(homedir(), '.thufir', 'sessions');
-    this.baseDir = base;
-    this.sessionsPath = join(base, 'sessions.json');
-    this.transcriptsDir = join(base, 'transcripts');
-    this.plansDir = join(base, 'plans');
-    this.ensureDirs();
-    this.meta = this.loadMeta();
+    const configured = _config.memory?.sessionsPath;
+    const candidates = configured
+      ? [configured]
+      : [
+          join(homedir(), '.thufir', 'sessions'),
+          join(process.cwd(), '.thufir', 'sessions'),
+          join(tmpdir(), 'thufir', 'sessions'),
+        ];
+
+    let lastError: unknown = null;
+    for (const base of candidates) {
+      this.baseDir = base;
+      this.sessionsPath = join(base, 'sessions.json');
+      this.transcriptsDir = join(base, 'transcripts');
+      this.plansDir = join(base, 'plans');
+      try {
+        this.ensureDirs();
+        this.meta = this.loadMeta();
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+    throw new Error('Failed to initialize session store directories.');
   }
 
   getSessionId(userId: string): string {

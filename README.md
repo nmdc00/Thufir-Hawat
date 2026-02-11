@@ -2,7 +2,7 @@
 
 **Thufir** (from Arabic بيجاز, meaning "concise oracle") is a personal AI assistant specialized in markets. Unlike pure trading bots that optimize for speed and arbitrage, Thufir is a **prediction companion** that learns your interests, curates intel, discusses reasoning, and executes trades on your behalf — **fully autonomous by default**.
 
-Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel architecture with an Hyperliquid execution stack.
+Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel architecture with a Hyperliquid execution stack.
 
 ## Why Thufir?
 
@@ -90,7 +90,7 @@ Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel
 
 - Node.js >= 22
 - Python >= 3.11
-- Polygon wallet with USDC
+- Hyperliquid account + API private key (for live mode)
 - API keys: Anthropic/OpenAI, NewsAPI (optional)
 
 ## Install Guides
@@ -187,22 +187,22 @@ execution:
 **Mode descriptions:**
 - `paper` (default): Simulates trades without real execution. Tracks positions and P&L for practice/testing.
 - `webhook`: Sends trade decisions to an external URL for execution (useful for external signing services).
-- `live`: Executes real trades on Hyperliquid via on-chain AMM interaction. Requires wallet setup and `THUFIR_WALLET_PASSWORD` environment variable.
+- `live`: Executes real trades on Hyperliquid. Requires `HYPERLIQUID_PRIVATE_KEY` (and optionally `HYPERLIQUID_ACCOUNT_ADDRESS`) in environment variables.
 
 **Live mode setup:**
 ```bash
-# 1. Create or import a wallet
-thufir wallet create
-# or
-thufir wallet import
+# 1. Export Hyperliquid credentials
+export HYPERLIQUID_PRIVATE_KEY="0x..."
+# optional if not derivable from the key:
+export HYPERLIQUID_ACCOUNT_ADDRESS="0x..."
 
-# 2. Set your wallet password as environment variable
-export THUFIR_WALLET_PASSWORD="your-secure-password"
-
-# 3. Update config to use live mode
+# 2. Update config to use live mode
 # In config.yaml:
 # execution:
 #   mode: live
+
+# 3. Run live smoke checks
+thufir env verify-live --symbol BTC
 
 # 4. Start the gateway
 pnpm thufir gateway
@@ -254,6 +254,18 @@ intel:
     allowTypes: []       # optional allowlist of types: news|social|market
     minTrust: medium
     socialOptIn: false   # must be true to include social sources in proactive search
+```
+
+#### Controlled Install/Exec Tools
+```yaml
+agent:
+  systemTools:
+    enabled: true
+    allowedCommands: [node, pnpm, npm, bun, qmd]
+    allowedManagers: [pnpm, npm, bun]
+    allowGlobalInstall: false
+    timeoutMs: 120000
+    maxOutputChars: 12000
 ```
 
 #### Autonomy
@@ -341,7 +353,7 @@ thufir env init
 thufir env check
 
 # Verify Hyperliquid connectivity
-thufir tools list | rg perp
+thufir env verify-live --symbol BTC
 
 # Set up intel sources
 thufir intel add newsapi --key YOUR_KEY
@@ -694,9 +706,13 @@ The plan is to integrate more of Clawdbot's gateway core to enable:
 3. Learning from conversation patterns
 4. More sophisticated autonomous reasoning
 
-### Proactive Search (Clawdbot-Style, Local)
-Thufir now runs a Clawdbot-style proactive search loop locally. It generates queries from your watchlist
-and recent intel, optionally refines them with the LLM, then runs the intel pipeline using those queries.
+### Proactive Search (Iterative + Learning)
+Thufir runs an iterative proactive research loop locally:
+- Seeds queries from watchlist, recent intel, and learned high-signal past queries
+- Runs `web_search` and optional `web_fetch` per query
+- Stores findings into intel memory
+- Optionally generates follow-up queries from gathered evidence (multi-round)
+- Updates per-query stats so future runs prioritize queries that produced signal
 
 Config example:
 ```yaml
@@ -705,9 +721,21 @@ notifications:
     enabled: true
     time: "07:30"
     maxQueries: 8
+    iterations: 2
     watchlistLimit: 20
     recentIntelLimit: 25
     useLlm: true
+    includeLearnedQueries: true
+    learnedQueryLimit: 8
+    webLimitPerQuery: 5
+    fetchPerQuery: 1
+    fetchMaxChars: 4000
+```
+
+CLI:
+```bash
+thufir intel proactive --max-queries 8 --iterations 2 --fetch-per-query 1
+thufir intel proactive-stats --limit 20
 ```
 
 ## Acknowledgments

@@ -44,9 +44,9 @@ const toFiniteNumber = (value: unknown): number | null => {
 const resolveMid = (mids: Record<string, number>, symbol: string): number | null => {
   const normalized = normalizeSymbol(symbol);
   const direct = mids[normalized];
-  if (Number.isFinite(direct)) return direct;
+  if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
   const raw = mids[symbol];
-  return Number.isFinite(raw) ? raw : null;
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
 };
 
 async function fetchPositions(
@@ -63,7 +63,7 @@ async function fetchPositions(
       if (size == null || size === 0) return null;
       const symbol = String((position as { coin?: unknown }).coin ?? '');
       if (!symbol) return null;
-      const side = size > 0 ? 'long' : 'short';
+      const side: PositionSnapshot['side'] = size > 0 ? 'long' : 'short';
       const notionalRaw = toFiniteNumber((position as { positionValue?: unknown }).positionValue);
       const liquidationPrice = toFiniteNumber((position as { liquidationPx?: unknown }).liquidationPx);
       const mid = resolveMid(mids, symbol);

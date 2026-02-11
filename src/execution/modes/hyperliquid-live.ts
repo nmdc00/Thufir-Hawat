@@ -70,7 +70,8 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
       }
 
       const priceStr = formatDecimal(orderPx, 8);
-      const payload = {
+      const tif: 'Ioc' | 'Gtc' = orderType === 'market' ? 'Ioc' : 'Gtc';
+      const payload: Parameters<ReturnType<HyperliquidClient['getExchangeClient']>['order']>[0] = {
         orders: [
           {
             a: marketMeta.assetId,
@@ -78,7 +79,7 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
             p: priceStr,
             s: sizeStr,
             r: reduceOnly,
-            t: { limit: { tif: orderType === 'market' ? 'Ioc' : 'Gtc' } },
+            t: { limit: { tif } },
           },
         ],
         grouping: 'na' as const,
@@ -107,7 +108,7 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
   private async estimateMarketPrice(symbol: string, side: 'buy' | 'sell'): Promise<number> {
     const mids = await this.client.getAllMids();
     const mid = mids[symbol];
-    if (!Number.isFinite(mid)) {
+    if (typeof mid !== 'number' || !Number.isFinite(mid)) {
       throw new Error(`Missing mid price for ${symbol}.`);
     }
     const slippage = this.defaultSlippageBps / 10000;

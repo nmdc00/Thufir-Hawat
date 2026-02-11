@@ -13,6 +13,7 @@ import { createMarketClient } from '../execution/market-client.js';
 import { addWatchlist, listWatchlist } from '../memory/watchlist.js';
 import { runIntelPipeline } from '../intel/pipeline.js';
 import { listRecentIntel } from '../intel/store.js';
+import { listProactiveQueryStats } from '../memory/proactive_queries.js';
 import { rankIntelAlerts } from '../intel/alerts.js';
 import { listIntelSources, isSourceAllowedForRoaming } from '../intel/sources_registry.js';
 import { formatProactiveSummary, runProactiveSearch } from '../core/proactive_search.js';
@@ -48,11 +49,11 @@ import type { ThufirConfig } from '../core/config.js';
 
 /**
  * Create the appropriate executor based on config execution mode.
- * For live mode, requires password (from env or passed in).
+ * The CLI agent command currently supports paper/webhook execution paths.
  */
 async function createExecutorForConfig(
   config: ThufirConfig,
-  password?: string
+  _password?: string
 ): Promise<ExecutionAdapter> {
   if (config.execution.mode === 'live') {
     const { UnsupportedLiveExecutor } = await import('../execution/modes/unsupported-live.js');
@@ -202,6 +203,8 @@ const ENV_KEYS = [
   'WHATSAPP_PHONE_NUMBER_ID',
   'THUFIR_WALLET_PASSWORD',
   'THUFIR_KEYSTORE_PATH',
+  'HYPERLIQUID_ACCOUNT_ADDRESS',
+  'HYPERLIQUID_PRIVATE_KEY',
 ];
 
 function parseEnvFile(content: string): Record<string, string> {
@@ -355,6 +358,26 @@ async function runEnvChecks(values: Record<string, string>): Promise<void> {
     results.push({ name: 'WhatsApp', ok: false, detail: 'missing WhatsApp tokens' });
   }
 
+  await tryCheck('Hyperliquid API', () =>
+    fetchWithTimeout('https://api.hyperliquid.xyz/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'meta' }),
+    })
+  );
+
+  const hasHyperPrivateKey = Boolean(env.HYPERLIQUID_PRIVATE_KEY?.trim());
+  const hasHyperAccountAddress = Boolean(env.HYPERLIQUID_ACCOUNT_ADDRESS?.trim());
+  results.push({
+    name: 'Hyperliquid auth',
+    ok: hasHyperPrivateKey || hasHyperAccountAddress,
+    detail: hasHyperPrivateKey
+      ? 'HYPERLIQUID_PRIVATE_KEY set'
+      : hasHyperAccountAddress
+        ? 'HYPERLIQUID_ACCOUNT_ADDRESS set (read-only)'
+        : 'missing HYPERLIQUID_PRIVATE_KEY',
+  });
+
   if (env.THUFIR_KEYSTORE_PATH) {
     const exists = existsSync(env.THUFIR_KEYSTORE_PATH);
     results.push({
@@ -434,6 +457,96 @@ env
     const envPath = join(process.cwd(), '.env');
     const values = existsSync(envPath) ? parseEnvFile(readFileSync(envPath, 'utf8')) : {};
     await runEnvChecks(values);
+  });
+
+env
+  .command('verify-live')
+  .description('Run Hyperliquid live smoke checks (read-only)')
+  .option('--symbol <symbol>', 'Perp symbol for mid-price check', 'BTC')
+  .action(async (options: { symbol?: string }) => {
+    const { HyperliquidClient } = await import('../execution/hyperliquid/client.js');
+    const client = new HyperliquidClient(config);
+    const symbol = String(options.symbol ?? 'BTC').trim().toUpperCase();
+    const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
+
+    try {
+      const markets = await client.listPerpMarkets();
+      const hasSymbol = markets.some((market) => market.symbol === symbol);
+      checks.push({
+        name: 'Perp markets',
+        ok: markets.length > 0,
+        detail: `loaded ${markets.length} market(s)`,
+      });
+      checks.push({
+        name: `Symbol ${symbol}`,
+        ok: hasSymbol,
+        detail: hasSymbol ? 'found in market metadata' : 'not found in market metadata',
+      });
+    } catch (error) {
+      checks.push({
+        name: 'Perp markets',
+        ok: false,
+        detail: error instanceof Error ? error.message : 'unknown error',
+      });
+    }
+
+    try {
+      const mids = await client.getAllMids();
+      const mid = mids[symbol];
+      checks.push({
+        name: 'Mid prices',
+        ok: Object.keys(mids).length > 0,
+        detail:
+          typeof mid === 'number'
+            ? `${symbol} mid=${mid}`
+            : `${Object.keys(mids).length} symbol(s) loaded`,
+      });
+    } catch (error) {
+      checks.push({
+        name: 'Mid prices',
+        ok: false,
+        detail: error instanceof Error ? error.message : 'unknown error',
+      });
+    }
+
+    const accountAddress = client.getAccountAddress();
+    if (accountAddress) {
+      try {
+        const state = await client.getClearinghouseState();
+        const stateKeys =
+          state && typeof state === 'object'
+            ? Object.keys(state as Record<string, unknown>).length
+            : 0;
+        checks.push({
+          name: 'Account state',
+          ok: true,
+          detail: `loaded for ${accountAddress.slice(0, 10)}... (${stateKeys} field(s))`,
+        });
+      } catch (error) {
+        checks.push({
+          name: 'Account state',
+          ok: false,
+          detail: error instanceof Error ? error.message : 'unknown error',
+        });
+      }
+    } else {
+      checks.push({
+        name: 'Account state',
+        ok: false,
+        detail:
+          'missing HYPERLIQUID_ACCOUNT_ADDRESS/HYPERLIQUID_PRIVATE_KEY (required for authenticated checks)',
+      });
+    }
+
+    console.log('Live Verification (Hyperliquid)');
+    console.log('─'.repeat(40));
+    for (const check of checks) {
+      const status = check.ok ? 'ok' : 'fail';
+      console.log(`${check.name}: ${status} (${check.detail})`);
+    }
+
+    const failed = checks.filter((check) => !check.ok).length;
+    process.exitCode = failed === 0 ? 0 : 1;
   });
 
 // ============================================================================
@@ -1185,18 +1298,34 @@ intel
   .description('Run proactive search (Clawdbot-style)')
   .option('--send', 'Send a direct summary to configured channels')
   .option('--max-queries <number>', 'Max search queries', '8')
+  .option('--iterations <number>', 'Research rounds', '2')
   .option('--watchlist-limit <number>', 'Watchlist markets to scan', '20')
   .option('--recent-intel-limit <number>', 'Recent intel items to seed queries', '25')
+  .option('--web-limit <number>', 'Web search results per query', '5')
+  .option('--fetch-per-query <number>', 'Pages to fetch per query', '1')
+  .option('--fetch-max-chars <number>', 'Max chars to keep when fetching pages', '4000')
+  .option('--learned-query-limit <number>', 'Number of learned queries to reuse', '8')
+  .option('--no-learned-queries', 'Disable learned query reuse')
   .option('--no-llm', 'Disable LLM query refinement')
   .option('--extra <query...>', 'Extra queries to include')
   .action(async (options) => {
     const result = await runProactiveSearch(config, {
       maxQueries: Number(options.maxQueries),
+      iterations: Number(options.iterations),
       watchlistLimit: Number(options.watchlistLimit),
       useLlm: options.llm !== false,
       recentIntelLimit: Number(options.recentIntelLimit),
       extraQueries: Array.isArray(options.extra) ? options.extra : [],
+      includeLearnedQueries: options.learnedQueries !== false,
+      learnedQueryLimit: Number(options.learnedQueryLimit),
+      webLimitPerQuery: Number(options.webLimit),
+      fetchPerQuery: Number(options.fetchPerQuery),
+      fetchMaxChars: Number(options.fetchMaxChars),
     });
+    console.log(`Rounds: ${result.rounds}`);
+    if (result.learnedSeedQueries.length > 0) {
+      console.log(`Learned seeds: ${result.learnedSeedQueries.join(' | ')}`);
+    }
     console.log(`Queries: ${result.queries.join(' | ')}`);
     console.log(`Stored items: ${result.storedCount}`);
     if (options.send) {
@@ -1215,6 +1344,27 @@ intel
         for (const number of config.channels.whatsapp.allowedNumbers ?? []) {
           await whatsapp.sendMessage(number, summary);
         }
+      }
+    }
+  });
+
+intel
+  .command('proactive-stats')
+  .description('Show learned proactive query performance stats')
+  .option('--limit <number>', 'Max rows', '20')
+  .action((options) => {
+    const stats = listProactiveQueryStats(Number(options.limit));
+    if (stats.length === 0) {
+      console.log('No proactive query stats yet.');
+      return;
+    }
+
+    for (const row of stats) {
+      console.log(
+        `${row.query} | score=${row.score.toFixed(2)} runs=${row.runs} success=${row.successes} new_items=${row.totalNewItems} web=${row.totalWebResults} fetch=${row.totalWebFetches}`
+      );
+      if (row.lastError) {
+        console.log(`  last_error: ${row.lastError}`);
       }
     }
   });

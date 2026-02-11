@@ -40,6 +40,8 @@ const MENTAT_TOOLS = [
   'current_time',
   'get_wallet_info',
   'calculator',
+  'system_exec',
+  'system_install',
 
   // Portfolio analysis (no trading)
   'get_portfolio',
