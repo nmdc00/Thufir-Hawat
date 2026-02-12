@@ -12,10 +12,25 @@ export function mapExpressionPlan(
   const probeBudget = Math.max(1, dailyLimit * probeFraction);
   const side = hypothesis.expectedExpression.includes('down') ? 'sell' : 'buy';
   const confidence = Math.min(1, Math.max(0, cluster.confidence));
-  const expectedEdge =
-    cluster.directionalBias === 'neutral'
-      ? 0
-      : Math.min(1, confidence * 0.1);
+  const reflex = cluster.signals.find((s) => s.kind === 'reflexivity_fragility');
+
+  let expectedEdge =
+    cluster.directionalBias === 'neutral' ? 0 : Math.min(1, confidence * 0.1);
+
+  if (reflex) {
+    const setupScore = typeof reflex.metrics.setupScore === 'number' ? reflex.metrics.setupScore : confidence;
+    const edgeScale = Number((config as any)?.reflexivity?.edgeScale ?? 0.2);
+    expectedEdge = Math.min(1, clamp01(setupScore) * edgeScale);
+
+    // Rough carry-cost penalty: when you are on the paying side of funding, reduce edge.
+    const fundingRate = typeof reflex.metrics.fundingRate === 'number' ? reflex.metrics.fundingRate : 0;
+    const paying =
+      (side === 'buy' && fundingRate > 0) || (side === 'sell' && fundingRate < 0);
+    if (paying) {
+      const carryPenalty = Math.min(0.05, Math.abs(fundingRate) * 100); // heuristically cap at 5%
+      expectedEdge = Math.max(0, expectedEdge - carryPenalty);
+    }
+  }
 
   return {
     id: `expr_${hypothesis.id}`,
@@ -31,4 +46,8 @@ export function mapExpressionPlan(
     leverage,
     probeSizeUsd: probeBudget,
   };
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }

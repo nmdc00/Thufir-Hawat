@@ -2,7 +2,7 @@
 
 ## Status (2026-02-12)
 - Phases 1-3 are implemented in code.
-- Phase 4 is partially complete: tests/build are passing on Node 22, coverage thresholds are configured, and `thufir env verify-live` now checks market data, account state, open orders, and signer readiness; authenticated real-account trade/cancel verification remains.
+- Phase 4 is mostly complete: tests/build are passing on Node 22, coverage thresholds are configured, and live verification now supports (a) read-only connectivity and (b) an authenticated order roundtrip (place tiny far-off limit order, then cancel) via `hyperliquid_order_roundtrip`.
 - Phase 5 remains ongoing iteration work.
 
 ## Phase 1: Perp Integration
@@ -15,6 +15,10 @@
 - Signals (price/vol, cross-asset, funding/OI, orderflow)
 - Hypotheses + expressions
 - Probe sizing + guardrails
+- Reflexivity detector:
+  - Crowding + fragility + catalyst scoring (reflexive reversal setups)
+  - Narrative snapshots from intel with artifact caching
+  - Catalyst registry and proximity scoring
 
 ## Phase 3: Agent + Tooling
 - Tool calling wired into agent modes
@@ -25,7 +29,7 @@
 
 ## Phase 4: Verification
 - Run tests
-- Live API verification with small orders
+- Live API verification with small orders (order roundtrip: place -> open orders -> cancel)
 - Monitor error handling and edge cases
 
 ## Phase 5: Learning

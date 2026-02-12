@@ -33,7 +33,22 @@ const fakeDb = {
 
     if (sql.includes('FROM agent_incidents') && sql.includes('ORDER BY created_at')) {
       return {
-        all: (limit: number) => incidentRows.slice().reverse().slice(0, limit),
+        all: (limit: number) =>
+          incidentRows
+            .slice()
+            .reverse()
+            .slice(0, limit)
+            .map((row) => ({
+              id: row.id,
+              createdAt: row.created_at,
+              goal: row.goal,
+              mode: row.mode,
+              toolName: row.tool_name,
+              error: row.error,
+              blockerKind: row.blocker_kind,
+              detailsJson: row.details_json,
+              resolvedAt: row.resolved_at,
+            })),
       };
     }
 
@@ -125,4 +140,3 @@ describe('incidents + playbooks', () => {
     expect(results[0]?.key).toBe('hyperliquid/funding');
   });
 });
-

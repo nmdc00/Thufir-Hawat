@@ -6,6 +6,7 @@ import {
   signalCrossAssetDivergence,
   signalHyperliquidFundingOISkew,
   signalHyperliquidOrderflowImbalance,
+  signalReflexivityFragility,
 } from './signals.js';
 import { generateHypotheses } from './hypotheses.js';
 import { mapExpressionPlan } from './expressions.js';
@@ -42,6 +43,9 @@ export async function runDiscovery(config: ThufirConfig): Promise<{
   const orderflowSignals = await Promise.all(
     formatted.map((symbol) => signalHyperliquidOrderflowImbalance(config, symbol))
   );
+  const reflexivitySignals = await Promise.all(
+    formatted.map((symbol) => signalReflexivityFragility(config, symbol))
+  );
 
   const clusters = formatted.map((symbol, idx) => {
     const matchingCross = crossSignals.filter((s) => s.symbol === symbol);
@@ -49,6 +53,7 @@ export async function runDiscovery(config: ThufirConfig): Promise<{
       priceSignals[idx] ?? null,
       fundingSignals[idx] ?? null,
       orderflowSignals[idx] ?? null,
+      reflexivitySignals[idx] ?? null,
       ...matchingCross,
     ]);
   });

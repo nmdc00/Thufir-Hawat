@@ -292,6 +292,38 @@ const ConfigSchema = z.object({
         .default({}),
     })
     .default({ enabled: false }),
+  reflexivity: z
+    .object({
+      enabled: z.boolean().default(false),
+      horizonSeconds: z.number().default(24 * 60 * 60),
+      catalystsFile: z.string().default('config/catalysts.yaml'),
+      edgeScale: z.number().default(0.2),
+      weights: z
+        .object({
+          crowding: z.number().default(0.4),
+          fragility: z.number().default(0.4),
+          catalyst: z.number().default(0.2),
+        })
+        .default({}),
+      thresholds: z
+        .object({
+          setupScoreMin: z.number().default(0.7),
+        })
+        .default({}),
+      narrative: z
+        .object({
+          maxIntelItems: z.number().default(50),
+          cacheTtlSeconds: z.number().default(1800),
+          llm: z
+            .object({
+              enabled: z.boolean().default(false),
+              useTrivial: z.boolean().default(true),
+            })
+            .default({}),
+        })
+        .default({}),
+    })
+    .default({ enabled: false }),
   intel: z
     .object({
       embeddings: z

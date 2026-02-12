@@ -41,6 +41,7 @@ Built on top of [Clawdbot](https://github.com/clawdbot/clawdbot)'s multi-channel
 - Scans markets and executes trades without manual approval
 - Configurable budgets + limits
 - Optional webhook execution for external signing
+- Reflexivity-aware perps discovery (crowding + narrative + catalyst)
 
 ### 6. Configurable LLM Providers
 - Anthropic, OpenAI, or local OpenAI-compatible servers
@@ -196,6 +197,10 @@ export HYPERLIQUID_PRIVATE_KEY="0x..."
 # optional if not derivable from the key:
 export HYPERLIQUID_ACCOUNT_ADDRESS="0x..."
 
+# 1b. (Optional but recommended) Configure EVM RPCs for funding tools
+export THUFIR_EVM_RPC_POLYGON="https://polygon-rpc.com"
+export THUFIR_EVM_RPC_ARBITRUM="https://arb1.arbitrum.io/rpc"
+
 # 2. Update config to use live mode
 # In config.yaml:
 # execution:
@@ -203,6 +208,10 @@ export HYPERLIQUID_ACCOUNT_ADDRESS="0x..."
 
 # 3. Run live smoke checks
 thufir env verify-live --symbol BTC
+
+# 3b. Run authenticated order roundtrip (place tiny far-off limit order then cancel)
+# Note: this is a side-effecting verification step and will prompt for confirmation.
+thufir agent run --mode trade "Run hyperliquid_order_roundtrip for BTC size=0.001" --show-tools --show-plan
 
 # 4. Start the gateway
 pnpm thufir gateway
@@ -277,6 +286,23 @@ autonomy:
   watchlistOnly: true
   eventDriven: false
   eventDrivenMinItems: 1
+  # Safety gate: allow cross-chain funding actions when fullAuto is enabled
+  # allowFundingActions: false
+```
+
+#### Reflexivity Detector (Perps)
+Thufir can optionally generate “crowded + fragile + catalyst” setups and feed them into discovery.
+
+```yaml
+reflexivity:
+  enabled: false
+  horizonSeconds: 86400
+  catalystsFile: config/catalysts.yaml
+  thresholds:
+    setupScoreMin: 0.7
+  narrative:
+    llm:
+      enabled: false
 ```
 
 #### Daily Briefing Scheduler

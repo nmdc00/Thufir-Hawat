@@ -19,14 +19,31 @@ Hyperliquid perps + autonomous discovery are integrated. Identity prompts are pl
 - Full test suite passing in this branch (`32` files / `99` tests)
 - TypeScript build passing in this branch
 - Coverage configuration hardened (vendor-remap exclusions + minimum thresholds)
-- Live verification command added: `thufir env verify-live` (read-only smoke check + authenticated readiness checks)
+- Live verification tools added:
+  - `hyperliquid_verify_live` (read-only smoke check + authenticated readiness checks)
+  - `hyperliquid_order_roundtrip` (authenticated place+cancel roundtrip)
+- Funding remediation tools added for Hyperliquid collateral blockers:
+  - `evm_usdc_balances` (Polygon/Arbitrum probe)
+  - `cctp_bridge_usdc` (Polygon <-> Arbitrum USDC via CCTP v1)
+  - `hyperliquid_deposit_usdc` (transfer Arbitrum USDC to HL bridge deposit address)
 - Lint gate fixed (`pnpm lint` now runs against TypeScript sources with project ESLint config)
+- Reflexivity detector (crowding + fragility + catalyst):
+  - Catalyst registry support (`config/catalysts.yaml`)
+  - Narrative snapshot extraction with decision-artifact caching (optional LLM JSON mode)
+  - Reflexivity fragility scoring wired into discovery as `reflexivity_fragility` signal
+  - Setup artifacts persisted (`reflexivity_setup_v1`)
 
 ## In Progress
-- Authenticated live API verification in a real account (requires `HYPERLIQUID_PRIVATE_KEY`)
+- Real-account verification rollout:
+  - deploy updated code to the running server process
+  - restart gateway to pick up `.env` changes
+  - ensure Arbitrum ETH is available for gas (required for CCTP receive + deposit transfer)
 - Optional expansion of on-chain providers (e.g. Coinglass/Whale APIs)
+- Reflexivity follow-ups:
+  - wire thesis invalidation evaluation into the autonomy loop (exit-on-thesis-break)
+  - improve carry-cost modeling and catalyst binding requirements before auto-exec
 
 ## Next Steps
-1. Run `thufir env verify-live` with real credentials and execute a tiny manual order/cancel roundtrip
-2. Review discovery signal quality on live data and adjust sizing/confidence weighting
-3. Decide whether to keep legacy memory tables or complete migration to trade-based stats
+1. Deploy updated build to the server and restart gateway to pick up EVM RPC env vars
+2. Run `hyperliquid_verify_live`, then `hyperliquid_order_roundtrip` with a tiny size (requires confirmation)
+3. If collateral missing: run `evm_usdc_balances` -> `cctp_bridge_usdc` -> `hyperliquid_deposit_usdc` (requires Arbitrum ETH gas)

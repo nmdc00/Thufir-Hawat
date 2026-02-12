@@ -2,6 +2,7 @@ import type { ThufirConfig } from '../core/config.js';
 import { HyperliquidClient } from '../execution/hyperliquid/client.js';
 import { PriceService } from '../technical/prices.js';
 import type { SignalPrimitive } from './types.js';
+import { buildReflexivitySetup } from '../reflexivity/fragility.js';
 
 function mean(values: number[]): number {
   if (!values.length) return 0;
@@ -224,5 +225,23 @@ export async function signalHyperliquidOrderflowImbalance(
       imbalance,
       tradeCount,
     },
+  };
+}
+
+export async function signalReflexivityFragility(
+  config: ThufirConfig,
+  symbol: string
+): Promise<SignalPrimitive | null> {
+  const setup = await buildReflexivitySetup({ config, symbol });
+  if (!setup) return null;
+
+  return {
+    id: `reflexivity_${setup.baseSymbol}_${Date.now()}`,
+    kind: 'reflexivity_fragility',
+    symbol: setup.symbol,
+    directionalBias: setup.directionalBias,
+    confidence: setup.confidence,
+    timeHorizon: setup.timeHorizon,
+    metrics: setup.metrics,
   };
 }

@@ -3,7 +3,8 @@ export type SignalPrimitiveKind =
   | 'cross_asset_divergence'
   | 'funding_oi_skew'
   | 'orderflow_imbalance'
-  | 'onchain_flow';
+  | 'onchain_flow'
+  | 'reflexivity_fragility';
 
 export interface SignalPrimitive {
   id: string;

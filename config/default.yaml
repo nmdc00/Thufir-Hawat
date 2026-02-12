@@ -142,6 +142,25 @@ technical:
     enabled: false
     coinglassApiKey: ""
 
+# Reflexivity detector (crowding + fragility + catalyst)
+reflexivity:
+  enabled: false
+  horizonSeconds: 86400          # 24h
+  catalystsFile: config/catalysts.yaml
+  edgeScale: 0.2
+  weights:
+    crowding: 0.4
+    fragility: 0.4
+    catalyst: 0.2
+  thresholds:
+    setupScoreMin: 0.7
+  narrative:
+    maxIntelItems: 50
+    cacheTtlSeconds: 1800        # 30m
+    llm:
+      enabled: false             # set true to use LLM JSON extraction
+      useTrivial: true           # use local/trivial client when available
+
 # Execution mode
 execution:
   # paper = simulated trades, webhook = forward orders to external executor

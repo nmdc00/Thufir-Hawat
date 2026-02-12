@@ -1,0 +1,21 @@
+# Catalyst registry for reflexivity detector.
+#
+# Format:
+# catalysts:
+#   - id: "cpi_2026_02_13"
+#     type: "macro"
+#     symbols: ["BTC", "ETH", "*"]
+#     scheduledUtc: "2026-02-13T13:30:00Z"
+#     description: "US CPI release"
+#     tags: ["cpi", "macro"]
+#
+# Stochastic example (no scheduledUtc):
+#   - id: "stablecoin_stress"
+#     type: "stablecoin"
+#     symbols: ["*"]
+#     description: "Stablecoin stress headlines"
+#     monitorQueries: ["depeg", "halt redemptions", "reserve attestation"]
+#     sources: ["twitter", "newsapi"]
+
+catalysts: []
+
