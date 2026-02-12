@@ -623,7 +623,11 @@ if (config.qmd?.enabled && qmdEmbedConfig?.enabled) {
 if (telegram) {
   telegram.startPolling(async (msg) => {
     logger.info(`Telegram message from ${msg.senderId}: ${msg.text}`);
-    await onIncoming(msg);
+    try {
+      await onIncoming(msg);
+    } catch (error) {
+      logger.error(`Telegram message handling failed for ${msg.senderId}`, error);
+    }
   });
 }
 

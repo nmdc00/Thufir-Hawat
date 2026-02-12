@@ -312,7 +312,12 @@ class InfraLlmClient implements LlmClient {
     }
 
     try {
-      const response = await this.inner.complete(finalized, options);
+      const timeoutMs = options?.timeoutMs ?? resolveDefaultLlmTimeoutMs();
+      const response = await runWithTimeout(
+        () => this.inner.complete(finalized, { ...options, timeoutMs }),
+        timeoutMs,
+        `LLM request (${meta.provider}/${meta.model})`
+      );
       const totalTokens = estimatedTokens + estimateTokensFromText(response.content);
       budget.record(totalTokens, meta.provider);
       return response;
@@ -1001,6 +1006,45 @@ type FetchResponse = Awaited<ReturnType<typeof fetch>>;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveDefaultLlmTimeoutMs(): number {
+  const raw = Number(process.env.THUFIR_LLM_TIMEOUT_MS ?? 45_000);
+  if (!Number.isFinite(raw)) return 45_000;
+  return Math.max(1_000, raw);
+}
+
+async function runWithTimeout<T>(
+  task: () => Promise<T>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
+  if (timeoutMs <= 0) {
+    return task();
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    task()
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
 }
 
 function parseProxyError(detail: string): string {
