@@ -1346,7 +1346,8 @@ class OpenAiClient implements LlmClient {
             : {
                 model: this.model,
                 ...(this.includeTemperature ? { temperature: options?.temperature ?? 0.2 } : {}),
-                ...(typeof maxTokens === 'number' ? { max_completion_tokens: maxTokens } : {}),
+                // Prefer max_tokens for broad OpenAI-compatible proxy support.
+                ...(typeof maxTokens === 'number' ? { max_tokens: maxTokens } : {}),
                 messages: openaiMessages,
               }
         ),
