@@ -1512,14 +1512,6 @@ agent
       confirmationThreshold: config.wallet?.limits?.confirmationThreshold ?? 10,
     });
 
-    const toolContext = {
-      config,
-      marketClient,
-      executor,
-      limiter,
-      agentToolRegistry: registry,
-    };
-
     const registry = new AgentToolRegistry();
     registerAllTools(registry);
     // Optional plugin skills (workspace-local).
@@ -1529,6 +1521,14 @@ agent
         roots: [join(String(config.agent.workspace), 'skills')],
       });
     }
+
+    const toolContext = {
+      config,
+      marketClient,
+      executor,
+      limiter,
+      agentToolRegistry: registry,
+    };
     const identity = loadThufirIdentity({
       workspacePath: config.agent?.workspace,
     }).identity;

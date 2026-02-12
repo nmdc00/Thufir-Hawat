@@ -41,8 +41,8 @@ export interface ToolContext {
    * This enables meta-tools like tools_list to introspect available tools.
    */
   agentToolRegistry?: {
-    listNames: (options?: unknown) => string[];
-    list: (options?: unknown) => Array<{
+    listNames: (options?: ListToolsOptions) => string[];
+    list: (options?: ListToolsOptions) => Array<{
       name: string;
       description: string;
       category: ToolCategory;
