@@ -1303,7 +1303,9 @@ class OpenAiClient implements LlmClient {
     this.model = resolveOpenAiModel(config, modelOverride);
     this.baseUrl = resolveOpenAiBaseUrl(config);
     this.includeTemperature = !config.agent.useProxy;
-    this.useResponsesApi = config.agent.useResponsesApi ?? config.agent.useProxy;
+    // Some OpenAI-compatible proxies (e.g. llm-mux) don't support the Responses API
+    // parameters (e.g. max_output_tokens). Only enable when explicitly requested.
+    this.useResponsesApi = config.agent.useResponsesApi ?? false;
     this.meta = { provider: 'openai', model: this.model, kind };
   }
 
