@@ -61,9 +61,11 @@ const ConfigSchema = z.object({
     trivial: z
       .object({
         enabled: z.boolean().default(true),
-        maxTokens: z.number().default(256),
+        // Default lowered to reduce CPU time on small boxes when using local trivial LLMs.
+        maxTokens: z.number().default(128),
         temperature: z.number().default(0.2),
-        timeoutMs: z.number().default(30000),
+        // Default raised because local LLM cold-starts can exceed 30s.
+        timeoutMs: z.number().default(120000),
       })
       .default({}),
     llmBudget: z
