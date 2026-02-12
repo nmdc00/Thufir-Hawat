@@ -424,6 +424,7 @@ export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null 
   };
   if (provider === 'local') {
     const baseUrl = resolveLocalBaseUrl(config);
+    startLocalKeepWarm({ baseUrl, model });
     const inner = new LocalClient(config, model, 'trivial');
     const guarded = new LocalHealthGuard(inner, {
       baseUrl,
@@ -442,6 +443,42 @@ export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null 
   return wrapWithLimiter(
     wrapWithInfra(new TrivialTaskClient(new OpenAiClient(config, model, 'trivial'), defaults), config)
   );
+}
+
+const localKeepWarmStarted = new Set<string>();
+
+function startLocalKeepWarm(params: { baseUrl: string; model: string }): void {
+  // Avoid keeping the process alive for short-lived CLI invocations.
+  const key = `${params.baseUrl}::${params.model}`;
+  if (localKeepWarmStarted.has(key)) return;
+  localKeepWarmStarted.add(key);
+
+  const intervalMs = 3 * 60 * 1000;
+  const keepAlive = '10m';
+
+  const tick = async () => {
+    try {
+      // Best-effort: Ollama-specific keep-alive. If unavailable, ignore.
+      await fetch(`${params.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: params.model,
+          prompt: 'ping',
+          stream: false,
+          keep_alive: keepAlive,
+          options: { num_predict: 1 },
+        }),
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  // Fire once soon after startup, then periodically.
+  void tick();
+  const timer = setInterval(() => void tick(), intervalMs);
+  timer.unref?.();
 }
 
 export function shouldUseExecutorModel(config: ThufirConfig): boolean {
@@ -1352,22 +1389,62 @@ class LocalClient implements LlmClient {
       timeout = setTimeout(() => controller.abort(), timeoutMs);
     }
 
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      signal: controller?.signal,
-      body: JSON.stringify({
-        model: this.model,
-        temperature: options?.temperature ?? 0.2,
-        ...(typeof options?.maxTokens === 'number' ? { max_tokens: options.maxTokens } : {}),
-        messages: localMessages,
-      }),
-    });
-
-    if (timeout) {
-      clearTimeout(timeout);
+    let response: Awaited<ReturnType<typeof fetch>>;
+    try {
+      response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        signal: controller?.signal,
+        body: JSON.stringify({
+          model: this.model,
+          temperature: options?.temperature ?? 0.2,
+          ...(typeof options?.maxTokens === 'number' ? { max_tokens: options.maxTokens } : {}),
+          messages: localMessages,
+        }),
+      });
+    } catch (error) {
+      // Local trivial calls can be slow on cold-start. Retry once with a longer timeout.
+      if (
+        this.meta?.kind === 'trivial' &&
+        timeoutMs &&
+        timeoutMs > 0 &&
+        timeoutMs < 120_000 &&
+        error instanceof Error &&
+        (error.name === 'AbortError' || String((error as any).type ?? '') === 'aborted')
+      ) {
+        const retryController =
+          typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const retryTimeoutMs = Math.min(120_000, timeoutMs * 4);
+        let retryTimeout: NodeJS.Timeout | null = null;
+        if (retryController) {
+          retryTimeout = setTimeout(() => retryController.abort(), retryTimeoutMs);
+        }
+        try {
+          response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: retryController?.signal,
+            body: JSON.stringify({
+              model: this.model,
+              temperature: options?.temperature ?? 0.2,
+              ...(typeof options?.maxTokens === 'number'
+                ? { max_tokens: options.maxTokens }
+                : {}),
+              messages: localMessages,
+            }),
+          });
+        } finally {
+          if (retryTimeout) clearTimeout(retryTimeout);
+        }
+      } else {
+        throw error;
+      }
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
     }
 
     if (!response.ok) {
