@@ -4,8 +4,10 @@ import type {
   FundingHistoryResponse,
   L2BookResponse,
   MetaAndAssetCtxsResponse,
+  PortfolioResponse,
   RecentTradesResponse,
   SpotClearinghouseStateResponse,
+  UserFeesResponse,
 } from '@nktkas/hyperliquid/api/info';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -141,5 +143,25 @@ export class HyperliquidClient {
       );
     }
     return this.info.spotClearinghouseState({ user, dex: params?.dex });
+  }
+
+  async getUserFees(): Promise<UserFeesResponse> {
+    const user = this.getAccountAddress();
+    if (!user) {
+      throw new Error(
+        'Hyperliquid account address not configured (hyperliquid.accountAddress or HYPERLIQUID_ACCOUNT_ADDRESS).'
+      );
+    }
+    return this.info.userFees({ user });
+  }
+
+  async getPortfolioMetrics(): Promise<PortfolioResponse> {
+    const user = this.getAccountAddress();
+    if (!user) {
+      throw new Error(
+        'Hyperliquid account address not configured (hyperliquid.accountAddress or HYPERLIQUID_ACCOUNT_ADDRESS).'
+      );
+    }
+    return this.info.portfolio({ user });
   }
 }
