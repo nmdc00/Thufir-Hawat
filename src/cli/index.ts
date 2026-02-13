@@ -925,6 +925,7 @@ program
       });
       if (toolResult.success) {
         const data = toolResult.data as {
+          balances?: { usdc?: number; matic?: number; source?: string };
           perp_positions?: Array<{
             symbol?: string;
             side?: string;
@@ -941,13 +942,49 @@ program
             withdrawable?: number | null;
           } | null;
           perp_error?: string | null;
+          spot_balances?: Array<{
+            coin?: string;
+            total?: number | null;
+            hold?: number | null;
+            free?: number | null;
+          }>;
+          spot_error?: string | null;
         };
+
+        const balances = data.balances ?? {};
+        const balanceSource = balances.source ?? 'unknown';
+        console.log('Balances');
+        console.log('─'.repeat(40));
+        console.log(`USDC (base): $${(balances.usdc ?? 0).toFixed(2)} (source: ${balanceSource})`);
+        console.log(`MATIC: ${(balances.matic ?? 0).toFixed(6)}`);
+        console.log('');
+
+        const spotBalances = data.spot_balances ?? [];
+        console.log(`Spot Balances (${spotBalances.length})`);
+        console.log('─'.repeat(40));
+        if (spotBalances.length === 0) {
+          console.log('No spot token balances found.');
+        } else {
+          for (const bal of spotBalances) {
+            const coin = bal.coin ?? 'Unknown';
+            const total = bal.total != null ? bal.total.toFixed(8) : 'n/a';
+            const hold = bal.hold != null ? bal.hold.toFixed(8) : 'n/a';
+            const free = bal.free != null ? bal.free.toFixed(8) : 'n/a';
+            console.log(`- ${coin} total=${total} free=${free} hold=${hold}`);
+          }
+        }
+        if (data.spot_error) {
+          console.log('');
+          console.log(`Spot error: ${data.spot_error}`);
+        }
+        console.log('');
+
         const perpPositions = data.perp_positions ?? [];
         if (perpPositions.length === 0) {
-          console.log('No open positions.');
-          return;
-        }
-        if (perpPositions.length > 0) {
+          console.log('Perp Positions');
+          console.log('─'.repeat(40));
+          console.log('No open perp positions.');
+        } else {
           console.log('Perp Positions');
           console.log('─'.repeat(40));
           for (const position of perpPositions) {
@@ -966,17 +1003,15 @@ program
               `- ${symbol} ${side} size=${size} entry=${entry} value=${value} pnl=${pnl} lev=${leverage}`
             );
           }
-          const perpSummary = data.perp_summary ?? null;
-          if (perpSummary) {
-            console.log('─'.repeat(40));
-            console.log(`Account Value: $${(perpSummary.account_value ?? 0).toFixed(2)}`);
-            console.log(`Total Notional: $${(perpSummary.total_notional ?? 0).toFixed(2)}`);
-            console.log(
-              `Margin Used: $${(perpSummary.total_margin_used ?? 0).toFixed(2)}`
-            );
-            if (perpSummary.withdrawable != null) {
-              console.log(`Withdrawable: $${perpSummary.withdrawable.toFixed(2)}`);
-            }
+        }
+        const perpSummary = data.perp_summary ?? null;
+        if (perpSummary) {
+          console.log('─'.repeat(40));
+          console.log(`Account Value: $${(perpSummary.account_value ?? 0).toFixed(2)}`);
+          console.log(`Total Notional: $${(perpSummary.total_notional ?? 0).toFixed(2)}`);
+          console.log(`Margin Used: $${(perpSummary.total_margin_used ?? 0).toFixed(2)}`);
+          if (perpSummary.withdrawable != null) {
+            console.log(`Withdrawable: $${perpSummary.withdrawable.toFixed(2)}`);
           }
         }
         if (data.perp_error) {

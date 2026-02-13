@@ -1381,6 +1381,10 @@ async function getPortfolio(ctx: ToolExecutorContext): Promise<ToolResult> {
       summary: Record<string, unknown>;
     } | null = null;
     let spotError: string | null = null;
+    let hyperliquidFees: Record<string, unknown> | null = null;
+    let hyperliquidFeesError: string | null = null;
+    let hyperliquidPortfolio: Record<string, unknown> | null = null;
+    let hyperliquidPortfolioError: string | null = null;
     if (hasHyperliquid) {
       try {
         perpPositions = await loadPerpPositions(ctx);
@@ -1391,6 +1395,16 @@ async function getPortfolio(ctx: ToolExecutorContext): Promise<ToolResult> {
         spotBalances = await loadSpotBalances(ctx);
       } catch (error) {
         spotError = error instanceof Error ? error.message : 'Unknown error';
+      }
+      try {
+        hyperliquidFees = await loadHyperliquidFees(ctx);
+      } catch (error) {
+        hyperliquidFeesError = error instanceof Error ? error.message : 'Unknown error';
+      }
+      try {
+        hyperliquidPortfolio = await loadHyperliquidPortfolio(ctx);
+      } catch (error) {
+        hyperliquidPortfolioError = error instanceof Error ? error.message : 'Unknown error';
       }
     }
 
@@ -1412,6 +1426,10 @@ async function getPortfolio(ctx: ToolExecutorContext): Promise<ToolResult> {
         spot_escrows: spotBalances?.escrows ?? [],
         spot_summary: spotBalances?.summary ?? null,
         spot_error: spotError,
+        hyperliquid_fees: hyperliquidFees,
+        hyperliquid_fees_error: hyperliquidFeesError,
+        hyperliquid_portfolio: hyperliquidPortfolio,
+        hyperliquid_portfolio_error: hyperliquidPortfolioError,
       },
     };
   } catch (error) {
@@ -1507,6 +1525,101 @@ async function loadPerpPositions(
       withdrawable: toNumber(state.withdrawable),
     },
   };
+}
+
+function computeMaxDrawdownPct(series: Array<[number, number]>): number | null {
+  if (!Array.isArray(series) || series.length < 2) return null;
+  let peak = series[0]![1];
+  let maxDd = 0;
+  for (const [, value] of series) {
+    if (!Number.isFinite(value)) continue;
+    if (value > peak) peak = value;
+    if (peak > 0) {
+      const dd = (peak - value) / peak;
+      if (dd > maxDd) maxDd = dd;
+    }
+  }
+  return Number.isFinite(maxDd) ? maxDd * 100 : null;
+}
+
+function computePnlForPeriod(series: Array<[number, number]>): number | null {
+  if (!Array.isArray(series) || series.length < 2) return null;
+  const first = series[0]![1];
+  const last = series[series.length - 1]![1];
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return null;
+  return last - first;
+}
+
+async function loadHyperliquidFees(ctx: ToolExecutorContext): Promise<Record<string, unknown>> {
+  const client = new HyperliquidClient(ctx.config);
+  const fees = (await client.getUserFees()) as {
+    feeSchedule?: Record<string, unknown>;
+    dailyUserVlm?: Array<{ date?: string; userCross?: string | number; userAdd?: string | number }>;
+    userCrossRate?: string | number;
+    userAddRate?: string | number;
+    userSpotCrossRate?: string | number;
+    userSpotAddRate?: string | number;
+  };
+
+  const daily = Array.isArray(fees.dailyUserVlm) ? fees.dailyUserVlm : [];
+  const toNum = (v: unknown): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const dailyWithTotals = daily.map((d) => {
+    const cross = toNum(d.userCross);
+    const add = toNum(d.userAdd);
+    return { date: d.date ?? null, user_cross: cross, user_add: add, user_total: cross + add };
+  });
+
+  const last14 = dailyWithTotals.slice(-14);
+  const volume14d = last14.reduce((sum, d) => sum + (d.user_total ?? 0), 0);
+
+  return {
+    rates: {
+      perps: { taker: toNum(fees.userCrossRate), maker: toNum(fees.userAddRate) },
+      spot: { taker: toNum(fees.userSpotCrossRate), maker: toNum(fees.userSpotAddRate) },
+    },
+    fee_schedule: fees.feeSchedule ?? null,
+    volume_14d: volume14d,
+    daily_volume: dailyWithTotals,
+  };
+}
+
+async function loadHyperliquidPortfolio(
+  ctx: ToolExecutorContext
+): Promise<Record<string, unknown>> {
+  const client = new HyperliquidClient(ctx.config);
+  const response = (await client.getPortfolioMetrics()) as unknown;
+  const tuples = (Array.isArray(response) ? response : []) as Array<
+    [string, { accountValueHistory?: Array<[number, string | number]>; pnlHistory?: Array<[number, string | number]>; vlm?: string | number }]
+  >;
+
+  const toNumSeries = (
+    series: Array<[number, string | number]> | undefined
+  ): Array<[number, number]> =>
+    (series ?? [])
+      .map((pair) => [Number(pair[0]), Number(pair[1])] as [number, number])
+      .filter(([t, v]) => Number.isFinite(t) && Number.isFinite(v));
+
+  const periods: Record<string, unknown> = {};
+  for (const [name, data] of tuples) {
+    const account = toNumSeries(data?.accountValueHistory);
+    const pnl = toNumSeries(data?.pnlHistory);
+    const vlm = Number(data?.vlm ?? 0);
+    periods[name] = {
+      volume: Number.isFinite(vlm) ? vlm : 0,
+      pnl_delta: computePnlForPeriod(pnl),
+      max_drawdown_pct: computeMaxDrawdownPct(account),
+      points: {
+        account_value: account.length,
+        pnl: pnl.length,
+      },
+    };
+  }
+
+  return { periods };
 }
 
 async function loadSpotBalances(
