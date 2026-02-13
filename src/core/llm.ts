@@ -899,7 +899,9 @@ export class AgenticAnthropicClient implements LlmClient {
   }
 
   async complete(messages: ChatMessage[], options?: AgenticLlmOptions): Promise<LlmResponse> {
-    const maxIterations = options?.maxToolCalls ?? 20;
+    // Some interactive requests can require many tool iterations (portfolio + web + follow-ups).
+    // Keep a conservative ceiling, but avoid premature failure.
+    const maxIterations = options?.maxToolCalls ?? 40;
     const temperature = options?.temperature ?? 0.2;
 
     const system = messages.find((msg) => msg.role === 'system')?.content ?? '';
@@ -1086,7 +1088,9 @@ export class AgenticOpenAiClient implements LlmClient {
   }
 
   async complete(messages: ChatMessage[], options?: AgenticLlmOptions): Promise<LlmResponse> {
-    const maxIterations = options?.maxToolCalls ?? 20;
+    // Some interactive requests can require many tool iterations (portfolio + web + follow-ups).
+    // Keep a conservative ceiling, but avoid premature failure.
+    const maxIterations = options?.maxToolCalls ?? 40;
     const temperature = options?.temperature ?? 0.2;
 
     const prelude = loadIdentityPrelude({
