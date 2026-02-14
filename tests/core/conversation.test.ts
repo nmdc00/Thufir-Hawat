@@ -114,7 +114,7 @@ describe('ConversationHandler', () => {
     } as any;
 
     const handler = new ConversationHandler(llm as any, marketClient as any, config);
-    const response = await handler.chat('user', 'Hello');
+    const response = await handler.chat('user', 'Any news about BTC today?');
     expect(response).toContain('ok');
 
     const systemMessage = (llm.complete as any).mock.calls[0][0][0].content;
@@ -135,7 +135,7 @@ describe('ConversationHandler', () => {
     const handler = new ConversationHandler(llm as any, marketClient as any, config);
     userPreferences.intelAlertsConfigured = true;
     userPreferences.intelAlertsPending = undefined;
-    await handler.chat('user', 'Hello');
+    await handler.chat('user', 'Remind me what I said earlier about risk controls?');
     const calls = (llm.complete as any).mock.calls;
     if (calls.length === 0) {
       throw new Error('LLM was not called');

@@ -1555,6 +1555,10 @@ class OpenAiClient implements LlmClient {
     // Inject workspace identity at the start (Moltbot pattern)
     const openaiMessages = injectIdentity(messages, prelude);
     const maxTokens = options?.maxTokens;
+    // llm-mux's /v1/responses currently rejects `max_output_tokens` (expects `max_tokens`).
+    // When talking to OpenAI directly, `max_output_tokens` is fine.
+    const responsesMaxTokenField =
+      this.config.agent.useProxy ? 'max_tokens' : 'max_output_tokens';
     const response = await fetchWithRetry(() =>
       fetch(`${this.baseUrl}${this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions'}`, {
         method: 'POST',
@@ -1566,7 +1570,7 @@ class OpenAiClient implements LlmClient {
           this.useResponsesApi
             ? {
                 model: this.model,
-                ...(typeof maxTokens === 'number' ? { max_output_tokens: maxTokens } : {}),
+                ...(typeof maxTokens === 'number' ? { [responsesMaxTokenField]: maxTokens } : {}),
                 // Merge ALL system messages into instructions (identity + task prompts)
                 instructions: openaiMessages
                   .filter((m) => m.role === 'system')

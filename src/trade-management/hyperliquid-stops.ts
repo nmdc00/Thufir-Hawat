@@ -1,11 +1,7 @@
 import type { ThufirConfig } from '../core/config.js';
 import { HyperliquidClient } from '../execution/hyperliquid/client.js';
 import type { TradeEnvelope } from './types.js';
-
-function formatDecimal(value: number, decimals: number): string {
-  const fixed = value.toFixed(decimals);
-  return fixed.replace(/\.?0+$/, '');
-}
+import { formatPrice, formatSize } from '@nktkas/hyperliquid/utils';
 
 function computeStopPx(envelope: TradeEnvelope): { slPx: number; tpPx: number } {
   const stop = envelope.stopLossPct / 100;
@@ -42,13 +38,21 @@ export async function placeExchangeSideTpsl(params: {
 
   const { slPx, tpPx } = computeStopPx(params.envelope);
   const closeIsBuy = params.envelope.side === 'sell';
-  const sizeStr = formatDecimal(params.envelope.size, marketMeta.szDecimals ?? 6);
-  if (!Number.isFinite(Number(sizeStr)) || Number(sizeStr) <= 0) {
+  const szDecimals = marketMeta.szDecimals ?? 0;
+  let sizeStr = '';
+  let slPxStr = '';
+  let tpPxStr = '';
+  try {
+    sizeStr = formatSize(params.envelope.size, szDecimals);
+  } catch {
     return { tpOid: null, slOid: null, error: 'Invalid size: rounds to zero.' };
   }
-
-  const slPxStr = formatDecimal(slPx, 8);
-  const tpPxStr = formatDecimal(tpPx, 8);
+  try {
+    slPxStr = formatPrice(slPx, szDecimals, 'perp');
+    tpPxStr = formatPrice(tpPx, szDecimals, 'perp');
+  } catch {
+    return { tpOid: null, slOid: null, error: 'Invalid stop/take-profit price (tick rules).' };
+  }
 
   try {
     const payload: any = {
@@ -125,4 +129,3 @@ export async function cancelExchangeOrderOids(params: {
     cancels: oids.map((oid) => ({ a: marketMeta.assetId, o: oid })),
   });
 }
-

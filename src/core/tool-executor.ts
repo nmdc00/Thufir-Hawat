@@ -30,6 +30,7 @@ import { getPlaybook, searchPlaybooks, upsertPlaybook } from '../memory/playbook
 import { getRpcUrl, getUsdcConfig, type EvmChain } from '../execution/evm/chains.js';
 import { getErc20Balance, transferErc20 } from '../execution/evm/erc20.js';
 import { cctpV1BridgeUsdc } from '../execution/evm/cctp_v1.js';
+import { formatPrice as formatHlPrice, formatSize as formatHlSize } from '@nktkas/hyperliquid/utils';
 
 /** Minimal interface for spending limit enforcement used in tool execution */
 export interface ToolSpendingLimiter {
@@ -379,14 +380,19 @@ export async function executeToolCall(
         const bps = Math.max(100, Math.min(9000, Number.isFinite(priceOffsetBps) ? priceOffsetBps : 5000));
         const offset = bps / 10000;
         const limitPx = side === 'buy' ? mid * (1 - offset) : mid * (1 + offset);
-
-        const formatDecimal = (value: number, decimals: number): string => {
-          const fixed = value.toFixed(decimals);
-          return fixed.replace(/\\.?0+$/, '');
-        };
-
-        const sizeStr = formatDecimal(size, marketMeta.szDecimals ?? 6);
-        const priceStr = formatDecimal(limitPx, 8);
+        const szDecimals = marketMeta.szDecimals ?? 0;
+        let sizeStr = '';
+        let priceStr = '';
+        try {
+          sizeStr = formatHlSize(size, szDecimals);
+        } catch {
+          return { success: false, error: 'Invalid size: rounds to zero.' };
+        }
+        try {
+          priceStr = formatHlPrice(limitPx, szDecimals, 'perp');
+        } catch {
+          return { success: false, error: 'Invalid price: rejected by tick rules.' };
+        }
 
         const result = await exchange.order({
           orders: [
