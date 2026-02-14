@@ -421,7 +421,28 @@ export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null 
   const trivialConfig = config.agent?.trivial;
   if (!trivialConfig?.enabled) return null;
   const provider = config.agent?.trivialTaskProvider ?? 'local';
-  const model = config.agent?.trivialTaskModel ?? 'qwen2.5:1.5b-instruct';
+  const modelRaw = config.agent?.trivialTaskModel ?? 'qwen2.5:1.5b-instruct';
+  const model = (() => {
+    // Guard against common misconfig: selecting a remote provider but leaving the local-model default.
+    // This can happen when users switch trivialTaskProvider to anthropic/openai but forget to change
+    // trivialTaskModel, which defaults to an Ollama-style model id.
+    const looksLocal = modelRaw.includes(':') || modelRaw.includes('/');
+    if (provider === 'anthropic') {
+      const looksAnthropic = modelRaw.toLowerCase().includes('claude');
+      if (!looksAnthropic && looksLocal) {
+        return config.agent.fallbackModel ?? config.agent.model;
+      }
+      return modelRaw;
+    }
+    if (provider === 'openai') {
+      // OpenAI models will not look like "qwen2.5:..." or "llama3:..." (Ollama-style).
+      if (looksLocal) {
+        return config.agent.openaiModel ?? config.agent.model;
+      }
+      return modelRaw;
+    }
+    return modelRaw;
+  })();
   const defaults: LlmClientOptions = {
     temperature: trivialConfig.temperature ?? 0.2,
     timeoutMs: trivialConfig.timeoutMs,
