@@ -323,7 +323,9 @@ class InfraLlmClient implements LlmClient {
       return response;
     } catch (error) {
       if (isRateLimitError(error)) {
-        const state = recordCooldown(meta.provider, meta.model);
+        const state = recordCooldown(meta.provider, meta.model, {
+          resetSeconds: extractResetSeconds(error),
+        });
         this.logger.warn('LLM rate limit detected; entering cooldown', {
           provider: meta.provider,
           model: meta.model,
@@ -337,6 +339,16 @@ class InfraLlmClient implements LlmClient {
 
 export function wrapWithInfra(client: LlmClient, config: ThufirConfig, logger?: Logger): LlmClient {
   return new InfraLlmClient(client, config, logger);
+}
+
+function extractResetSeconds(error: unknown): number | null {
+  const message = extractErrorMessage(error);
+  if (!message) return null;
+  // llm-mux often nests JSON into a string; a regex is the most robust approach here.
+  const m = message.match(/reset_seconds\"?\s*:\s*(\d+)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 class RateLimitFailoverClient implements LlmClient {

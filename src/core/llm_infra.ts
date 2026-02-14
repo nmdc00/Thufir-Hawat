@@ -182,14 +182,26 @@ export function isCooling(provider: string, model: string): CooldownState | null
   return state;
 }
 
-export function recordCooldown(provider: string, model: string): CooldownState {
+export function recordCooldown(
+  provider: string,
+  model: string,
+  opts?: { resetSeconds?: number | null }
+): CooldownState {
   const key = `${provider}:${model}`;
   const existing = cooldowns.get(key);
   const nextBackoff = Math.min(
     existing ? existing.backoffMs * 2 : COOLDOWN_MIN_MS,
     COOLDOWN_MAX_MS
   );
-  const state = { until: Date.now() + nextBackoff, backoffMs: nextBackoff };
+  const resetMs =
+    typeof opts?.resetSeconds === 'number' && Number.isFinite(opts.resetSeconds) && opts.resetSeconds > 0
+      ? Math.floor(opts.resetSeconds * 1000)
+      : 0;
+  const durationMs = Math.min(
+    COOLDOWN_MAX_MS,
+    Math.max(COOLDOWN_MIN_MS, nextBackoff, resetMs)
+  );
+  const state = { until: Date.now() + durationMs, backoffMs: durationMs };
   cooldowns.set(key, state);
   return state;
 }
