@@ -118,6 +118,34 @@ export class LlmBudgetManager {
     return this.enabled;
   }
 
+  status(): {
+    enabled: boolean;
+    path: string;
+    windowMs: number;
+    usedCalls: number;
+    usedTokens: number;
+    maxCallsPerHour: number;
+    maxTokensPerHour: number;
+    reserveCalls: number;
+    reserveTokens: number;
+    includeLocal: boolean;
+  } {
+    this.prune();
+    const totals = this.totals();
+    return {
+      enabled: this.enabled,
+      path: this.path,
+      windowMs: WINDOW_MS,
+      usedCalls: totals.calls,
+      usedTokens: totals.tokens,
+      maxCallsPerHour: this.maxCalls,
+      maxTokensPerHour: this.maxTokens,
+      reserveCalls: this.reserveCalls,
+      reserveTokens: this.reserveTokens,
+      includeLocal: this.includeLocal,
+    };
+  }
+
   shouldCountProvider(provider: 'anthropic' | 'openai' | 'local'): boolean {
     if (provider === 'local') {
       return this.includeLocal;

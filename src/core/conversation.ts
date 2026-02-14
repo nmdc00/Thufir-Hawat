@@ -28,6 +28,7 @@ import {
   AgenticOpenAiClient,
   FallbackLlmClient,
   OrchestratorClient,
+  RateLimitFailoverClient,
   createAgenticExecutorClient,
   isRateLimitError,
   wrapWithLimiter,
@@ -46,7 +47,13 @@ import type { AgentPlan } from '../agent/planning/types.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 import { executeToolCall } from './tool-executor.js';
 import { Logger } from './logger.js';
-import { withExecutionContext } from './llm_infra.js';
+import {
+  estimateTokensFromMessages,
+  getExecutionContext,
+  getLlmBudgetManager,
+  isCooling,
+  withExecutionContext,
+} from './llm_infra.js';
 
 export interface ConversationContext {
   userId: string;
@@ -262,9 +269,31 @@ export class ConversationHandler {
       );
     }
     if (provider === 'openai' && hasAgentModel) {
-      this.agenticLlm = wrapWithLimiter(
-        wrapWithInfra(new AgenticOpenAiClient(config, context), config)
-      );
+      const primary = wrapWithInfra(new AgenticOpenAiClient(config, context), config);
+      const explicitFailover =
+        !!config.agent?.rateLimitFallbackProvider || !!config.agent?.rateLimitFallbackModel;
+      if (!explicitFailover) {
+        this.agenticLlm = wrapWithLimiter(primary);
+      } else {
+        const fallbackProvider =
+          (config.agent?.rateLimitFallbackProvider ?? 'openai') as 'anthropic' | 'openai' | 'local';
+        // Never automatically fail over to the "local" provider for agentic calls.
+        const safeFallbackProvider = fallbackProvider === 'local' ? 'openai' : fallbackProvider;
+        const fallbackModel =
+          config.agent?.rateLimitFallbackModel ??
+          config.agent?.executorModel ??
+          (safeFallbackProvider === 'anthropic'
+            ? 'claude-3-5-haiku-20241022'
+            : 'gpt-5');
+        const fallbackRaw =
+          safeFallbackProvider === 'anthropic'
+            ? (new AgenticAnthropicClient(config, context, fallbackModel) as LlmClient)
+            : (new AgenticOpenAiClient(config, context, fallbackModel) as LlmClient);
+        const fallback = wrapWithInfra(fallbackRaw, config);
+        this.agenticLlm = wrapWithLimiter(
+          new RateLimitFailoverClient([primary, fallback], config, this.logger)
+        );
+      }
     }
     if (config.agent?.model || config.agent?.openaiModel) {
       this.agenticOpenAi = wrapWithLimiter(
@@ -470,10 +499,44 @@ export class ConversationHandler {
         // Returning a user-facing message is better than throwing; empty can happen when
         // LLM infra degrades to MONITOR_ONLY due to budget/cooldowns/rate limits.
         if (!response.content || response.content.trim() === '') {
-          return [
-            'LLM is temporarily unavailable (rate limit/cooldown/budget).',
-            'Try again in ~30-60 seconds.',
-          ].join(' ');
+          const meta = (this.agenticLlm ?? this.llm).meta ?? {
+            provider: 'openai' as const,
+            model: response.model || 'unknown',
+          };
+          const ctx = getExecutionContext();
+
+          if (ctx?.mode === 'MONITOR_ONLY') {
+            const reason = ctx.reason ? ` (${ctx.reason})` : '';
+            return `LLM suppressed: MONITOR_ONLY${reason}.`;
+          }
+
+          const budget = getLlmBudgetManager(this.config);
+          const estimatedTokens = estimateTokensFromMessages(messages);
+          if (
+            budget.isEnabled() &&
+            (meta.provider === 'openai' || meta.provider === 'anthropic' || meta.provider === 'local') &&
+            budget.shouldCountProvider(meta.provider) &&
+            !budget.canConsume(estimatedTokens, false, meta.provider)
+          ) {
+            const status = budget.status();
+            return [
+              `LLM suppressed: hourly budget exceeded (calls=${status.usedCalls}/${status.maxCallsPerHour}, tokens=${status.usedTokens}/${status.maxTokensPerHour}).`,
+              `It will recover automatically as the rolling hour window advances.`,
+              `To unblock immediately, delete ${status.path} or raise/disable agent.llmBudget in config.`,
+            ].join(' ');
+          }
+
+          if (meta.provider && meta.model) {
+            const cooldown = isCooling(meta.provider, meta.model);
+            if (cooldown) {
+              return [
+                `LLM suppressed: provider cooldown active for ${meta.provider}/${meta.model}.`,
+                `Try again after ${new Date(cooldown.until).toISOString()}.`,
+              ].join(' ');
+            }
+          }
+
+          return 'LLM is temporarily unavailable. Try again in ~30-60 seconds.';
         }
 
         const userEntry: ChatMessage = { role: 'user', content: message };

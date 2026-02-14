@@ -3,6 +3,59 @@ import fetch from 'node-fetch';
 import type { ThufirConfig } from '../core/config.js';
 import type { IncomingMessage, ChannelAdapter } from './channels.js';
 
+const TELEGRAM_MAX_MESSAGE_CHARS = 4000; // Telegram hard limit is 4096; keep headroom.
+
+function splitTelegramMessage(text: string, maxChars: number = TELEGRAM_MAX_MESSAGE_CHARS): string[] {
+  const normalized = (text ?? '').toString();
+  if (normalized.length <= maxChars) return [normalized];
+
+  // Pack by lines first to preserve readability.
+  const lines = normalized.split('\n');
+  const out: string[] = [];
+  let buf = '';
+
+  const pushBuf = () => {
+    const trimmed = buf.trimEnd();
+    if (trimmed.length > 0) out.push(trimmed);
+    buf = '';
+  };
+
+  const pushLong = (s: string) => {
+    let rest = s;
+    while (rest.length > maxChars) {
+      // Try a word boundary split.
+      let cut = rest.lastIndexOf(' ', maxChars);
+      if (cut < Math.floor(maxChars * 0.5)) {
+        // Fallback: hard split (e.g. long URLs / unbroken text).
+        cut = maxChars;
+      }
+      out.push(rest.slice(0, cut).trimEnd());
+      rest = rest.slice(cut).trimStart();
+    }
+    if (rest.length > 0) out.push(rest);
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    const candidate = buf.length === 0 ? line : `${buf}\n${line}`;
+    if (candidate.length <= maxChars) {
+      buf = candidate;
+      continue;
+    }
+
+    // Buffer can't fit this line. Flush buffer first, then handle the line.
+    pushBuf();
+    if (line.length > maxChars) {
+      pushLong(line);
+    } else {
+      buf = line;
+    }
+  }
+
+  pushBuf();
+  return out.length > 0 ? out : [''];
+}
+
 export class TelegramAdapter implements ChannelAdapter {
   name = 'telegram';
   private token: string;
@@ -24,16 +77,19 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async sendMessage(target: string, text: string): Promise<void> {
-    const response = await fetch(`https://api.telegram.org/bot${this.token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: target, text }),
-    });
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(
-        `Telegram send failed (${response.status}): ${body || 'no response body'}`
-      );
+    const chunks = splitTelegramMessage(text);
+    for (const chunk of chunks) {
+      const response = await fetch(`https://api.telegram.org/bot${this.token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: target, text: chunk }),
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new Error(
+          `Telegram send failed (${response.status}): ${body || 'no response body'}`
+        );
+      }
     }
   }
 

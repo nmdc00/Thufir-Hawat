@@ -234,7 +234,12 @@ class LlmQueue {
 }
 
 class LimitedLlmClient implements LlmClient {
-  constructor(private inner: LlmClient, private limiter: LlmQueue) {}
+  meta?: LlmClientMeta;
+
+  constructor(private inner: LlmClient, private limiter: LlmQueue) {
+    // Preserve meta for observability/debugging and infra routing decisions.
+    this.meta = inner.meta;
+  }
 
   complete(messages: ChatMessage[], options?: LlmClientOptions): Promise<LlmResponse> {
     return this.limiter.enqueue(() => this.inner.complete(messages, options));
@@ -351,7 +356,24 @@ function extractResetSeconds(error: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-class RateLimitFailoverClient implements LlmClient {
+function isFailoverEligibleError(error: unknown): boolean {
+  if (isRateLimitError(error)) return true;
+  const message = extractErrorMessage(error).toLowerCase();
+  // Proxies can fail in non-429 ways (bad routing, missing auth, schema mismatch) where a
+  // configured fallback route is still desirable.
+  return (
+    message.includes('auth_not_found') ||
+    message.includes('unknown provider for model') ||
+    message.includes('unsupported parameter') ||
+    message.includes('missing management key') ||
+    message.includes('invalid_request_error') ||
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('connect') && message.includes('refused')
+  );
+}
+
+export class RateLimitFailoverClient implements LlmClient {
   meta?: LlmClientMeta;
   private logger: Logger;
   private config: ThufirConfig;
@@ -404,7 +426,7 @@ class RateLimitFailoverClient implements LlmClient {
       } catch (error) {
         lastError = error;
         const isCooldownError = (error as { code?: string } | null)?.code === 'model_cooldown';
-        if (!isCooldownError && !isRateLimitError(error)) {
+        if (!isCooldownError && !isFailoverEligibleError(error)) {
           throw error;
         }
         if (!ctx?.critical && !allowNonCritical) {
@@ -608,10 +630,16 @@ export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null 
     };
 
     const primary = new TrivialTaskClient(guarded, localDefaults);
-    // Under llm-mux proxy, OpenAI requests may be unsupported; use Anthropic as the default remote fallback.
+    // Prefer OpenAI as the default remote fallback. We route through the same proxy (if enabled) and
+    // llm-mux supports OpenAI-style chat endpoints for gpt-* models; falling back to Anthropic here
+    // makes trivial tasks depend on Claude OAuth health unnecessarily.
     const fallbackRemote =
-      config.agent.provider === 'anthropic' || config.agent.useProxy
-        ? new AnthropicClient(config, config.agent.fallbackModel ?? 'claude-3-5-haiku-20241022', 'trivial')
+      config.agent.provider === 'anthropic'
+        ? new AnthropicClient(
+            config,
+            config.agent.fallbackModel ?? 'claude-3-5-haiku-20241022',
+            'trivial'
+          )
         : new OpenAiClient(config, config.agent.openaiModel ?? config.agent.model, 'trivial');
     const fallback = new TrivialTaskClient(fallbackRemote, defaults);
 
