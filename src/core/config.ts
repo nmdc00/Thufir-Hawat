@@ -553,6 +553,92 @@ const ConfigSchema = z.object({
       maxTradesPerScan: z.number().default(3),
     })
     .default({}),
+  tradeManagement: z
+    .object({
+      enabled: z.boolean().default(true),
+
+      defaults: z
+        .object({
+          stopLossPct: z.number().default(3.0),
+          takeProfitPct: z.number().default(5.0),
+          maxHoldHours: z.number().default(72),
+          trailingStopPct: z.number().default(2.0),
+          trailingActivationPct: z.number().default(1.0),
+        })
+        .default({}),
+
+      bounds: z
+        .object({
+          stopLossPct: z
+            .object({ min: z.number().default(1.0), max: z.number().default(8.0) })
+            .default({}),
+          takeProfitPct: z
+            .object({ min: z.number().default(2.0), max: z.number().default(15.0) })
+            .default({}),
+          maxHoldHours: z
+            .object({ min: z.number().default(1), max: z.number().default(168) })
+            .default({}),
+          trailingStopPct: z
+            .object({ min: z.number().default(0.5), max: z.number().default(5.0) })
+            .default({}),
+          trailingActivationPct: z
+            .object({ min: z.number().default(0.0), max: z.number().default(5.0) })
+            .default({}),
+        })
+        .default({}),
+
+      maxAccountRiskPct: z.number().default(5.0),
+
+      monitorIntervalSeconds: z.number().default(900),
+      activeMonitorIntervalSeconds: z.number().default(60),
+
+      useExchangeStops: z.boolean().default(true),
+
+      liquidationGuardDistanceBps: z.number().default(800),
+
+      closeExecution: z
+        .object({
+          closeTimeoutSeconds: z.number().default(5),
+          closeSlippageMultiplier: z.number().default(2.0),
+        })
+        .default({}),
+      closeRetryMinSeconds: z.number().default(30),
+
+      // If residual position remains after close attempts but is below this notional, treat it as dust.
+      dustMaxRemainingNotionalUsd: z.number().default(0.5),
+
+      antiOvertrading: z
+        .object({
+          maxConcurrentPositions: z.number().default(2),
+          cooldownAfterCloseSeconds: z.number().default(3600),
+          maxDailyEntries: z.number().default(4),
+          lossStreakPause: z
+            .object({
+              consecutiveLosses: z.number().default(3),
+              pauseSeconds: z.number().default(21600),
+            })
+            .default({}),
+        })
+        .default({}),
+
+      signalConvergence: z
+        .object({
+          minAgreeingSignals: z.number().default(2),
+          threshold: z.number().default(1.5),
+          weights: z
+            .object({
+              reflexivity_fragility: z.number().default(1.0),
+              funding_oi_skew: z.number().default(0.8),
+              cross_asset_divergence: z.number().default(0.6),
+              orderflow_imbalance: z.number().default(0.4),
+              price_vol_regime: z.number().default(0.3),
+              onchain_flow: z.number().default(0.3),
+            })
+            .default({}),
+        })
+        .default({}),
+    })
+    .default({}),
   notifications: z
     .object({
       briefing: z

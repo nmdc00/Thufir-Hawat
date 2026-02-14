@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Docs: consolidated README and handoff around the Hyperliquid-perps architecture.
+- Perps: trade management v1.1 (envelopes, exchange-side TP/SL, mechanical monitor exits, fill reconciliation, journal summary + entry selectivity + reflections).
 
 ## 0.1.0
 

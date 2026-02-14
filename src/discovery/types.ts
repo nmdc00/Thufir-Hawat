@@ -49,4 +49,17 @@ export interface ExpressionPlan {
   orderType: 'market' | 'limit';
   leverage: number;
   probeSizeUsd: number;
+
+  // Trade management parameters (recorded at entry; enforced mechanically after)
+  stopLossPct?: number;
+  takeProfitPct?: number;
+  maxHoldSeconds?: number;
+  trailingStopPct?: number | null;
+  trailingActivationPct?: number;
+
+  // Journal fields (best-effort)
+  thesis?: string;
+  signalKinds?: string[];
+  catalystId?: string | null;
+  narrativeSnapshot?: string;
 }

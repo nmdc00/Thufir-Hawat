@@ -37,6 +37,14 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
     const orderType = decision.orderType ?? 'market';
     const price = decision.price ?? null;
     const reduceOnly = decision.reduceOnly ?? false;
+    const slippageBps =
+      typeof decision.slippageBps === 'number' && Number.isFinite(decision.slippageBps)
+        ? Math.max(0, decision.slippageBps)
+        : this.defaultSlippageBps;
+    const clientOrderId =
+      typeof decision.clientOrderId === 'string' && decision.clientOrderId.trim().length > 0
+        ? decision.clientOrderId.trim()
+        : undefined;
 
     try {
       const exchange = this.client.getExchangeClient();
@@ -64,7 +72,7 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
       const orderPx =
         orderType === 'limit'
           ? price
-          : price ?? (await this.estimateMarketPrice(symbol, side));
+          : price ?? (await this.estimateMarketPrice(symbol, side, slippageBps));
       if (!orderPx || orderPx <= 0) {
         return { executed: false, message: 'Invalid decision: missing or invalid price.' };
       }
@@ -80,6 +88,7 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
             s: sizeStr,
             r: reduceOnly,
             t: { limit: { tif } },
+            ...(clientOrderId ? { c: clientOrderId as any } : {}),
           },
         ],
         grouping: 'na' as const,
@@ -105,13 +114,17 @@ export class HyperliquidLiveExecutor implements ExecutionAdapter {
     }
   }
 
-  private async estimateMarketPrice(symbol: string, side: 'buy' | 'sell'): Promise<number> {
+  private async estimateMarketPrice(
+    symbol: string,
+    side: 'buy' | 'sell',
+    slippageBps: number
+  ): Promise<number> {
     const mids = await this.client.getAllMids();
     const mid = mids[symbol];
     if (typeof mid !== 'number' || !Number.isFinite(mid)) {
       throw new Error(`Missing mid price for ${symbol}.`);
     }
-    const slippage = this.defaultSlippageBps / 10000;
+    const slippage = (Number.isFinite(slippageBps) ? slippageBps : this.defaultSlippageBps) / 10000;
     return side === 'buy' ? mid * (1 + slippage) : mid * (1 - slippage);
   }
 

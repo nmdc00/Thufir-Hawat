@@ -11,6 +11,7 @@ Thufir Hawat is a Hyperliquid-perps-focused autonomous discovery + execution sys
 - `pnpm build` and `pnpm test` are expected to pass on Node 22 (see `docs/PROGRESS.md` for the authoritative status).
 - Execution modes: `paper` (default), `webhook`, `live`.
 - The agentic orchestrator supports tool traces / plan traces / critic notes / fragility traces.
+- Trade management is enforced mechanically (envelopes + position monitor + exchange-side TP/SL where supported + best-effort fill reconciliation).
 
 Legacy prediction-market experiments (Augur/Manifold/CLOB) are not part of the current codebase.
 

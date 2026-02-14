@@ -15,6 +15,7 @@ import type { MarketClient } from '../execution/market-client.js';
 import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
 import { runDiscovery } from '../discovery/engine.js';
+import type { ExpressionPlan } from '../discovery/types.js';
 import { recordPerpTrade } from '../memory/perp_trades.js';
 import { recordPerpTradeJournal } from '../memory/perp_trade_journal.js';
 import { checkPerpRiskLimits } from '../execution/perp-risk.js';
@@ -22,6 +23,20 @@ import { getDailyPnLRollup } from './daily_pnl.js';
 import { openDatabase } from '../memory/db.js';
 import { listOpenPositionsFromTrades } from '../memory/trades.js';
 import { Logger } from './logger.js';
+import { buildTradeEnvelopeFromExpression } from '../trade-management/envelope.js';
+import {
+  countTradeEntriesToday,
+  getLastCloseForSymbol,
+  listOpenTradeEnvelopes,
+  listRecentClosePnl,
+  recordTradeEnvelope,
+  recordTradeSignals,
+} from '../trade-management/db.js';
+import { placeExchangeSideTpsl } from '../trade-management/hyperliquid-stops.js';
+import { HyperliquidClient } from '../execution/hyperliquid/client.js';
+import { buildTradeJournalSummary } from '../trade-management/summary.js';
+import { reconcileEntryFill } from '../trade-management/reconcile.js';
+import { createHyperliquidCloid } from '../execution/hyperliquid/cloid.js';
 
 export interface AutonomousConfig {
   enabled: boolean;
@@ -57,15 +72,17 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   private limiter: DbSpendingLimitEnforcer;
   private logger: Logger;
   private thufirConfig: ThufirConfig;
+  private llm: LlmClient;
 
   private isPaused = false;
   private pauseReason = '';
   private consecutiveLosses = 0;
   private scanTimer: NodeJS.Timeout | null = null;
   private reportTimer: NodeJS.Timeout | null = null;
+  private pauseTimer: NodeJS.Timeout | null = null;
 
   constructor(
-    _llm: LlmClient,
+    llm: LlmClient,
     marketClient: MarketClient,
     executor: ExecutionAdapter,
     limiter: DbSpendingLimitEnforcer,
@@ -73,6 +90,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     logger?: Logger
   ) {
     super();
+    this.llm = llm;
     this.marketClient = marketClient;
     this.executor = executor;
     this.limiter = limiter;
@@ -131,6 +149,10 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     if (this.reportTimer) {
       clearTimeout(this.reportTimer);
       this.reportTimer = null;
+    }
+    if (this.pauseTimer) {
+      clearTimeout(this.pauseTimer);
+      this.pauseTimer = null;
     }
     this.logger.info('Autonomous mode stopped');
   }
@@ -202,6 +224,27 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   }
 
   private async runDiscoveryScan(): Promise<string> {
+    const tm = this.thufirConfig.tradeManagement;
+    if (tm?.enabled) {
+      const lossCfg = tm.antiOvertrading?.lossStreakPause;
+      const streakN = Number(lossCfg?.consecutiveLosses ?? 0);
+      const pauseSeconds = Number(lossCfg?.pauseSeconds ?? 0);
+      if (!this.isPaused && streakN > 0 && pauseSeconds > 0) {
+        const recent = listRecentClosePnl(Math.max(10, streakN + 2));
+        let streak = 0;
+        for (const row of recent) {
+          if (row.pnlUsd > 0) break;
+          streak += 1;
+          if (streak >= streakN) break;
+        }
+        if (streak >= streakN) {
+          this.pause(`Loss streak pause triggered (${streak}/${streakN})`);
+          this.pauseTimer = setTimeout(() => this.resume(), pauseSeconds * 1000);
+          return `Autonomous trading paused for ${pauseSeconds}s due to loss streak (${streak}/${streakN}).`;
+        }
+      }
+    }
+
     const result = await runDiscovery(this.thufirConfig);
     if (result.expressions.length === 0) {
       return 'No discovery expressions generated.';
@@ -229,20 +272,84 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return 'No expressions met autonomy thresholds (minEdge/confidence).';
     }
 
-    const toExecute = eligible.slice(0, this.config.maxTradesPerScan);
+    const toExecute = await this.selectExpressionsToExecute(eligible, this.config.maxTradesPerScan);
     const outputs: string[] = [];
+    let cachedEquityUsd: number | null = null;
+    let equityFetched = false;
 
     for (const expr of toExecute) {
+      const tmCfg = this.thufirConfig.tradeManagement;
+      if (tmCfg?.enabled) {
+        const openCount = listOpenTradeEnvelopes().length;
+        const maxConcurrent = Number(tmCfg.antiOvertrading?.maxConcurrentPositions ?? 2);
+        if (openCount >= maxConcurrent) {
+          outputs.push(`${expr.symbol}: Skipped (max concurrent positions reached: ${openCount}/${maxConcurrent})`);
+          continue;
+        }
+
+        const dailyCap = Number(tmCfg.antiOvertrading?.maxDailyEntries ?? 0);
+        if (dailyCap > 0) {
+          const today = countTradeEntriesToday();
+          if (today >= dailyCap) {
+            outputs.push(`${expr.symbol}: Skipped (daily entry cap reached: ${today}/${dailyCap})`);
+            continue;
+          }
+        }
+
+        const cooldown = Number(tmCfg.antiOvertrading?.cooldownAfterCloseSeconds ?? 0);
+        if (cooldown > 0) {
+          const symbolNorm = expr.symbol.includes('/') ? expr.symbol.split('/')[0]! : expr.symbol;
+          const lastClose = getLastCloseForSymbol(symbolNorm.toUpperCase());
+          if (lastClose) {
+            const ageSec = (Date.now() - Date.parse(lastClose.closedAt)) / 1000;
+            if (Number.isFinite(ageSec) && ageSec >= 0 && ageSec < cooldown) {
+              outputs.push(`${expr.symbol}: Skipped (cooldown active: ${Math.round(ageSec)}s/${cooldown}s)`);
+              continue;
+            }
+          }
+        }
+      }
+
       const symbol = expr.symbol.includes('/') ? expr.symbol.split('/')[0]! : expr.symbol;
       const market = await this.marketClient.getMarket(symbol);
       const markPrice = market.markPrice ?? 0;
-      const probeUsd = Math.min(expr.probeSizeUsd, this.limiter.getRemainingDaily());
+      let probeUsd = Math.min(expr.probeSizeUsd, this.limiter.getRemainingDaily());
       if (probeUsd <= 0) {
         outputs.push(`${symbol}: Skipped (insufficient daily budget)`);
         continue;
       }
-      const size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
 
+      // Risk-based sizing (live mode): cap account equity risk per trade.
+      const tmRiskCfg = this.thufirConfig.tradeManagement;
+      const maxRiskPct = Number(tmRiskCfg?.maxAccountRiskPct ?? 0);
+      const stopLossPct = Number(expr.stopLossPct ?? tmRiskCfg?.defaults?.stopLossPct ?? 3.0);
+      if (
+        maxRiskPct > 0 &&
+        stopLossPct > 0 &&
+        this.thufirConfig.execution?.mode === 'live' &&
+        this.thufirConfig.execution?.provider === 'hyperliquid'
+      ) {
+        try {
+          if (!equityFetched) {
+            equityFetched = true;
+            const client = new HyperliquidClient(this.thufirConfig);
+            const state = (await client.getClearinghouseState()) as any;
+            const raw = state?.marginSummary?.accountValue ?? state?.crossMarginSummary?.accountValue ?? null;
+            const num = typeof raw === 'string' || typeof raw === 'number' ? Number(raw) : NaN;
+            cachedEquityUsd = Number.isFinite(num) && num > 0 ? num : null;
+          }
+          if (cachedEquityUsd != null) {
+            const maxLossUsd = (maxRiskPct / 100) * cachedEquityUsd;
+            const capNotional = maxLossUsd / (stopLossPct / 100);
+            if (Number.isFinite(capNotional) && capNotional > 0) {
+              probeUsd = Math.min(probeUsd, capNotional);
+            }
+          }
+        } catch {
+          // Best-effort; if equity fetch fails, proceed with the probe size.
+        }
+      }
+      const size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
       const riskCheck = await checkPerpRiskLimits({
         config: this.thufirConfig,
         symbol,
@@ -275,10 +382,12 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         size,
         orderType: expr.orderType,
         leverage: expr.leverage,
+        clientOrderId: createHyperliquidCloid(),
         reasoning: `${expr.expectedMove} | edge=${(expr.expectedEdge * 100).toFixed(2)}% confidence=${(
           expr.confidence * 100
         ).toFixed(1)}%`,
       };
+      const decisionStartMs = Date.now();
 
       const tradeResult = await this.executor.execute(market, decision);
       if (tradeResult.executed) {
@@ -313,6 +422,44 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           outcome: tradeResult.executed ? 'executed' : 'failed',
           message: tradeResult.message,
         });
+
+        if (tradeResult.executed && typeof markPrice === 'number' && markPrice > 0) {
+          let entryPrice = markPrice;
+          let entryFeesUsd: number | null = null;
+          if (decision.clientOrderId && this.thufirConfig.execution?.mode === 'live') {
+            const rec = await reconcileEntryFill({
+              config: this.thufirConfig,
+              symbol,
+              entryCloid: decision.clientOrderId,
+              startTimeMs: decisionStartMs,
+            });
+            if (rec.avgPx != null) entryPrice = rec.avgPx;
+            entryFeesUsd = rec.feesUsd;
+          }
+          const envelope = buildTradeEnvelopeFromExpression({
+            config: this.thufirConfig,
+            tradeId: `perp_${tradeId}`,
+            expr,
+            entryPrice,
+            size,
+            notionalUsd: probeUsd,
+            entryCloid: decision.clientOrderId ?? null,
+            entryFeesUsd,
+          });
+          recordTradeEnvelope(envelope);
+          recordTradeSignals({
+            tradeId: envelope.tradeId,
+            symbol: envelope.symbol,
+            signals: (expr.signalKinds ?? []).map((kind: string) => ({ kind })),
+          });
+
+          const stops = await placeExchangeSideTpsl({ config: this.thufirConfig, envelope });
+          if (stops.tpOid || stops.slOid) {
+            envelope.tpOid = stops.tpOid;
+            envelope.slOid = stops.slOid;
+            recordTradeEnvelope(envelope);
+          }
+        }
       } catch {
         // Best-effort journaling: never block trading due to local DB issues.
       }
@@ -320,6 +467,69 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     }
 
     return outputs.join('\n');
+  }
+
+  private async selectExpressionsToExecute(
+    eligible: ExpressionPlan[],
+    maxTrades: number
+  ): Promise<ExpressionPlan[]> {
+    if (maxTrades <= 0) return [];
+    if (eligible.length <= maxTrades) return eligible;
+    if (this.thufirConfig.tradeManagement?.enabled !== true) {
+      return eligible.slice(0, maxTrades);
+    }
+
+    const journalSummary = buildTradeJournalSummary({ limit: 20 });
+    const payload = {
+      N: maxTrades,
+      journalSummary,
+      eligibleExpressions: eligible.map((e) => ({
+        id: e.id,
+        symbol: e.symbol,
+        side: e.side,
+        expectedEdge: e.expectedEdge,
+        confidence: e.confidence,
+        leverage: e.leverage,
+        probeSizeUsd: e.probeSizeUsd,
+        stopLossPct: e.stopLossPct ?? null,
+        takeProfitPct: e.takeProfitPct ?? null,
+        maxHoldSeconds: e.maxHoldSeconds ?? null,
+        trailingStopPct: e.trailingStopPct ?? null,
+        trailingActivationPct: e.trailingActivationPct ?? null,
+        signalKinds: e.signalKinds ?? [],
+        thesis: e.thesis ?? '',
+      })),
+    };
+
+    const system =
+      'You are selecting which (if any) expressions to execute in full autonomous mode.\n' +
+      'Default state is NO TRADE. Most scans should result in no action.\n' +
+      'Return ONLY JSON: {"selectedExpressionIds":[...], "rationale":"..."}.\n' +
+      'Rules:\n' +
+      '- Never select more than N.\n' +
+      '- Prefer selectivity over action.\n';
+
+    try {
+      const res = await this.llm.complete(
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: JSON.stringify(payload, null, 2) },
+        ],
+        { temperature: 0.2, maxTokens: 600 }
+      );
+      const parsed = safeJson(res.content) as any;
+      const ids = Array.isArray(parsed?.selectedExpressionIds)
+        ? parsed.selectedExpressionIds.map((x: any) => String(x)).filter(Boolean)
+        : [];
+      if (ids.length === 0) return [];
+      const allow = new Set(eligible.map((e) => e.id));
+      const filtered = ids.filter((id: string) => allow.has(id)).slice(0, maxTrades);
+      const byId = new Map(eligible.map((e) => [e.id, e] as const));
+      return filtered.map((id: string) => byId.get(id)!).filter(Boolean);
+    } catch (err) {
+      this.logger.warn('LLM entry selection failed; falling back to top expressions', err);
+      return eligible.slice(0, maxTrades);
+    }
   }
 
   /**
@@ -520,5 +730,18 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON autonomous_trades(timestamp);
       CREATE INDEX IF NOT EXISTS idx_trades_outcome ON autonomous_trades(outcome);
     `);
+  }
+}
+
+function safeJson(text: string): unknown | null {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return null;
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start < 0 || end < start) return null;
+  try {
+    return JSON.parse(trimmed.slice(start, end + 1));
+  } catch {
+    return null;
   }
 }

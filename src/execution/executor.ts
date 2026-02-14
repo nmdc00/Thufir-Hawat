@@ -13,6 +13,13 @@ export interface TradeDecision {
   orderType?: 'market' | 'limit';
   confidence?: 'low' | 'medium' | 'high';
   reasoning?: string;
+  /**
+   * Hyperliquid live mode: optional slippage override (bps) for IOC market-style orders.
+   * Other executors may ignore this.
+   */
+  slippageBps?: number;
+  /** Hyperliquid: client order id (Cloid). Useful for reconciling fills. */
+  clientOrderId?: string;
 }
 
 export interface TradeResult {

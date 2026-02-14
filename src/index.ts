@@ -17,6 +17,14 @@ import { DbSpendingLimitEnforcer } from './execution/wallet/limits_db.js';
 import { listCalibrationSummaries } from './memory/calibration.js';
 import { checkPerpRiskLimits } from './execution/perp-risk.js';
 import { executeToolCall } from './core/tool-executor.js';
+import { TradeManagementService } from './trade-management/service.js';
+import type { ExpressionPlan } from './discovery/types.js';
+import { buildTradeEnvelopeFromExpression } from './trade-management/envelope.js';
+import { recordTradeEnvelope, recordTradeSignals } from './trade-management/db.js';
+import { placeExchangeSideTpsl } from './trade-management/hyperliquid-stops.js';
+import { reconcileEntryFill } from './trade-management/reconcile.js';
+import { createHyperliquidCloid } from './execution/hyperliquid/cloid.js';
+import { randomUUID } from 'node:crypto';
 
 // Re-export types
 export * from './types/index.js';
@@ -66,6 +74,7 @@ export class Thufir {
   private executor?: ExecutionAdapter;
   private limiter?: DbSpendingLimitEnforcer;
   private conversation?: ConversationHandler;
+  private tradeManagement?: TradeManagementService;
   private started: boolean = false;
 
   constructor(options?: { configPath?: string; userId?: string }) {
@@ -97,6 +106,13 @@ export class Thufir {
     });
     const infoLlm = createTrivialTaskClient(config) ?? undefined;
     this.conversation = new ConversationHandler(this.llm, this.marketClient, config, infoLlm);
+    this.tradeManagement = new TradeManagementService({
+      config,
+      marketClient: this.marketClient,
+      executor: this.executor,
+      llm: this.llm,
+    });
+    this.tradeManagement.start();
 
     this.started = true;
   }
@@ -124,6 +140,8 @@ export class Thufir {
       return;
     }
 
+    this.tradeManagement?.stop();
+    this.tradeManagement = undefined;
     this.conversation = undefined;
     this.limiter = undefined;
     this.executor = undefined;
@@ -209,6 +227,8 @@ export class Thufir {
       };
     }
 
+    const entryCloid = createHyperliquidCloid();
+    const decisionStartMs = Date.now();
     const result = await this.executor.execute(market, {
       action: side,
       side,
@@ -218,6 +238,7 @@ export class Thufir {
       price: _params.price,
       leverage: _params.leverage,
       reduceOnly: _params.reduceOnly,
+      clientOrderId: entryCloid,
       confidence: 'medium',
       reasoning: `Programmatic trade for ${this.userId}`,
     });
@@ -226,6 +247,63 @@ export class Thufir {
       this.limiter.confirm(sizeUsd);
     } else {
       this.limiter.release(sizeUsd);
+    }
+
+    // Best-effort: record envelope + place bracket TP/SL for programmatic entries (non-reduce-only).
+    try {
+      if (result.executed && !_params.reduceOnly && typeof markPrice === 'number' && markPrice > 0) {
+        let entryPrice = markPrice;
+        let entryFeesUsd: number | null = null;
+        if (this.config.execution?.mode === 'live') {
+          const rec = await reconcileEntryFill({
+            config: this.config,
+            symbol,
+            entryCloid,
+            startTimeMs: decisionStartMs,
+          });
+          if (rec.avgPx != null) entryPrice = rec.avgPx;
+          entryFeesUsd = rec.feesUsd;
+        }
+
+        const expr: ExpressionPlan = {
+          id: `program_${Date.now()}_${randomUUID()}`,
+          hypothesisId: `program_${Date.now()}_${randomUUID()}`,
+          symbol,
+          side,
+          confidence: 0.5,
+          expectedEdge: 0,
+          entryZone: 'market',
+          invalidation: '',
+          expectedMove: '',
+          orderType: (_params.orderType ?? 'market') as 'market' | 'limit',
+          leverage: _params.leverage ?? this.config.hyperliquid?.maxLeverage ?? 1,
+          probeSizeUsd: sizeUsd,
+          thesis: `Programmatic trade for ${this.userId}`,
+          signalKinds: [],
+        };
+
+        const envelope = buildTradeEnvelopeFromExpression({
+          config: this.config,
+          tradeId: `perp_program_${Date.now()}_${randomUUID()}`,
+          expr,
+          entryPrice,
+          size,
+          notionalUsd: sizeUsd,
+          entryCloid,
+          entryFeesUsd,
+        });
+        recordTradeEnvelope(envelope);
+        recordTradeSignals({ tradeId: envelope.tradeId, symbol: envelope.symbol, signals: [] });
+
+        const stops = await placeExchangeSideTpsl({ config: this.config, envelope });
+        if (stops.tpOid || stops.slOid) {
+          envelope.tpOid = stops.tpOid;
+          envelope.slOid = stops.slOid;
+          recordTradeEnvelope(envelope);
+        }
+      }
+    } catch {
+      // never fail the programmatic trade call due to journaling issues
     }
 
     return result;

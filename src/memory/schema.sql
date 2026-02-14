@@ -440,6 +440,131 @@ CREATE INDEX IF NOT EXISTS idx_decision_artifacts_fingerprint ON decision_artifa
 CREATE INDEX IF NOT EXISTS idx_decision_artifacts_expires ON decision_artifacts(expires_at);
 
 -- ============================================================================
+-- Trade Management (Hyperliquid Perps)
+-- ============================================================================
+
+-- Immutable at-entry envelope + mutable monitor state.
+CREATE TABLE IF NOT EXISTS trade_envelopes (
+    trade_id TEXT PRIMARY KEY,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT,
+
+    hypothesis_id TEXT,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+
+    entry_price REAL NOT NULL,
+    size REAL NOT NULL,
+    leverage REAL,
+    notional_usd REAL,
+    margin_usd REAL,
+
+    stop_loss_pct REAL NOT NULL,
+    take_profit_pct REAL NOT NULL,
+    max_hold_seconds INTEGER NOT NULL,
+    trailing_stop_pct REAL,
+    trailing_activation_pct REAL NOT NULL,
+    max_loss_usd REAL,
+
+    proposed_json TEXT,
+
+    thesis TEXT,
+    signal_kinds TEXT,
+    invalidation TEXT,
+    catalyst_id TEXT,
+    narrative_snapshot TEXT,
+
+    high_water_price REAL,
+    low_water_price REAL,
+    trailing_activated INTEGER DEFAULT 0,
+    funding_since_open_usd REAL,
+
+    close_pending INTEGER DEFAULT 0,
+    close_pending_reason TEXT,
+    close_pending_at TEXT,
+
+    entry_cloid TEXT,
+    entry_fees_usd REAL,
+
+    status TEXT DEFAULT 'open',
+    entered_at TEXT,
+    expires_at TEXT,
+
+    tp_oid TEXT,
+    sl_oid TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_envelopes_symbol_status ON trade_envelopes(symbol, status);
+CREATE INDEX IF NOT EXISTS idx_trade_envelopes_entered_at ON trade_envelopes(entered_at);
+CREATE INDEX IF NOT EXISTS idx_trade_envelopes_expires_at ON trade_envelopes(expires_at);
+
+CREATE TABLE IF NOT EXISTS trade_closes (
+    trade_id TEXT PRIMARY KEY,
+    created_at TEXT DEFAULT (datetime('now')),
+
+    symbol TEXT NOT NULL,
+    exit_price REAL NOT NULL,
+    exit_reason TEXT NOT NULL,
+    pnl_usd REAL NOT NULL,
+    pnl_pct REAL NOT NULL,
+    hold_duration_seconds INTEGER NOT NULL,
+    funding_paid_usd REAL DEFAULT 0,
+    fees_usd REAL DEFAULT 0,
+    closed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_closes_created_at ON trade_closes(created_at);
+CREATE INDEX IF NOT EXISTS idx_trade_closes_symbol ON trade_closes(symbol);
+CREATE INDEX IF NOT EXISTS idx_trade_closes_reason ON trade_closes(exit_reason);
+
+CREATE TABLE IF NOT EXISTS trade_reflections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now')),
+
+    trade_id TEXT NOT NULL,
+    thesis_correct INTEGER NOT NULL,
+    timing_correct INTEGER NOT NULL,
+    exit_reason_appropriate INTEGER NOT NULL,
+    what_worked TEXT,
+    what_failed TEXT,
+    lesson_for_next_trade TEXT,
+
+    FOREIGN KEY (trade_id) REFERENCES trade_envelopes(trade_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_reflections_trade_id ON trade_reflections(trade_id);
+CREATE INDEX IF NOT EXISTS idx_trade_reflections_created_at ON trade_reflections(created_at);
+
+CREATE TABLE IF NOT EXISTS trade_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now')),
+
+    trade_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_kind TEXT NOT NULL,
+    weight REAL,
+    directional_bias TEXT,
+    time_horizon TEXT,
+
+    FOREIGN KEY (trade_id) REFERENCES trade_envelopes(trade_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_signals_trade_id ON trade_signals(trade_id);
+CREATE INDEX IF NOT EXISTS idx_trade_signals_signal_kind ON trade_signals(signal_kind);
+
+CREATE TABLE IF NOT EXISTS trade_price_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now')),
+    trade_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    mid_price REAL NOT NULL,
+    FOREIGN KEY (trade_id) REFERENCES trade_envelopes(trade_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_price_samples_trade_id ON trade_price_samples(trade_id);
+CREATE INDEX IF NOT EXISTS idx_trade_price_samples_created_at ON trade_price_samples(created_at);
+
+-- ============================================================================
 -- Execution State (Execution Mode Gating)
 -- ============================================================================
 

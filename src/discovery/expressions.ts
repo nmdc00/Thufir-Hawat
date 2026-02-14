@@ -32,6 +32,43 @@ export function mapExpressionPlan(
     }
   }
 
+  const tm = (config as any)?.tradeManagement ?? {};
+  const defaults = tm.defaults ?? {};
+  const bounds = tm.bounds ?? {};
+  const clamp = (value: number, min: number, max: number): number =>
+    Math.min(max, Math.max(min, value));
+
+  const stopLossPct = clamp(
+    Number(defaults.stopLossPct ?? 3.0),
+    Number(bounds.stopLossPct?.min ?? 1.0),
+    Number(bounds.stopLossPct?.max ?? 8.0)
+  );
+  const takeProfitPct = clamp(
+    Number(defaults.takeProfitPct ?? 5.0),
+    Number(bounds.takeProfitPct?.min ?? 2.0),
+    Number(bounds.takeProfitPct?.max ?? 15.0)
+  );
+  const maxHoldHours = clamp(
+    Number(defaults.maxHoldHours ?? 72),
+    Number(bounds.maxHoldHours?.min ?? 1),
+    Number(bounds.maxHoldHours?.max ?? 168)
+  );
+  const trailingStopPct = clamp(
+    Number(defaults.trailingStopPct ?? 2.0),
+    Number(bounds.trailingStopPct?.min ?? 0.5),
+    Number(bounds.trailingStopPct?.max ?? 5.0)
+  );
+  const trailingActivationPct = clamp(
+    Number(defaults.trailingActivationPct ?? 1.0),
+    Number(bounds.trailingActivationPct?.min ?? 0.0),
+    Number(bounds.trailingActivationPct?.max ?? 5.0)
+  );
+
+  const agreeingSignalKinds = cluster.signals
+    .filter((s) => s.directionalBias !== 'neutral')
+    .filter((s) => (side === 'buy' ? s.directionalBias === 'up' : s.directionalBias === 'down'))
+    .map((s) => s.kind);
+
   return {
     id: `expr_${hypothesis.id}`,
     hypothesisId: hypothesis.id,
@@ -45,6 +82,17 @@ export function mapExpressionPlan(
     orderType: 'market',
     leverage,
     probeSizeUsd: probeBudget,
+
+    stopLossPct,
+    takeProfitPct,
+    maxHoldSeconds: Math.round(maxHoldHours * 3600),
+    trailingStopPct: trailingStopPct || null,
+    trailingActivationPct,
+
+    thesis: `${hypothesis.pressureSource}: ${hypothesis.expectedExpression}`,
+    signalKinds: agreeingSignalKinds,
+    catalystId: null,
+    narrativeSnapshot: '',
   };
 }
 

@@ -27,6 +27,7 @@ import { AutonomousManager } from './autonomous.js';
 import { runDiscovery } from '../discovery/engine.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 import { withExecutionContext } from './llm_infra.js';
+import { TradeManagementService } from '../trade-management/service.js';
 
 export class ThufirAgent {
   private llm: ReturnType<typeof createLlmClient>;
@@ -39,6 +40,7 @@ export class ThufirAgent {
   private scanTimer: NodeJS.Timeout | null = null;
   private conversation: ConversationHandler;
   private autonomous: AutonomousManager;
+  private tradeManagement: TradeManagementService;
   private toolContext: ToolExecutorContext;
 
   constructor(private config: ThufirConfig, logger?: Logger) {
@@ -92,6 +94,14 @@ export class ThufirAgent {
       this.config,
       this.logger
     );
+
+    this.tradeManagement = new TradeManagementService({
+      config: this.config,
+      marketClient: this.marketClient,
+      executor: this.executor,
+      llm: this.autonomyLlm,
+      logger: this.logger,
+    });
   }
 
   private createExecutor(config: ThufirConfig): ExecutionAdapter {
@@ -110,6 +120,9 @@ export class ThufirAgent {
   }
 
   start(): void {
+    // Always start trade management when enabled (mechanical exit enforcement).
+    this.tradeManagement.start();
+
     // Start autonomous manager (handles its own scheduling)
     this.autonomous.start();
 
@@ -133,6 +146,7 @@ export class ThufirAgent {
 
   stop(): void {
     this.autonomous.stop();
+    this.tradeManagement.stop();
     if (this.scanTimer) {
       clearInterval(this.scanTimer);
       this.scanTimer = null;

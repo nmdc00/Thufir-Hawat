@@ -18,6 +18,13 @@ import {
 import { listPerpTrades } from '../memory/perp_trades.js';
 import { recordPerpTrade } from '../memory/perp_trades.js';
 import { recordPerpTradeJournal, listPerpTradeJournals } from '../memory/perp_trade_journal.js';
+import type { ExpressionPlan } from '../discovery/types.js';
+import { buildTradeEnvelopeFromExpression } from '../trade-management/envelope.js';
+import { listOpenTradeEnvelopes, listRecentTradeCloses, recordTradeEnvelope, recordTradeSignals } from '../trade-management/db.js';
+import { placeExchangeSideTpsl } from '../trade-management/hyperliquid-stops.js';
+import { reconcileEntryFill } from '../trade-management/reconcile.js';
+import { createHyperliquidCloid } from '../execution/hyperliquid/cloid.js';
+import { buildTradeJournalSummary } from '../trade-management/summary.js';
 import { listRecentAgentIncidents } from '../memory/incidents.js';
 import { getPlaybook, searchPlaybooks, upsertPlaybook } from '../memory/playbooks.js';
 import { getRpcUrl, getUsdcConfig, type EvmChain } from '../execution/evm/chains.js';
@@ -728,9 +735,11 @@ export async function executeToolCall(
           price,
           leverage,
           reduceOnly,
+          clientOrderId: createHyperliquidCloid(),
           confidence: 'medium' as const,
           reasoning,
         };
+        const decisionStartMs = Date.now();
         const result = await ctx.executor.execute(market, decision);
         if (!result.executed) {
           ctx.limiter.release(notionalUsd);
@@ -802,6 +811,57 @@ export async function executeToolCall(
               notionalUsd,
             },
           });
+          // Best-effort: record envelope + place exchange-side TP/SL triggers for any non-reduce-only entry.
+          if (!reduceOnly && typeof market.markPrice === 'number' && market.markPrice > 0) {
+            let entryPrice = market.markPrice;
+            let entryFeesUsd: number | null = null;
+            if (decision.clientOrderId && ctx.config.execution?.mode === 'live') {
+              const rec = await reconcileEntryFill({
+                config: ctx.config,
+                symbol,
+                entryCloid: decision.clientOrderId,
+                startTimeMs: decisionStartMs,
+              });
+              if (rec.avgPx != null) entryPrice = rec.avgPx;
+              entryFeesUsd = rec.feesUsd;
+            }
+            const expr: ExpressionPlan = {
+              id: `manual_${tradeId}`,
+              hypothesisId: `manual_${tradeId}`,
+              symbol,
+              side: side as 'buy' | 'sell',
+              confidence: 0.5,
+              expectedEdge: 0,
+              entryZone: orderType,
+              invalidation: '',
+              expectedMove: '',
+              orderType,
+              leverage: leverage ?? ctx.config.hyperliquid?.maxLeverage ?? 1,
+              probeSizeUsd: notionalUsd,
+              thesis: reasoning,
+              signalKinds: [],
+            };
+
+            const envelope = buildTradeEnvelopeFromExpression({
+              config: ctx.config,
+              tradeId: `perp_${tradeId}`,
+              expr,
+              entryPrice,
+              size,
+              notionalUsd,
+              entryCloid: decision.clientOrderId ?? null,
+              entryFeesUsd,
+            });
+            recordTradeEnvelope(envelope);
+            recordTradeSignals({ tradeId: envelope.tradeId, symbol: envelope.symbol, signals: [] });
+
+            const stops = await placeExchangeSideTpsl({ config: ctx.config, envelope });
+            if (stops.tpOid || stops.slOid) {
+              envelope.tpOid = stops.tpOid;
+              envelope.slOid = stops.slOid;
+              recordTradeEnvelope(envelope);
+            }
+          }
         } catch {
           // Best-effort journaling: never block trading due to local DB issues.
         }
@@ -850,6 +910,38 @@ export async function executeToolCall(
         }
       }
 
+      case 'trade_management_open_envelopes': {
+        const limit = Math.min(Math.max(Number(toolInput.limit ?? 50), 1), 200);
+        try {
+          const envelopes = listOpenTradeEnvelopes().slice(0, limit);
+          return { success: true, data: { envelopes } };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          return { success: false, error: message };
+        }
+      }
+
+      case 'trade_management_recent_closes': {
+        const limit = Math.min(Math.max(Number(toolInput.limit ?? 20), 1), 200);
+        try {
+          const closes = listRecentTradeCloses(limit);
+          return { success: true, data: { closes } };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          return { success: false, error: message };
+        }
+      }
+
+      case 'trade_management_summary': {
+        const limit = Math.min(Math.max(Number(toolInput.limit ?? 20), 1), 200);
+        try {
+          const summary = buildTradeJournalSummary({ limit });
+          return { success: true, data: { summary } };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          return { success: false, error: message };
+        }
+      }
       case 'perp_analyze': {
         const symbol = String(toolInput.symbol ?? '').trim();
         const horizon = String(toolInput.horizon ?? '').trim();

@@ -7,6 +7,9 @@
 - `perp_open_orders`: list open orders
 - `perp_cancel_order`: cancel order by id
 - `perp_positions`: list open positions
+- `trade_management_open_envelopes`: list open trade envelopes (mechanical exit layer)
+- `trade_management_recent_closes`: list recent trade-management close records
+- `trade_management_summary`: compute a compact journal summary (last N closes)
 - `get_portfolio`: combined balances + perp positions
 - `perp_analyze`: market analysis with directional probability + risks
 - `position_analysis`: exposure + liquidation risk report

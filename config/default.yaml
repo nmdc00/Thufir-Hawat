@@ -201,6 +201,56 @@ autonomy:
   dailyReportTime: "20:00"     # Time to send daily P&L report
   maxTradesPerScan: 3          # Max trades per scan cycle
 
+# Trade management (mechanical exits + journal learning)
+tradeManagement:
+  enabled: true
+
+  defaults:
+    stopLossPct: 3.0
+    takeProfitPct: 5.0
+    maxHoldHours: 72
+    trailingStopPct: 2.0
+    trailingActivationPct: 1.0
+
+  bounds:
+    stopLossPct: { min: 1.0, max: 8.0 }
+    takeProfitPct: { min: 2.0, max: 15.0 }
+    maxHoldHours: { min: 1, max: 168 } # 1h to 7d
+    trailingStopPct: { min: 0.5, max: 5.0 }
+    trailingActivationPct: { min: 0.0, max: 5.0 }
+
+  maxAccountRiskPct: 5.0
+
+  monitorIntervalSeconds: 900
+  activeMonitorIntervalSeconds: 60
+  useExchangeStops: true
+  liquidationGuardDistanceBps: 800
+
+  closeExecution:
+    closeTimeoutSeconds: 5
+    closeSlippageMultiplier: 2.0
+  closeRetryMinSeconds: 30
+  dustMaxRemainingNotionalUsd: 0.5
+
+  antiOvertrading:
+    maxConcurrentPositions: 2
+    cooldownAfterCloseSeconds: 3600
+    maxDailyEntries: 4
+    lossStreakPause:
+      consecutiveLosses: 3
+      pauseSeconds: 21600
+
+  signalConvergence:
+    minAgreeingSignals: 2
+    threshold: 1.5
+    weights:
+      reflexivity_fragility: 1.0
+      funding_oi_skew: 0.8
+      cross_asset_divergence: 0.6
+      orderflow_imbalance: 0.4
+      price_vol_regime: 0.3
+      onchain_flow: 0.3
+
 # Memory persistence
 memory:
   dbPath: ~/.thufir/thufir.sqlite
