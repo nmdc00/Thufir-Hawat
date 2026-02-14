@@ -23,6 +23,10 @@ const ConfigSchema = z.object({
     model: z.string(),
     fallbackModel: z.string().optional(),
     openaiModel: z.string().default('gpt-5.2'),
+    // Optional cross-provider/model failover when the primary route is cooling down (429/rate limit).
+    // Example: primary Claude via proxy, fail over to a GPT model.
+    rateLimitFallbackProvider: z.enum(['anthropic', 'openai', 'local']).optional(),
+    rateLimitFallbackModel: z.string().optional(),
     executorModel: z.string().optional(),
     executorProvider: z.enum(['anthropic', 'openai', 'local']).default('openai'),
     useExecutorModel: z.boolean().default(false),

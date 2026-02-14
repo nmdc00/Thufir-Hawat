@@ -339,6 +339,83 @@ export function wrapWithInfra(client: LlmClient, config: ThufirConfig, logger?: 
   return new InfraLlmClient(client, config, logger);
 }
 
+class RateLimitFailoverClient implements LlmClient {
+  meta?: LlmClientMeta;
+  private logger: Logger;
+  private config: ThufirConfig;
+  private candidates: LlmClient[];
+
+  constructor(candidates: LlmClient[], config: ThufirConfig, logger?: Logger) {
+    this.candidates = candidates;
+    this.config = config;
+    this.logger = logger ?? new Logger('info');
+    this.meta = candidates[0]?.meta;
+  }
+
+  async complete(messages: ChatMessage[], options?: LlmClientOptions): Promise<LlmResponse> {
+    const ctx = getExecutionContext();
+    const allowNonCritical = this.config?.agent?.allowFallbackNonCritical ?? true;
+
+    let lastError: unknown = null;
+    for (let i = 0; i < this.candidates.length; i += 1) {
+      const candidate = this.candidates[i];
+      const meta = candidate.meta ?? { provider: 'unknown', model: 'unknown' };
+      const cooldown = meta.provider !== 'unknown' && meta.model !== 'unknown'
+        ? isCooling(meta.provider, meta.model)
+        : null;
+      if (cooldown) {
+        // Skip cooled routes and keep trying alternatives.
+        this.logger.warn('LLM route cooling; skipping', {
+          provider: meta.provider,
+          model: meta.model,
+          until: new Date(cooldown.until).toISOString(),
+        });
+        continue;
+      }
+
+      try {
+        const response = await candidate.complete(messages, options);
+        // In non-critical contexts, InfraLlmClient may return an empty response on cooldown. If that
+        // happened concurrently, keep trying other routes.
+        if (
+          response.content.trim().length === 0 &&
+          meta.provider !== 'unknown' &&
+          meta.model !== 'unknown' &&
+          isCooling(meta.provider, meta.model)
+        ) {
+          continue;
+        }
+        return response;
+      } catch (error) {
+        lastError = error;
+        const isCooldownError = (error as { code?: string } | null)?.code === 'model_cooldown';
+        if (!isCooldownError && !isRateLimitError(error)) {
+          throw error;
+        }
+        if (!ctx?.critical && !allowNonCritical) {
+          throw error;
+        }
+
+        const reason = extractErrorMessage(error);
+        const next = this.candidates[i + 1];
+        const nextMeta = next?.meta ?? { provider: 'unknown', model: 'unknown' };
+        if (!next) {
+          throw error;
+        }
+        this.logger.warn('LLM failover triggered', {
+          from: meta,
+          to: nextMeta,
+          reason,
+        });
+        continue;
+      }
+    }
+
+    if (lastError) throw lastError;
+    return { content: '', model: this.meta?.model ?? 'unknown' };
+  }
+}
+
 function assertLocalProviderNotAllowed(
   provider: 'anthropic' | 'openai' | 'local',
   context: string
@@ -352,16 +429,45 @@ function assertLocalProviderNotAllowed(
 
 export function createLlmClient(config: ThufirConfig): LlmClient {
   assertLocalProviderNotAllowed(config.agent.provider, 'primary LLM usage');
-  switch (config.agent.provider) {
-    case 'anthropic':
-      return wrapWithLimiter(wrapWithInfra(createAnthropicClientWithFallback(config), config));
-    case 'openai':
-      return wrapWithLimiter(wrapWithInfra(new OpenAiClient(config), config));
-    case 'local':
-      return wrapWithLimiter(wrapWithInfra(new LocalClient(config), config));
-    default:
-      return wrapWithLimiter(wrapWithInfra(createAnthropicClientWithFallback(config), config));
+  const primaryRaw =
+    config.agent.provider === 'anthropic'
+      ? (new AnthropicClient(config) as LlmClient)
+      : config.agent.provider === 'openai'
+        ? (new OpenAiClient(config) as LlmClient)
+        : (new LocalClient(config) as LlmClient);
+
+  const primary = wrapWithInfra(primaryRaw, config);
+
+  // If the configured model routes to Claude (direct or via proxy), allow automatic failover to a GPT model.
+  const looksClaude = (primaryRaw.meta?.model ?? '').toLowerCase().includes('claude');
+  const wantsFailover =
+    !!config.agent.rateLimitFallbackModel ||
+    !!config.agent.rateLimitFallbackProvider ||
+    looksClaude;
+
+  if (!wantsFailover) {
+    return wrapWithLimiter(primary);
   }
+
+  const fallbackProvider = config.agent.rateLimitFallbackProvider ?? 'openai';
+  const fallbackModel =
+    config.agent.rateLimitFallbackModel ??
+    config.agent.executorModel ??
+    // Prefer gpt-5 because llm-mux previously rejected gpt-5.2 as unknown.
+    'gpt-5';
+
+  let fallbackRaw: LlmClient;
+  if (fallbackProvider === 'anthropic') {
+    fallbackRaw = new AnthropicClient(config, fallbackModel);
+  } else if (fallbackProvider === 'openai') {
+    fallbackRaw = new OpenAiClient(config, fallbackModel);
+  } else {
+    // Local is not permitted for primary reasoning; only allow if explicitly configured.
+    fallbackRaw = new LocalClient(config, fallbackModel);
+  }
+  const fallback = wrapWithInfra(fallbackRaw, config);
+
+  return wrapWithLimiter(new RateLimitFailoverClient([primary, fallback], config));
 }
 
 export function createOpenAiClient(
