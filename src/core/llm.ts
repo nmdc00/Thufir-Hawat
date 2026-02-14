@@ -317,9 +317,14 @@ class InfraLlmClient implements LlmClient {
     }
 
     try {
-      const timeoutMs = options?.timeoutMs ?? resolveDefaultLlmTimeoutMs();
+      const explicitTimeoutMs = options?.timeoutMs;
+      const timeoutMs = explicitTimeoutMs ?? resolveDefaultLlmTimeoutMs();
+      // Preserve inner-client default timeouts (notably TrivialTaskClient soft timeouts) by
+      // only forwarding timeoutMs when the caller explicitly provided one.
+      const forwardedOptions =
+        explicitTimeoutMs !== undefined ? { ...options, timeoutMs: explicitTimeoutMs } : options;
       const response = await runWithTimeout(
-        () => this.inner.complete(finalized, { ...options, timeoutMs }),
+        () => this.inner.complete(finalized, forwardedOptions),
         timeoutMs,
         `LLM request (${meta.provider}/${meta.model})`
       );
