@@ -597,10 +597,16 @@ if (config.qmd?.enabled && qmdEmbedConfig?.enabled) {
 
   const runQmdEmbed = async () => {
     try {
-      // Check if qmd is available
-      await execAsync('qmd --version');
+      const home = process.env.HOME ?? '/home/nmcdc';
+      const env = {
+        ...process.env,
+        PATH: `${home}/.local/bin:${home}/.bun/bin:${process.env.PATH ?? ''}`,
+      };
+
+      // Check if qmd is available. qmd does not reliably support --version.
+      await execAsync('qmd status', { timeout: 10_000, env });
       // Run embedding update for all collections
-      const { stderr } = await execAsync('qmd embed', { timeout: 300_000 });
+      const { stderr } = await execAsync('qmd embed', { timeout: 300_000, env });
       if (stderr && !stderr.includes('warning')) {
         logger.warn(`QMD embed warning: ${stderr}`);
       }
