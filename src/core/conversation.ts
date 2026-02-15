@@ -386,8 +386,13 @@ export class ConversationHandler {
           const resumePlan = this.shouldResumePlan(message);
           const priorPlan = resumePlan ? this.sessions.getPlan(userId) : null;
 
+          // Orchestrator requires an agentic/tool-capable client. The base OpenAiClient can
+          // return tool calls (function_call) without any text content, which looks like an
+          // "empty response" and triggers cross-provider failover. Using the agentic client
+          // ensures tool-call parsing + execution happens correctly.
+          const orchestratorLlm = this.agenticLlm ?? this.agenticOpenAi ?? this.llm;
           const result = await runOrchestrator(message, {
-            llm: this.llm,
+            llm: orchestratorLlm,
             toolRegistry: this.orchestratorRegistry,
             identity: this.orchestratorIdentity,
             toolContext: {
