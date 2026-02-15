@@ -759,12 +759,25 @@ Just type naturally to chat about markets, risks, or positioning.
   }
 
   private isAccessQuestion(message: string): boolean {
+    if (!this.isQuestion(message)) return false;
+
+    // Avoid hijacking "tools/memory/wallet" questions with the canned trading access report.
+    // Those should go through the normal conversation/tool loop.
+    if (
+      /\b(tools?|tooling|memory|wallet|portfolio|pnl|positions?|open\s+orders?|orders?)\b/i.test(
+        message
+      )
+    ) {
+      return false;
+    }
+
+    // This is specifically for "can you trade / do you have live execution access" questions.
     return (
-      this.isQuestion(message) &&
-      (/\baccess\b/i.test(message) ||
+      (/\bcan you\b.*\b(trade|buy|sell|long|short)\b/i.test(message) ||
+        /\bdo you\b.*\b(access|trade)\b/i.test(message) ||
         /\bwhere\b.*\baccess\b/i.test(message) ||
-        /\bcan you\b.*\b(trade|buy|sell|long|short)\b/i.test(message) ||
-        /\bdo you\b.*\b(access|trade)\b/i.test(message))
+        (/\baccess\b/i.test(message) &&
+          /\b(trade|trading|live|execution|hyperliquid)\b/i.test(message))) === true
     );
   }
 
