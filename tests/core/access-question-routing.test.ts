@@ -58,7 +58,7 @@ vi.mock('../../src/core/conversation.js', () => ({
 }));
 
 describe('access question routing', () => {
-  it('uses the access report for trading access questions', async () => {
+  it('does not hijack trade questions with the access report', async () => {
     const agent = new ThufirAgent({
       execution: { mode: 'paper', provider: 'hyperliquid' },
       hyperliquid: { enabled: true },
@@ -68,7 +68,8 @@ describe('access question routing', () => {
     } as any);
 
     const out = await agent.handleMessage('cli', 'can you trade?');
-    expect(out).toContain('Access status (Markets):');
+    expect(out).toBe('CHAT_OK');
+    expect(out).not.toContain('Access status (Markets):');
   });
 
   it('does not hijack tools questions with the access report', async () => {
@@ -84,5 +85,17 @@ describe('access question routing', () => {
     expect(out).toBe('CHAT_OK');
     expect(out).not.toContain('Access status (Markets):');
   });
-});
 
+  it('exposes access report via /access', async () => {
+    const agent = new ThufirAgent({
+      execution: { mode: 'paper', provider: 'hyperliquid' },
+      hyperliquid: { enabled: true },
+      wallet: { limits: { daily: 100, perTrade: 25, confirmationThreshold: 10 } },
+      autonomy: { enabled: false },
+      agent: { model: 'test', provider: 'local' },
+    } as any);
+
+    const out = await agent.handleMessage('cli', '/access');
+    expect(out).toContain('Access status (Markets):');
+  });
+});

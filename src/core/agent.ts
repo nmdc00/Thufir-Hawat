@@ -174,8 +174,6 @@ export class ThufirAgent {
   async handleMessage(sender: string, text: string): Promise<string> {
     const trimmed = text.trim();
     const isQuestion = this.isQuestion(trimmed);
-    const isCapabilityQuestion = this.isCapabilityQuestion(trimmed);
-    const isAccessQuestion = this.isAccessQuestion(trimmed);
 
     // Natural language "background monitoring" / autonomy affirmation shouldn't rely on the LLM.
     // These messages tend to arrive when rate limits are active; respond deterministically.
@@ -218,19 +216,20 @@ export class ThufirAgent {
       const autoEnabled =
         (this.config.autonomy as any)?.enabled === true &&
         (this.config.autonomy as any)?.fullAuto === true;
-      if (!autoEnabled && !isCapabilityQuestion && !isAccessQuestion && !isQuestion) {
+      if (!autoEnabled && !isQuestion) {
         if (this.config.execution?.provider === 'hyperliquid') {
           return 'To place a live perp trade, use `/perp <symbol> <buy|sell> <sizeUsd> [leverage]` (example: `/perp BTC buy 25 3`).';
         }
       }
     }
 
-    if (this.isSetupRequest(trimmed)) {
-      return this.buildLiveTradingSetupPrompt();
+    // Command: /access - show execution readiness (fast-path; avoids the LLM/tool loop).
+    if (trimmed === '/access' || trimmed === '/access-status') {
+      return this.buildAccessReport();
     }
 
-    if (isCapabilityQuestion || isAccessQuestion) {
-      return this.buildAccessReport();
+    if (this.isSetupRequest(trimmed)) {
+      return this.buildLiveTradingSetupPrompt();
     }
 
     // Command: /watch <marketId>
@@ -857,37 +856,6 @@ Just type naturally to chat about markets, risks, or positioning.
     return (
       /\?\s*$/.test(message) ||
       /^(should|can|could|would|do|does|did|are|is|am|will|may)\b/i.test(message)
-    );
-  }
-
-  private isCapabilityQuestion(message: string): boolean {
-    return (
-      this.isQuestion(message) &&
-      /\b(suited|capable|able)\b/i.test(message) &&
-      /\b(trade|buy|sell|long|short)\b/i.test(message)
-    );
-  }
-
-  private isAccessQuestion(message: string): boolean {
-    if (!this.isQuestion(message)) return false;
-
-    // Avoid hijacking "tools/memory/wallet" questions with the canned trading access report.
-    // Those should go through the normal conversation/tool loop.
-    if (
-      /\b(tools?|tooling|memory|wallet|portfolio|pnl|positions?|open\s+orders?|orders?)\b/i.test(
-        message
-      )
-    ) {
-      return false;
-    }
-
-    // This is specifically for "can you trade / do you have live execution access" questions.
-    return (
-      (/\bcan you\b.*\b(trade|buy|sell|long|short)\b/i.test(message) ||
-        /\bdo you\b.*\b(access|trade)\b/i.test(message) ||
-        /\bwhere\b.*\baccess\b/i.test(message) ||
-        (/\baccess\b/i.test(message) &&
-          /\b(trade|trading|live|execution|hyperliquid)\b/i.test(message))) === true
     );
   }
 
