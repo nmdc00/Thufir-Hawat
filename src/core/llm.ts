@@ -1254,12 +1254,92 @@ async function fetchWithRetry(factory: () => Promise<FetchResponse>): Promise<Fe
   return factory();
 }
 
+// ---------------------------------------------------------------------------
+// Text-based tool calling helpers
+// ---------------------------------------------------------------------------
+// When going through a proxy that strips the `tools` API parameter, we inject
+// tool definitions into the system prompt as text and parse structured
+// <tool_call> blocks from the model's response.
+
+interface TextToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+function buildTextToolPrompt(): string {
+  const toolDefs = THUFIR_TOOLS.map((tool) => {
+    const schema = tool.input_schema as {
+      properties?: Record<string, { type?: string; description?: string; enum?: string[] }>;
+      required?: string[];
+    };
+    const props = schema.properties ?? {};
+    const required = new Set(schema.required ?? []);
+    const paramLines = Object.entries(props).map(([name, prop]) => {
+      const req = required.has(name) ? '' : '?';
+      const enumPart = prop.enum ? ` [${prop.enum.join(', ')}]` : '';
+      return `    ${name}${req} (${prop.type ?? 'any'}${enumPart}): ${prop.description ?? ''}`;
+    });
+    const paramsBlock = paramLines.length > 0 ? '\n' + paramLines.join('\n') : '';
+    return `- **${tool.name}**: ${tool.description}${paramsBlock}`;
+  }).join('\n');
+
+  return `## Available Tools
+
+To call a tool, output a <tool_call> block:
+
+<tool_call>
+{"name": "tool_name", "arguments": {"key": "value"}}
+</tool_call>
+
+You may use multiple <tool_call> blocks per response. Wait for results; never fabricate outputs.
+
+${toolDefs}`;
+}
+
+function parseTextToolCalls(text: string): TextToolCall[] {
+  const regex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+  const calls: TextToolCall[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const raw = match[1]!;
+      // Handle potential markdown code fences inside the block
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+      const parsed = JSON.parse(cleaned);
+      if (typeof parsed.name === 'string') {
+        calls.push({
+          name: parsed.name,
+          arguments:
+            typeof parsed.arguments === 'object' && parsed.arguments !== null
+              ? parsed.arguments
+              : {},
+        });
+      }
+    } catch {
+      // Skip malformed tool calls
+    }
+  }
+  return calls;
+}
+
+function formatTextToolResults(
+  results: Array<{ name: string; data: unknown; success: boolean }>
+): string {
+  return results
+    .map((r) => {
+      const content = JSON.stringify(r.success ? r.data : { error: r.data });
+      return `<tool_result name="${r.name}">\n${content}\n</tool_result>`;
+    })
+    .join('\n\n');
+}
+
 export class AgenticOpenAiClient implements LlmClient {
   private model: string;
   private baseUrl: string;
   private toolContext: ToolExecutorContext;
   private includeTemperature: boolean;
   private useResponsesApi: boolean;
+  private useTextToolCalling: boolean;
   meta?: LlmClientMeta;
 
   constructor(
@@ -1272,6 +1352,7 @@ export class AgenticOpenAiClient implements LlmClient {
     this.toolContext = toolContext;
     this.includeTemperature = !config.agent.useProxy;
     this.useResponsesApi = config.agent.useResponsesApi ?? config.agent.useProxy;
+    this.useTextToolCalling = config.agent.useProxy ?? false;
     this.meta = { provider: 'openai', model: this.model, kind: 'agentic' };
   }
 
@@ -1287,6 +1368,11 @@ export class AgenticOpenAiClient implements LlmClient {
       bootstrapMaxChars: this.toolContext.config.agent?.identityBootstrapMaxChars,
       includeMissing: this.toolContext.config.agent?.identityBootstrapIncludeMissing,
     }).prelude;
+
+    if (this.useTextToolCalling) {
+      return this.completeWithTextTools(messages, maxIterations, temperature, prelude);
+    }
+
     let openaiMessages: OpenAiMessage[] = injectIdentity(
       messages,
       prelude
@@ -1503,6 +1589,151 @@ export class AgenticOpenAiClient implements LlmClient {
           content: JSON.stringify(result.success ? result.data : { error: result.error }),
         });
       }
+    }
+
+    return {
+      content: 'I was unable to complete the request within the allowed number of steps.',
+      model: this.model,
+    };
+  }
+
+  /**
+   * Text-based tool calling: injects tool definitions into the system prompt
+   * and parses <tool_call> blocks from the model's text response.
+   * Used when a proxy strips the native `tools` API parameter.
+   */
+  private async completeWithTextTools(
+    messages: ChatMessage[],
+    maxIterations: number,
+    temperature: number,
+    prelude: string
+  ): Promise<LlmResponse> {
+    const toolPrompt = buildTextToolPrompt();
+
+    // Build conversation with identity prelude injected
+    const conversation: Array<{ role: string; content: string }> = injectIdentity(
+      messages,
+      prelude
+    ).map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+
+    // Inject tool definitions into the system message
+    const sysIdx = conversation.findIndex((m) => m.role === 'system');
+    if (sysIdx >= 0) {
+      conversation[sysIdx] = {
+        role: 'system',
+        content: `${conversation[sysIdx]!.content}\n\n${toolPrompt}`,
+      };
+    } else {
+      conversation.unshift({ role: 'system', content: toolPrompt });
+    }
+
+    let iteration = 0;
+    while (iteration < maxIterations) {
+      iteration += 1;
+
+      const endpoint = this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions';
+      let body: Record<string, unknown>;
+
+      if (this.useResponsesApi) {
+        const instructions =
+          conversation
+            .filter((m) => m.role === 'system')
+            .map((m) => m.content)
+            .join('\n\n---\n\n') || undefined;
+        const input = conversation
+          .filter((m) => m.role !== 'system')
+          .map((m) => ({
+            role: m.role,
+            content: [{ type: 'text', text: m.content }],
+          }));
+        body = { model: this.model, instructions, input };
+      } else {
+        body = {
+          model: this.model,
+          ...(this.includeTemperature ? { temperature } : {}),
+          messages: conversation,
+        };
+      }
+
+      const response = await fetchWithRetry(() =>
+        fetch(`${this.baseUrl}${endpoint}`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
+      );
+
+      if (!response.ok) {
+        let detail = '';
+        try {
+          detail = await response.text();
+        } catch {
+          detail = '';
+        }
+        const errorMsg = detail ? parseProxyError(detail) : `status ${response.status}`;
+        throw new Error(`LLM request failed: ${errorMsg}`);
+      }
+
+      const data = (await response.json()) as any;
+
+      // Extract text from the response
+      let text: string;
+      if (this.useResponsesApi) {
+        const root = data.response ?? data;
+        if (root?.error) {
+          const msg =
+            typeof root.error === 'string'
+              ? root.error
+              : typeof root.error?.message === 'string'
+                ? root.error.message
+                : JSON.stringify(root.error);
+          throw new Error(`LLM request failed: ${msg}`);
+        }
+        const outputItems: any[] = Array.isArray(root?.output) ? root.output : [];
+        text = outputItems
+          .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
+          .filter((part: any) => part && (part.type === 'output_text' || part.type === 'text'))
+          .map((part: any) => String(part.text ?? ''))
+          .join('');
+      } else {
+        const message = data.choices?.[0]?.message;
+        text = message?.content ?? '';
+      }
+
+      // Parse text for <tool_call> blocks
+      const toolCalls = parseTextToolCalls(text);
+
+      if (toolCalls.length === 0) {
+        // No tool calls — return the model's text as the final response.
+        // Strip any leftover <tool_call> artifacts just in case.
+        return { content: text.trim(), model: this.model };
+      }
+
+      // Append the assistant's full response (including tool_call blocks) to conversation
+      conversation.push({ role: 'assistant', content: text });
+
+      // Execute each tool call
+      const results: Array<{ name: string; data: unknown; success: boolean }> = [];
+      for (const tc of toolCalls) {
+        const result = await executeToolCall(tc.name, tc.arguments, this.toolContext);
+        results.push({
+          name: tc.name,
+          data: result.success ? result.data : result.error,
+          success: result.success,
+        });
+      }
+
+      // Feed tool results back as a user message
+      conversation.push({
+        role: 'user',
+        content: formatTextToolResults(results),
+      });
     }
 
     return {
