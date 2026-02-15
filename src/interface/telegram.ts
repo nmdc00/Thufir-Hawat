@@ -1,4 +1,7 @@
 import fetch from 'node-fetch';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 import type { ThufirConfig } from '../core/config.js';
 import type { IncomingMessage, ChannelAdapter } from './channels.js';
@@ -63,6 +66,7 @@ export class TelegramAdapter implements ChannelAdapter {
   private pollingInterval: number;
   private lastUpdateId = 0;
   private onMessageTimeoutMs: number;
+  private updateIdPath: string;
 
   constructor(config: ThufirConfig) {
     this.token = config.channels.telegram.token ?? '';
@@ -74,6 +78,14 @@ export class TelegramAdapter implements ChannelAdapter {
       1_000,
       Number(process.env.THUFIR_CHANNEL_HANDLER_TIMEOUT_MS ?? 45_000)
     );
+    const workspace = config.agent?.workspace?.replace(/^~/, homedir()) ?? join(homedir(), '.bijaz');
+    this.updateIdPath = join(workspace, '.telegram_update_id');
+    try {
+      const stored = parseInt(readFileSync(this.updateIdPath, 'utf-8').trim(), 10);
+      if (Number.isFinite(stored) && stored > 0) this.lastUpdateId = stored;
+    } catch {
+      // No persisted ID yet; start fresh.
+    }
   }
 
   async sendMessage(target: string, text: string): Promise<void> {
@@ -115,6 +127,7 @@ export class TelegramAdapter implements ChannelAdapter {
           const data = (await response.json()) as { result: Array<any> };
           for (const update of data.result ?? []) {
             this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
+            try { writeFileSync(this.updateIdPath, String(this.lastUpdateId)); } catch {}
             const message = update.message ?? update.edited_message;
             if (!message?.text) {
               continue;
