@@ -11,6 +11,7 @@ import {
   cleanupLegacyPerpComparableRows,
   summarizeLearningSchema,
 } from '../../src/memory/learning_schema.js';
+import { recordLearningSignalAudit } from '../../src/memory/learning_observability.js';
 
 function useTempDb(): string {
   const dir = mkdtempSync(join(tmpdir(), 'thufir-learning-schema-'));
@@ -385,5 +386,108 @@ describe('learning schema migration', () => {
     expect(row.scope_key).toBe(
       'symbol=BTC|direction=long|strategySource=autonomous|triggerReason=thesis_retry|signalClass=mean_reversion|symbolClass=majors|session=us_open|marketRegime=trending|volatilityBucket=high|liquidityBucket=deep'
     );
+  });
+
+  it('writes learning signal audits against the production legacy audit schema', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-prod-legacy-audits-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE predictions (
+        id TEXT PRIMARY KEY,
+        market_id TEXT NOT NULL,
+        market_title TEXT NOT NULL,
+        predicted_outcome TEXT,
+        domain TEXT,
+        created_at TEXT,
+        model_probability REAL,
+        market_probability REAL,
+        learning_comparable INTEGER NOT NULL DEFAULT 0,
+        outcome_basis TEXT DEFAULT 'legacy',
+        outcome TEXT,
+        outcome_timestamp TEXT,
+        pnl REAL,
+        regime_tag TEXT,
+        strategy_class TEXT,
+        symbol TEXT,
+        executed INTEGER DEFAULT 0,
+        position_size REAL
+      );
+      CREATE TABLE learning_signal_audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        learning_event_id INTEGER,
+        prediction_id TEXT,
+        domain TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        policy_version TEXT NOT NULL,
+        signal_scores TEXT NOT NULL,
+        default_weights TEXT NOT NULL,
+        decision_weights TEXT NOT NULL,
+        active_weights_before TEXT NOT NULL,
+        active_weights_after TEXT NOT NULL,
+        baseline_direction TEXT NOT NULL,
+        decision_direction TEXT NOT NULL,
+        active_direction_before TEXT NOT NULL,
+        active_direction_after TEXT NOT NULL,
+        baseline_confidence REAL NOT NULL,
+        decision_confidence REAL NOT NULL,
+        active_confidence_before REAL NOT NULL,
+        active_confidence_after REAL NOT NULL,
+        baseline_score REAL NOT NULL,
+        decision_score REAL NOT NULL,
+        active_score_before REAL NOT NULL,
+        active_score_after REAL NOT NULL,
+        changed_vs_default INTEGER NOT NULL DEFAULT 0,
+        changed_after_update INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    openDatabase();
+
+    const insertedId = recordLearningSignalAudit({
+      learningEventId: 42,
+      domain: 'perp',
+      signalScores: { technical: 0.82, news: 0.31, onChain: 0.14 },
+      baselineWeights: { technical: 0.5, news: 0.3, onChain: 0.2 },
+      decisionWeights: { technical: 0.5, news: 0.3, onChain: 0.2 },
+      activeWeightsBefore: { technical: 0.5, news: 0.3, onChain: 0.2 },
+      activeWeightsAfter: { technical: 0.55, news: 0.25, onChain: 0.2 },
+      weightDelta: { technical: 0.05, news: -0.05, onChain: 0 },
+      outcomeValue: 1,
+    });
+
+    expect(insertedId).toBeGreaterThan(0);
+
+    const db = openDatabase();
+    const row = db
+      .prepare(
+        `SELECT domain, run_id, policy_version, default_weights, decision_weights,
+                active_weights_before, active_weights_after, changed_vs_default, changed_after_update
+         FROM learning_signal_audits
+         WHERE id = ?`
+      )
+      .get(insertedId) as {
+        domain: string;
+        run_id: string;
+        policy_version: string;
+        default_weights: string;
+        decision_weights: string;
+        active_weights_before: string;
+        active_weights_after: string;
+        changed_vs_default: number;
+        changed_after_update: number;
+      };
+
+    expect(row.domain).toBe('perp');
+    expect(row.run_id).toBe('legacy-compat');
+    expect(row.policy_version).toBe('v2.3');
+    expect(JSON.parse(row.default_weights)).toEqual({ technical: 0.5, news: 0.3, onChain: 0.2 });
+    expect(JSON.parse(row.decision_weights)).toEqual({ technical: 0.5, news: 0.3, onChain: 0.2 });
+    expect(JSON.parse(row.active_weights_before)).toEqual({ technical: 0.5, news: 0.3, onChain: 0.2 });
+    expect(JSON.parse(row.active_weights_after)).toEqual({ technical: 0.55, news: 0.25, onChain: 0.2 });
+    expect(row.changed_vs_default).toBe(1);
+    expect(row.changed_after_update).toBe(1);
   });
 });
