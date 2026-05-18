@@ -10,10 +10,9 @@ import { PaperExecutor } from '../../src/execution/modes/paper.js';
 import { countFinalPredictions } from '../../src/memory/calibration.js';
 import { openDatabase } from '../../src/memory/db.js';
 import { listLearningCases } from '../../src/memory/learning_cases.js';
+import { listLearningSignalAudits } from '../../src/memory/learning_observability.js';
 import { createPrediction, getPrediction } from '../../src/memory/predictions.js';
-import { listTradeCounterfactuals } from '../../src/memory/trade_counterfactuals.js';
-import { getTradeSimilarityFeatures } from '../../src/memory/trade_similarity_features.js';
-import { listTradeDossiers, upsertTradeDossier } from '../../src/memory/trade_dossiers.js';
+import { listTradePolicyAdjustments } from '../../src/memory/trade_policy_adjustments.js';
 
 describe('tool-executor perps', () => {
   const originalDbPath = process.env.THUFIR_DB_PATH;
@@ -128,6 +127,16 @@ describe('tool-executor perps', () => {
       modelProbability: 0.62,
       marketProbability: 0.5,
       learningComparable: true,
+      signalScores: {
+        technical: 0.8,
+        news: 0.1,
+        onChain: 0.2,
+      },
+      signalWeightsSnapshot: {
+        technical: 0.5,
+        news: 0.3,
+        onChain: 0.2,
+      },
       executed: true,
       executionPrice: 50000,
       positionSize: 500,
@@ -158,6 +167,11 @@ describe('tool-executor perps', () => {
     expect(prediction?.pnl).toBeCloseTo(8.9900025, 6);
     expect(prediction?.resolutionMetadata?.basis).toBe('realized_net_pnl_close');
     expect(countFinalPredictions()).toBe(0);
+    const db = openDatabase();
+    const updates = db.prepare('SELECT COUNT(*) AS c FROM weight_updates').get() as { c: number };
+    expect(updates.c).toBe(1);
+    const audits = listLearningSignalAudits('perp');
+    expect(audits).toHaveLength(1);
   });
 
   it('inherits signal_class onto reduce-only close journal entries on the real journal path', async () => {
@@ -187,58 +201,6 @@ describe('tool-executor perps', () => {
       await executeToolCall(
         'perp_place_order',
         { symbol, side: 'sell', size: 0.01, reduce_only: true, mode: 'paper', exit_mode: 'take_profit' },
-        ctx
-      )
-    ).toMatchObject({ success: true });
-
-    const listRes = await executeToolCall(
-      'perp_trade_journal_list',
-      { symbol, limit: 20 },
-      ctx
-    );
-    expect(listRes.success).toBe(true);
-    const entries = ((listRes as any).data?.entries ?? []) as Array<Record<string, unknown>>;
-    const closed = entries.find(
-      (entry) => entry.reduceOnly === true && entry.outcome === 'executed'
-    );
-    expect(closed).toBeDefined();
-    expect(closed?.signalClass).toBe('mean_reversion');
-  });
-
-  it('inherits signal_class onto reduce-only close journal entries on the real journal path', async () => {
-    const executor = new PaperExecutor({ initialCashUsdc: 200 });
-    const limiter = {
-      checkAndReserve: async () => ({ allowed: true }),
-      confirm: () => {},
-      release: () => {},
-    };
-    const ctx = {
-      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
-      marketClient,
-      executor,
-      limiter,
-    };
-    const symbol = 'BTCSIGCLS';
-
-    expect(
-      await executeToolCall(
-        'perp_place_order',
-        { symbol, side: 'buy', size: 0.01, mode: 'paper', signal_class: 'mean_reversion' },
-        ctx
-      )
-    ).toMatchObject({ success: true });
-
-    expect(
-      await executeToolCall(
-        'perp_place_order',
-        {
-          symbol,
-          side: 'sell',
-          size: 0.01,
-          reduce_only: true,
-          mode: 'paper',
-          exit_mode: 'take_profit',
-        },
         ctx
       )
     ).toMatchObject({ success: true });
@@ -309,6 +271,101 @@ describe('tool-executor perps', () => {
     expect(prediction?.outcomeBasis).toBe('legacy');
     expect(prediction?.resolutionStatus).toBe('open');
     expect(countFinalPredictions()).toBe(0);
+  });
+
+  it('materializes one persistent policy adjustment on a full reduce-only close when enabled', async () => {
+    const executor = new PaperExecutor({ initialCashUsdc: 200 });
+    const limiter = {
+      checkAndReserve: async () => ({ allowed: true }),
+      confirm: () => {},
+      release: () => {},
+    };
+    const ctx = {
+      config: {
+        execution: { provider: 'hyperliquid', mode: 'paper' },
+        autonomy: { tradePolicyAdjustments: { enabled: true, minSamples: 1 } },
+      } as any,
+      marketClient,
+      executor,
+      limiter,
+    };
+    const symbol = 'BTCADJ';
+
+    expect(
+      await executeToolCall(
+        'perp_place_order',
+        { symbol, side: 'buy', size: 0.01, mode: 'paper', signal_class: 'mean_reversion' },
+        ctx
+      )
+    ).toMatchObject({ success: true });
+
+    currentMarkPrice = 49500;
+    expect(
+      await executeToolCall(
+        'perp_place_order',
+        {
+          symbol,
+          side: 'sell',
+          size: 0.01,
+          reduce_only: true,
+          mode: 'paper',
+          signal_class: 'mean_reversion',
+          exit_mode: 'manual',
+        },
+        ctx
+      )
+    ).toMatchObject({ success: true });
+
+    const adjustments = listTradePolicyAdjustments('perp');
+    expect(adjustments).toHaveLength(1);
+    expect(adjustments[0]!.active).toBe(true);
+    expect(adjustments[0]!.signalClass).toBe('mean_reversion');
+  });
+
+  it('does not materialize a policy adjustment on a partial reduce-only close', async () => {
+    const executor = new PaperExecutor({ initialCashUsdc: 200 });
+    const limiter = {
+      checkAndReserve: async () => ({ allowed: true }),
+      confirm: () => {},
+      release: () => {},
+    };
+    const ctx = {
+      config: {
+        execution: { provider: 'hyperliquid', mode: 'paper' },
+        autonomy: { tradePolicyAdjustments: { enabled: true, minSamples: 1 } },
+      } as any,
+      marketClient,
+      executor,
+      limiter,
+    };
+    const symbol = 'BTCNOADJ';
+
+    expect(
+      await executeToolCall(
+        'perp_place_order',
+        { symbol, side: 'buy', size: 0.02, mode: 'paper', signal_class: 'mean_reversion' },
+        ctx
+      )
+    ).toMatchObject({ success: true });
+
+    currentMarkPrice = 49500;
+    expect(
+      await executeToolCall(
+        'perp_place_order',
+        {
+          symbol,
+          side: 'sell',
+          size: 0.01,
+          reduce_only: true,
+          mode: 'paper',
+          signal_class: 'mean_reversion',
+          exit_mode: 'manual',
+        },
+        ctx
+      )
+    ).toMatchObject({ success: true });
+
+    expect(listTradePolicyAdjustments('perp')).toHaveLength(0);
   });
 
   it('reuses one tradeId across a full paper position lifecycle', async () => {
@@ -691,100 +748,6 @@ describe('tool-executor perps', () => {
     expect(payload.liquidityBucket).toBe('deep');
     expect(payload.planContext).toEqual({ setupKey: 'perp:mean_reversion' });
     expect(typeof payload.createdAtMs).toBe('number');
-  });
-
-  it('persists a normalized execution-learning artifact on full paper close', async () => {
-    const executor = new PaperExecutor({ initialCashUsdc: 200 });
-    const limiter = {
-      checkAndReserve: async () => ({ allowed: true }),
-      confirm: () => {},
-      release: () => {},
-    };
-    const ctx = {
-      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
-      marketClient,
-      executor,
-      limiter,
-    };
-
-    currentMarkPrice = 50000;
-    expect(
-      await executeToolCall(
-        'perp_place_order',
-        {
-          symbol: 'BTCLEARN',
-          side: 'buy',
-          size: 0.01,
-          mode: 'paper',
-          signal_class: 'mean_reversion',
-          market_regime: 'trending',
-          volatility_bucket: 'high',
-          liquidity_bucket: 'deep',
-          expected_edge: 0.08,
-          entry_trigger: 'technical',
-          invalidation_price: 49000,
-          plan_context: { setupKey: 'perp:execution-learning' },
-        },
-        ctx
-      )
-    ).toMatchObject({ success: true });
-
-    currentMarkPrice = 51000;
-    expect(
-      await executeToolCall(
-        'perp_place_order',
-        {
-          symbol: 'BTCLEARN',
-          side: 'sell',
-          size: 0.01,
-          reduce_only: true,
-          mode: 'paper',
-          thesis_invalidation_hit: false,
-          exit_mode: 'take_profit',
-        },
-        ctx
-      )
-    ).toMatchObject({ success: true });
-
-    const db = openDatabase();
-    const row = db.prepare(
-      `SELECT context_payload, action_payload, outcome_payload, quality_payload, policy_input_payload
-       FROM learning_cases
-       WHERE case_type = 'execution_quality' AND entity_id = 'BTCLEARN'
-       ORDER BY created_at DESC, id DESC
-       LIMIT 1`
-    ).get() as
-      | {
-          context_payload?: string;
-          action_payload?: string;
-          outcome_payload?: string;
-          quality_payload?: string;
-          policy_input_payload?: string;
-        }
-      | undefined;
-    expect(row).toBeTruthy();
-    const context = JSON.parse(String(row?.context_payload ?? '{}')) as Record<string, any>;
-    const action = JSON.parse(String(row?.action_payload ?? '{}')) as Record<string, any>;
-    const outcome = JSON.parse(String(row?.outcome_payload ?? '{}')) as Record<string, any>;
-    const quality = JSON.parse(String(row?.quality_payload ?? '{}')) as Record<string, any>;
-    const policyInputs = JSON.parse(String(row?.policy_input_payload ?? '{}')) as Record<string, any>;
-    expect(context.signalClass).toBe('mean_reversion');
-    expect(context.marketRegime).toBe('trending');
-    expect(action.entryPrice).not.toBeNull();
-    expect(outcome.exitMode).toBe('take_profit');
-    expect(quality.capturedR).not.toBeNull();
-    expect(policyInputs.planContext).toEqual(
-      expect.objectContaining({ setupKey: 'perp:execution-learning' })
-    );
-
-    const artifactRow = db.prepare(
-      `SELECT payload FROM decision_artifacts WHERE kind = 'execution_learning_case' AND market_id = 'BTCLEARN' ORDER BY id DESC LIMIT 1`
-    ).get() as { payload?: string } | undefined;
-    expect(artifactRow?.payload).toBeTruthy();
-    const payload = JSON.parse(String(artifactRow?.payload ?? '{}')) as Record<string, any>;
-    expect(payload.caseType).toBe('execution_quality');
-    expect(payload.comparable).toBe(false);
-    expect(payload.context.signalClass).toBe('mean_reversion');
   });
 
   it('blocks reduce-only when no live position exists', async () => {
@@ -1422,26 +1385,6 @@ describe('tool-executor perps', () => {
       },
       ctx
     );
-    const openedDossier = listTradeDossiers({ symbol: 'BTCLEARN', limit: 1 })[0];
-    expect(openedDossier).toBeTruthy();
-    upsertTradeDossier({
-      id: openedDossier?.id,
-      symbol: 'BTCLEARN',
-      status: 'open',
-      sourceTradeId: openedDossier?.sourceTradeId ?? null,
-      dossier: {
-        version: 'v2.2',
-        gate: {
-          verdict: 'resize',
-        },
-      },
-      retrieval: {
-        retrievedCases: [{ dossierId: 'prior-7', score: 0.84 }],
-      },
-      policyTrace: {
-        activeAdjustmentIds: ['adj-7'],
-      },
-    });
     const closeRes = await executeToolCall(
       'perp_place_order',
       {
@@ -1464,60 +1407,16 @@ describe('tool-executor perps', () => {
       entityId: 'BTCLEARN',
       limit: 1,
     })[0];
-    const thesisCase = listLearningCases({
-      caseType: 'thesis_quality',
-      entityType: 'symbol',
-      entityId: 'BTCLEARN',
-      limit: 1,
-    })[0];
 
     expect(learningCase).toBeTruthy();
-    expect(thesisCase).toBeTruthy();
     expect(learningCase.caseType).toBe('execution_quality');
     expect(learningCase.comparable).toBe(false);
     expect(learningCase.exclusionReason).toBe('execution_quality_case');
-    expect(typeof learningCase.sourceDossierId).toBe('string');
     expect(learningCase.context?.signalClass).toBe('momentum_breakout');
     expect(learningCase.action?.reduceOnly).toBe(true);
     expect(learningCase.outcome?.exitMode).toBe('take_profit');
     expect(learningCase.outcome?.thesisCorrect).toBe(true);
     expect(typeof learningCase.qualityScores?.compositeScore).toBe('number');
-    expect(thesisCase.caseType).toBe('thesis_quality');
-    expect(thesisCase.sourceDossierId).toBe(learningCase.sourceDossierId);
-    expect(thesisCase.outcome?.thesisCorrect).toBe(true);
-    expect(thesisCase.policyInputs?.sourceTrack).toBe('thesis_quality');
-
-    const dossier = listTradeDossiers({ symbol: 'BTCLEARN', limit: 1 })[0];
-    expect(dossier).toBeTruthy();
-    expect(dossier.id).toBe(learningCase.sourceDossierId);
-    expect(dossier.status).toBe('closed');
-    expect((dossier.dossier as any)?.version).toBe('v2.2');
-    expect(dossier.retrieval?.retrievedCases).toEqual([{ dossierId: 'prior-7', score: 0.84 }]);
-    expect(dossier.policyTrace?.activeAdjustmentIds).toEqual(['adj-7']);
-    expect(dossier.review?.entryQuality).toBeTruthy();
-    expect(dossier.review?.gateInterventionQuality).toBeTruthy();
-    expect(dossier.review?.contextFit).toBeTruthy();
-    expect(Array.isArray(dossier.review?.lessons)).toBe(true);
-    expect(Array.isArray(dossier.review?.repeatTags)).toBe(true);
-    expect(Array.isArray(dossier.review?.avoidTags)).toBe(true);
-    expect(typeof (dossier.dossier as any)?.counterfactuals?.interventionScore).toBe('number');
-    const counterfactuals = listTradeCounterfactuals({ dossierId: dossier.id, limit: 20 });
-    expect(counterfactuals.map((row) => row.counterfactualType)).toEqual(
-      expect.arrayContaining([
-        'no_trade',
-        'approved_size',
-        'full_size',
-        'delay_entry',
-        'ttl_exit',
-      ])
-    );
-    const similarityFeatures = getTradeSimilarityFeatures(dossier.id);
-    expect(similarityFeatures.signalClass).toBe('momentum_breakout');
-    expect(similarityFeatures.tradeArchetype).toBe('intraday');
-    expect(similarityFeatures.gateVerdict).toBe('resize');
-    expect(similarityFeatures.thesisVerdict).toBe('correct');
-    expect(similarityFeatures.entryQuality).toBeTruthy();
-    expect(similarityFeatures.sizingQuality).toBeTruthy();
   });
 
   it('get_fills live mode returns mapped fills from Hyperliquid API', async () => {

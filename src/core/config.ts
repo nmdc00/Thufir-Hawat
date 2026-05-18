@@ -299,6 +299,7 @@ const ConfigSchema = z.object({
       accountAddress: z.string().optional(),
       privateKey: z.string().optional(),
       maxLeverage: z.number().optional(),
+      minOrderNotionalUsd: z.number().default(10),
       defaultSlippageBps: z.number().default(10),
       maxQuoteAgeMs: z.number().default(2000),
       symbols: z.array(z.string()).default([]),
@@ -686,6 +687,18 @@ const ConfigSchema = z.object({
                       downweightMultiplier: z.number().optional(),
                     })
                     .optional(),
+                  tradePolicyAdjustments: z
+                    .object({
+                      enabled: z.boolean().optional(),
+                      minSamples: z.number().optional(),
+                      blockOnThesisFailureRatio: z.number().optional(),
+                      downweightOnThesisFailureRatio: z.number().optional(),
+                      downweightOnNegativePnlRatio: z.number().optional(),
+                      blockBelowScore: z.number().optional(),
+                      downweightBelowScore: z.number().optional(),
+                      downweightMultiplier: z.number().optional(),
+                    })
+                    .optional(),
                   asyncEnrichment: z
                     .object({
                       enabled: z.boolean().optional(),
@@ -780,7 +793,7 @@ const ConfigSchema = z.object({
       eventDrivenCooldownSeconds: z.number().default(120),
       eventDrivenHeartbeat: z.boolean().default(false),
       strategy: z.enum(['opportunity', 'discovery']).default('discovery'),
-      probeRiskFraction: z.number().default(0.005),
+      probeRiskFraction: z.number().default(0.15),
       // Full autonomous mode options
       fullAuto: z.boolean().default(false),
       allowFundingActions: z.boolean().default(false),
@@ -807,6 +820,18 @@ const ConfigSchema = z.object({
           blockBelowScore: z.number().default(0.45),
           downweightBelowScore: z.number().default(0.6),
           downweightMultiplier: z.number().default(0.6),
+        })
+        .default({}),
+      tradePolicyAdjustments: z
+        .object({
+          enabled: z.boolean().default(true),
+          minSamples: z.number().default(3),
+          blockOnThesisFailureRatio: z.number().default(0.75),
+          downweightOnThesisFailureRatio: z.number().default(0.5),
+          downweightOnNegativePnlRatio: z.number().default(0.6),
+          blockBelowScore: z.number().default(0.4),
+          downweightBelowScore: z.number().default(0.55),
+          downweightMultiplier: z.number().default(0.5),
         })
         .default({}),
       adaptiveEdge: z
@@ -972,7 +997,7 @@ const ConfigSchema = z.object({
         .default({}),
       resolver: z
         .object({
-          enabled: z.boolean().default(true),
+          enabled: z.boolean().default(false),
           intervalSeconds: z.number().default(900),
           limit: z.number().default(50),
         })
@@ -1146,23 +1171,6 @@ const ConfigSchema = z.object({
 });
 
 export type ThufirConfig = z.infer<typeof ConfigSchema>;
-
-export interface ResolverNotificationConfig {
-  enabled: boolean;
-  intervalSeconds: number;
-  limit: number;
-}
-
-export function resolveResolverNotificationConfig(
-  config: Pick<ThufirConfig, 'notifications'>
-): ResolverNotificationConfig {
-  const resolver = config.notifications?.resolver;
-  return {
-    enabled: resolver?.enabled ?? true,
-    intervalSeconds: resolver?.intervalSeconds ?? 900,
-    limit: resolver?.limit ?? 50,
-  };
-}
 
 export function loadConfig(configPath?: string): ThufirConfig {
   const path =

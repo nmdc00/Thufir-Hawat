@@ -1,100 +1,146 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
-import { closeDatabase } from '../../src/memory/db.js';
+import { openDatabase } from '../../src/memory/db.js';
 import {
   createTradePolicyAdjustment,
-  deactivateTradePolicyAdjustment,
+  deactivateTradePolicyAdjustmentsForScope,
   listTradePolicyAdjustments,
+  replaceActiveTradePolicyAdjustment,
+  selectActiveTradePolicyAdjustment,
 } from '../../src/memory/trade_policy_adjustments.js';
 
+function useTempDb(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'thufir-trade-policy-adjustments-'));
+  const path = join(dir, 'thufir.sqlite');
+  process.env.THUFIR_DB_PATH = path;
+  return path;
+}
+
 describe('trade policy adjustments', () => {
-  const originalDbPath = process.env.THUFIR_DB_PATH;
-
   beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'thufir-trade-policy-adjustments-'));
-    process.env.THUFIR_DB_PATH = join(tempDir, 'thufir.sqlite');
+    useTempDb();
+    openDatabase();
   });
 
-  afterEach(() => {
-    if (process.env.THUFIR_DB_PATH) {
-      closeDatabase(process.env.THUFIR_DB_PATH);
-      rmSync(process.env.THUFIR_DB_PATH, { force: true });
-      rmSync(dirname(process.env.THUFIR_DB_PATH), { recursive: true, force: true });
-    }
-    if (originalDbPath === undefined) {
-      delete process.env.THUFIR_DB_PATH;
-    } else {
-      process.env.THUFIR_DB_PATH = originalDbPath;
-    }
-  });
-
-  it('persists bounded policy changes and can deactivate them', () => {
-    const created = createTradePolicyAdjustment({
-      policyDomain: 'entry_gate',
-      policyKey: 'resize_cap',
-      scope: { signalClass: 'momentum_breakout', symbolClass: 'equity_proxy' },
-      adjustmentType: 'downweight',
-      oldValue: 1,
-      newValue: 0.8,
-      delta: -0.2,
-      evidenceCount: 7,
-      evidenceWindowStart: '2026-05-01T00:00:00.000Z',
-      evidenceWindowEnd: '2026-05-14T23:59:59.000Z',
-      reasonSummary: 'Late stretched probes underperform without size control.',
-      confidence: 0.71,
+  it('selects the most specific active adjustment for a matching runtime scope', () => {
+    createTradePolicyAdjustment({
+      domain: 'perp',
+      signalClass: 'momentum_breakout',
+      action: 'downweight',
+      sizeMultiplier: 0.7,
+      evidenceCount: 3,
     });
-
-    expect(created.active).toBe(true);
-    expect(created.scope?.signalClass).toBe('momentum_breakout');
-
-    const deactivated = deactivateTradePolicyAdjustment(
-      created.id,
-      '2026-05-20T00:00:00.000Z'
-    );
-    expect(deactivated.active).toBe(false);
-    expect(deactivated.expiresAt).toBe('2026-05-20T00:00:00.000Z');
-
-    expect(
-      listTradePolicyAdjustments({
-        policyDomain: 'entry_gate',
-        active: false,
-      })
-    ).toHaveLength(1);
-  });
-
-  it('round-trips non-numeric adjustment payloads for runtime policy flags', () => {
-    const created = createTradePolicyAdjustment({
-      id: 'adj-confirmation-1',
-      policyDomain: 'confirmation',
-      policyKey: 'gate_intervention_prior',
-      scope: { signalClass: 'llm_originator', symbolClass: 'crypto' },
-      adjustmentType: 'flag',
-      oldValue: false,
-      newValue: true,
+    createTradePolicyAdjustment({
+      domain: 'perp',
+      signalClass: 'momentum_breakout',
+      marketRegime: 'trending',
+      volatilityBucket: 'high',
+      action: 'block',
+      sizeMultiplier: 0,
       evidenceCount: 4,
-      confidence: 0.62,
-      reasonSummary: 'Keep the prior confirmation requirement live for this segment.',
     });
 
-    expect(created.oldValue).toBe(false);
-    expect(created.newValue).toBe(true);
-    expect(
-      listTradePolicyAdjustments({
-        policyDomain: 'confirmation',
-        active: true,
-      })[0]
-    ).toEqual(
-      expect.objectContaining({
-        id: 'adj-confirmation-1',
-        newValue: true,
-        scope: expect.objectContaining({
-          signalClass: 'llm_originator',
-        }),
-      })
+    const selected = selectActiveTradePolicyAdjustment({
+      domain: 'perp',
+      signalClass: 'momentum_breakout',
+      marketRegime: 'trending',
+      volatilityBucket: 'high',
+      liquidityBucket: 'deep',
+    });
+
+    expect(selected).not.toBeNull();
+    expect(selected?.action).toBe('block');
+  });
+
+  it('deactivates prior active adjustments for the same scope', () => {
+    createTradePolicyAdjustment({
+      domain: 'perp',
+      signalClass: 'mean_reversion',
+      marketRegime: 'choppy',
+      action: 'downweight',
+      sizeMultiplier: 0.5,
+      evidenceCount: 3,
+    });
+
+    deactivateTradePolicyAdjustmentsForScope('perp', {
+      signalClass: 'mean_reversion',
+      marketRegime: 'choppy',
+    });
+
+    const rows = listTradePolicyAdjustments('perp');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.active).toBe(false);
+  });
+
+  it('replaces the active adjustment for the same scope and keeps non-overlapping scopes active', () => {
+    createTradePolicyAdjustment({
+      domain: 'perp',
+      signalClass: 'mean_reversion',
+      marketRegime: 'choppy',
+      action: 'downweight',
+      sizeMultiplier: 0.7,
+      evidenceCount: 3,
+    });
+    createTradePolicyAdjustment({
+      domain: 'perp',
+      signalClass: 'momentum_breakout',
+      marketRegime: 'trending',
+      action: 'downweight',
+      sizeMultiplier: 0.6,
+      evidenceCount: 3,
+    });
+
+    const replacement = replaceActiveTradePolicyAdjustment({
+      domain: 'perp',
+      signalClass: 'mean_reversion',
+      marketRegime: 'choppy',
+      action: 'block',
+      sizeMultiplier: 0,
+      evidenceCount: 5,
+    });
+
+    const rows = listTradePolicyAdjustments('perp');
+    const meanReversion = rows.filter(
+      (row) => row.signalClass === 'mean_reversion' && row.marketRegime === 'choppy'
     );
+    const momentum = rows.filter(
+      (row) => row.signalClass === 'momentum_breakout' && row.marketRegime === 'trending'
+    );
+
+    expect(meanReversion).toHaveLength(2);
+    expect(meanReversion.filter((row) => row.active)).toHaveLength(1);
+    expect(meanReversion.find((row) => row.active)?.id).toBe(replacement.id);
+    expect(momentum).toHaveLength(1);
+    expect(momentum[0]!.active).toBe(true);
+  });
+
+  it('matches broader persisted scope dimensions deterministically', () => {
+    createTradePolicyAdjustment({
+      domain: 'perp',
+      triggerReason: 'news',
+      signalClass: 'news_event',
+      symbolClass: 'major',
+      session: 'us_open',
+      strategySource: 'discovery_news',
+      action: 'cooldown',
+      cooldownMinutes: 30,
+      evidenceCount: 4,
+    });
+
+    const selected = selectActiveTradePolicyAdjustment({
+      domain: 'perp',
+      triggerReason: 'news',
+      signalClass: 'news_event',
+      symbolClass: 'major',
+      session: 'us_open',
+      strategySource: 'discovery_news',
+    });
+
+    expect(selected).not.toBeNull();
+    expect(selected?.action).toBe('cooldown');
+    expect(selected?.cooldownMinutes).toBe(30);
   });
 });
