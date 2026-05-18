@@ -150,18 +150,33 @@ const LEARNING_CASE_COLUMNS: ColumnSpec[] = [
 ];
 
 const TRADE_POLICY_ADJUSTMENT_COLUMNS: ColumnSpec[] = [
+  { name: 'domain', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN domain TEXT NOT NULL DEFAULT 'perp'" },
   { name: 'policy_key', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN policy_key TEXT NOT NULL DEFAULT 'size'" },
   { name: 'scope_key', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN scope_key TEXT NOT NULL DEFAULT ''" },
   { name: 'symbol', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN symbol TEXT' },
   { name: 'direction', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN direction TEXT' },
   { name: 'strategy_source', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN strategy_source TEXT' },
   { name: 'trigger_reason', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN trigger_reason TEXT' },
+  { name: 'signal_class', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN signal_class TEXT' },
   { name: 'symbol_class', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN symbol_class TEXT' },
   { name: 'session_tag', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN session_tag TEXT' },
+  { name: 'market_regime', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN market_regime TEXT' },
+  { name: 'volatility_bucket', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN volatility_bucket TEXT' },
+  { name: 'liquidity_bucket', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN liquidity_bucket TEXT' },
+  { name: 'action', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN action TEXT NOT NULL DEFAULT 'downweight'" },
+  { name: 'size_multiplier', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN size_multiplier REAL NOT NULL DEFAULT 1' },
   { name: 'leverage_cap', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN leverage_cap REAL' },
   { name: 'confirmation_required', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN confirmation_required INTEGER' },
   { name: 'cooldown_minutes', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN cooldown_minutes INTEGER' },
+  { name: 'thesis_failure_rate', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN thesis_failure_rate REAL' },
+  { name: 'negative_pnl_rate', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN negative_pnl_rate REAL' },
+  { name: 'average_quality_score', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN average_quality_score REAL' },
+  { name: 'source_learning_case_id', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN source_learning_case_id TEXT' },
+  { name: 'source_trade_id', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN source_trade_id INTEGER' },
+  { name: 'rationale', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN rationale TEXT' },
+  { name: 'evidence_payload', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN evidence_payload TEXT' },
   { name: 'expires_at', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN expires_at TEXT' },
+  { name: 'updated_at', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN updated_at TEXT' },
 ];
 
 export const LEGACY_PERP_CONTAMINATION_WHERE_SQL = `domain = 'perp'
@@ -235,7 +250,139 @@ function ensureTradePolicyAdjustmentColumns(db: Database.Database): void {
       db.exec(column.sql);
     }
   }
+  const updatedColumns = db.prepare("PRAGMA table_info('trade_policy_adjustments')").all() as Array<{ name?: string }>;
+  const updatedPresent = new Set(updatedColumns.map((column) => String(column.name ?? '')));
+  backfillLegacyTradePolicyAdjustmentColumns(db, updatedPresent);
   backfillTradePolicyAdjustmentScopeKeys(db);
+}
+
+function backfillLegacyTradePolicyAdjustmentColumns(db: Database.Database, present: Set<string>): void {
+  if (present.has('policy_domain') && present.has('domain')) {
+    db.exec(`
+      UPDATE trade_policy_adjustments
+      SET domain = COALESCE(NULLIF(TRIM(domain), ''), policy_domain, 'perp')
+      WHERE domain IS NULL OR TRIM(domain) = ''
+    `);
+  }
+
+  if (present.has('reason_summary') && present.has('rationale')) {
+    db.exec(`
+      UPDATE trade_policy_adjustments
+      SET rationale = COALESCE(NULLIF(TRIM(rationale), ''), reason_summary)
+      WHERE rationale IS NULL OR TRIM(rationale) = ''
+    `);
+  }
+
+  if (present.has('created_at') && present.has('updated_at')) {
+    db.exec(`
+      UPDATE trade_policy_adjustments
+      SET updated_at = COALESCE(updated_at, created_at, datetime('now'))
+      WHERE updated_at IS NULL OR TRIM(updated_at) = ''
+    `);
+  }
+
+  if (present.has('scope_payload')) {
+    if (present.has('signal_class')) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET signal_class = COALESCE(NULLIF(TRIM(signal_class), ''), json_extract(scope_payload, '$.signalClass'))
+        WHERE signal_class IS NULL OR TRIM(signal_class) = ''
+      `);
+    }
+    if (present.has('market_regime')) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET market_regime = COALESCE(NULLIF(TRIM(market_regime), ''), json_extract(scope_payload, '$.marketRegime'))
+        WHERE market_regime IS NULL OR TRIM(market_regime) = ''
+      `);
+    }
+    if (present.has('volatility_bucket')) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET volatility_bucket = COALESCE(NULLIF(TRIM(volatility_bucket), ''), json_extract(scope_payload, '$.volatilityBucket'))
+        WHERE volatility_bucket IS NULL OR TRIM(volatility_bucket) = ''
+      `);
+    }
+    if (present.has('liquidity_bucket')) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET liquidity_bucket = COALESCE(NULLIF(TRIM(liquidity_bucket), ''), json_extract(scope_payload, '$.liquidityBucket'))
+        WHERE liquidity_bucket IS NULL OR TRIM(liquidity_bucket) = ''
+      `);
+    }
+  }
+
+  if (present.has('policy_key') && present.has('action')) {
+    const hasAdjustmentType = present.has('adjustment_type');
+    const hasNewValue = present.has('new_value');
+    db.exec(`
+      UPDATE trade_policy_adjustments
+      SET action = CASE
+        WHEN COALESCE(policy_key, 'size') = 'leverage' THEN 'cap_leverage'
+        WHEN COALESCE(policy_key, 'size') = 'confirmation' THEN 'require_confirmation'
+        WHEN COALESCE(policy_key, 'size') = 'cooldown' THEN 'cooldown'
+        ${
+          hasAdjustmentType && hasNewValue
+            ? "WHEN COALESCE(policy_key, 'size') = 'size' AND adjustment_type = 'flag' AND COALESCE(new_value, 0) = 0 THEN 'block'"
+            : ''
+        }
+        ELSE 'downweight'
+      END
+    `);
+  }
+
+  if (present.has('policy_key') && present.has('new_value')) {
+    if (present.has('size_multiplier')) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET size_multiplier = CASE
+          WHEN COALESCE(policy_key, 'size') = 'size' AND new_value IS NOT NULL THEN new_value
+          WHEN action = 'block' THEN 0
+          ELSE COALESCE(size_multiplier, 1)
+        END
+      `);
+    }
+    if (present.has('leverage_cap')) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET leverage_cap = COALESCE(leverage_cap, CASE WHEN policy_key = 'leverage' THEN new_value END)
+        WHERE leverage_cap IS NULL
+      `);
+    }
+    if (present.has('confirmation_required')) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET confirmation_required = COALESCE(
+          confirmation_required,
+          CASE WHEN policy_key = 'confirmation' AND new_value IS NOT NULL THEN CASE WHEN new_value <> 0 THEN 1 ELSE 0 END END
+        )
+        WHERE confirmation_required IS NULL
+      `);
+    }
+    if (present.has('cooldown_minutes')) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET cooldown_minutes = COALESCE(cooldown_minutes, CASE WHEN policy_key = 'cooldown' THEN CAST(new_value AS INTEGER) END)
+        WHERE cooldown_minutes IS NULL
+      `);
+    }
+  }
+
+  if (present.has('evidence_payload')) {
+    const pieces: string[] = [];
+    if (present.has('scope_payload')) pieces.push("'scopePayload', scope_payload");
+    if (present.has('old_value')) pieces.push("'oldValue', old_value");
+    if (present.has('new_value')) pieces.push("'newValue', new_value");
+    if (present.has('old_value_payload')) pieces.push("'oldValuePayload', old_value_payload");
+    if (present.has('new_value_payload')) pieces.push("'newValuePayload', new_value_payload");
+    if (pieces.length > 0) {
+      db.exec(`
+        UPDATE trade_policy_adjustments
+        SET evidence_payload = json_object(${pieces.join(', ')})
+        WHERE evidence_payload IS NULL OR TRIM(evidence_payload) = ''
+      `);
+    }
+  }
 }
 
 function backfillTradePolicyAdjustmentScopeKeys(db: Database.Database): void {

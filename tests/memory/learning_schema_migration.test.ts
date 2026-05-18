@@ -217,7 +217,7 @@ describe('learning schema migration', () => {
     expect(row.learningComparable).toBe(0);
   });
 
-  it('adds and backfills trade policy scope_key for legacy adjustment tables', () => {
+  it('adds and backfills trade policy scope_key for partially legacy adjustment tables', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-adjustments-')), 'thufir.sqlite');
     const raw = new Database(dbPath);
     raw.exec(`
@@ -267,6 +267,123 @@ describe('learning schema migration', () => {
     expect(row.policy_key).toBe('size');
     expect(row.scope_key).toBe(
       'symbol=any|direction=any|strategySource=any|triggerReason=any|signalClass=mean_reversion|symbolClass=any|session=any|marketRegime=trending|volatilityBucket=high|liquidityBucket=deep'
+    );
+  });
+
+  it('migrates the production legacy trade policy adjustment schema into the canonical shape', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-prod-legacy-adjustments-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE trade_policy_adjustments (
+        id TEXT PRIMARY KEY,
+        policy_domain TEXT NOT NULL,
+        policy_key TEXT NOT NULL,
+        scope_payload TEXT,
+        adjustment_type TEXT NOT NULL,
+        old_value REAL,
+        new_value REAL,
+        delta REAL,
+        evidence_count INTEGER,
+        evidence_window_start TEXT,
+        evidence_window_end TEXT,
+        reason_summary TEXT,
+        confidence REAL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        expires_at TEXT,
+        old_value_payload TEXT,
+        new_value_payload TEXT,
+        symbol TEXT,
+        direction TEXT,
+        strategy_source TEXT,
+        trigger_reason TEXT,
+        symbol_class TEXT,
+        session_tag TEXT,
+        leverage_cap REAL,
+        confirmation_required INTEGER,
+        cooldown_minutes INTEGER,
+        scope_key TEXT NOT NULL DEFAULT ''
+      );
+      INSERT INTO trade_policy_adjustments (
+        id, policy_domain, policy_key, scope_payload, adjustment_type, old_value, new_value, delta,
+        evidence_count, reason_summary, confidence, active, created_at, symbol, direction,
+        strategy_source, trigger_reason, symbol_class, session_tag, scope_key
+      ) VALUES (
+        'prod-legacy-adjustment',
+        'perp',
+        'size',
+        '{"signalClass":"mean_reversion","marketRegime":"trending","volatilityBucket":"high","liquidityBucket":"deep"}',
+        'scale',
+        1.0,
+        0.4,
+        -0.6,
+        4,
+        'legacy adaptive downweight',
+        0.88,
+        1,
+        '2026-05-18T17:00:00.000Z',
+        'BTC',
+        'long',
+        'autonomous',
+        'thesis_retry',
+        'majors',
+        'us_open',
+        ''
+      );
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+
+    const columns = db.prepare("PRAGMA table_info('trade_policy_adjustments')").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    for (const name of [
+      'domain',
+      'action',
+      'size_multiplier',
+      'signal_class',
+      'market_regime',
+      'volatility_bucket',
+      'liquidity_bucket',
+      'rationale',
+      'evidence_payload',
+      'updated_at',
+    ]) {
+      expect(names.has(name)).toBe(true);
+    }
+
+    const row = db
+      .prepare(
+        `SELECT domain, action, size_multiplier, signal_class, market_regime, volatility_bucket, liquidity_bucket,
+                rationale, scope_key, updated_at
+         FROM trade_policy_adjustments
+         WHERE id = 'prod-legacy-adjustment'`
+      )
+      .get() as {
+        domain: string;
+        action: string;
+        size_multiplier: number;
+        signal_class: string;
+        market_regime: string;
+        volatility_bucket: string;
+        liquidity_bucket: string;
+        rationale: string;
+        scope_key: string;
+        updated_at: string;
+      };
+
+    expect(row.domain).toBe('perp');
+    expect(row.action).toBe('downweight');
+    expect(row.size_multiplier).toBe(0.4);
+    expect(row.signal_class).toBe('mean_reversion');
+    expect(row.market_regime).toBe('trending');
+    expect(row.volatility_bucket).toBe('high');
+    expect(row.liquidity_bucket).toBe('deep');
+    expect(row.rationale).toBe('legacy adaptive downweight');
+    expect(row.updated_at).toBeTruthy();
+    expect(row.scope_key).toBe(
+      'symbol=BTC|direction=long|strategySource=autonomous|triggerReason=thesis_retry|signalClass=mean_reversion|symbolClass=majors|session=us_open|marketRegime=trending|volatilityBucket=high|liquidityBucket=deep'
     );
   });
 });
