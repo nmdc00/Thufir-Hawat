@@ -563,6 +563,7 @@ export function buildPerpExecutionLearningCase(
     entityId: input.symbol,
     executionMode: input.executionMode,
     sourceTradeId: input.tradeId,
+    sourceDossierId: null,
     sourceHypothesisId: input.hypothesisId,
     createdAtMs: input.capturedAtMs,
     context: {
