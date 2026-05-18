@@ -501,6 +501,10 @@ function invertSide(side: 'buy' | 'sell'): 'buy' | 'sell' {
   return side === 'buy' ? 'sell' : 'buy';
 }
 
+function toPerpDirection(side: 'buy' | 'sell'): 'long' | 'short' {
+  return side === 'buy' ? 'long' : 'short';
+}
+
 function resolvePerpLearningScopeContext(params: {
   side: 'buy' | 'sell';
   reduceOnly: boolean;
@@ -1892,7 +1896,9 @@ export async function executeToolCall(
           marketRegimeRaw === 'low_vol_compression'
             ? marketRegimeRaw
             : null;
-        const defaultLearningDirection = reduceOnly ? invertSide(side as 'buy' | 'sell') : (side as 'buy' | 'sell');
+        const defaultLearningDirection = reduceOnly
+          ? toPerpDirection(invertSide(side as 'buy' | 'sell'))
+          : toPerpDirection(side as 'buy' | 'sell');
         const defaultTriggerReason = inferPerpTriggerReason(planContext, entryTrigger);
         const defaultSession = inferPerpSession(planContext);
         const defaultStrategySource = inferPerpStrategySource(planContext, hypothesisId);
