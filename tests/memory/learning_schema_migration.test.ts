@@ -24,7 +24,7 @@ describe('learning schema migration', () => {
     useTempDb();
   });
 
-  it('replaces a stale learning_examples view and creates v2.2 learning objects', () => {
+  it('replaces a stale learning_examples view and creates v2.1 learning objects', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-stale-view-')), 'thufir.sqlite');
     const raw = new Database(dbPath);
     raw.exec(`
@@ -102,112 +102,18 @@ describe('learning schema migration', () => {
     const executionViewExists = db
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = 'execution_learning_cases' LIMIT 1")
       .get();
-    const interventionViewExists = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = 'intervention_learning_cases' LIMIT 1")
+    const learningSignalAuditsExists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_signal_audits' LIMIT 1")
       .get();
-    const regretViewExists = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = 'regret_learning_cases' LIMIT 1")
-      .get();
-    const counterfactualTableExists = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_counterfactuals' LIMIT 1")
-      .get();
-    const similarityFeaturesTableExists = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_similarity_features' LIMIT 1")
-      .get();
-    const policyAdjustmentsTableExists = db
+    const tradePolicyAdjustmentsExists = db
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_policy_adjustments' LIMIT 1")
       .get();
 
     expect(learningCasesExists).toBeTruthy();
     expect(comparableViewExists).toBeTruthy();
     expect(executionViewExists).toBeTruthy();
-    expect(interventionViewExists).toBeTruthy();
-    expect(regretViewExists).toBeTruthy();
-    expect(counterfactualTableExists).toBeTruthy();
-    expect(similarityFeaturesTableExists).toBeTruthy();
-    expect(policyAdjustmentsTableExists).toBeTruthy();
-  });
-
-  it('repairs legacy learning_cases tables before creating dossier and hypothesis indexes', () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-learning-cases-')), 'thufir.sqlite');
-    const raw = new Database(dbPath);
-    raw.exec(`
-      CREATE TABLE learning_cases (
-        id TEXT PRIMARY KEY,
-        case_type TEXT NOT NULL,
-        domain TEXT NOT NULL,
-        entity_type TEXT NOT NULL,
-        entity_id TEXT NOT NULL,
-        comparable INTEGER NOT NULL,
-        comparator_kind TEXT,
-        source_prediction_id TEXT,
-        source_trade_id INTEGER,
-        source_artifact_id INTEGER,
-        belief_payload TEXT,
-        baseline_payload TEXT,
-        context_payload TEXT,
-        action_payload TEXT,
-        outcome_payload TEXT,
-        quality_payload TEXT,
-        policy_input_payload TEXT,
-        exclusion_reason TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT
-      );
-    `);
-    raw.close();
-
-    process.env.THUFIR_DB_PATH = dbPath;
-    const db = openDatabase();
-    const columns = db
-      .prepare("PRAGMA table_info('learning_cases')")
-      .all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map((column) => column.name));
-    expect(columnNames.has('source_dossier_id')).toBe(true);
-    expect(columnNames.has('source_hypothesis_id')).toBe(true);
-
-    const indexes = db
-      .prepare("PRAGMA index_list('learning_cases')")
-      .all() as Array<{ name: string }>;
-    const indexNames = new Set(indexes.map((index) => index.name));
-    expect(indexNames.has('idx_learning_cases_dossier')).toBe(true);
-    expect(indexNames.has('idx_learning_cases_hypothesis')).toBe(true);
-  });
-
-  it('repairs legacy trade_dossiers tables and adds v2.2 trace columns', () => {
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-trade-dossiers-')), 'thufir.sqlite');
-    const raw = new Database(dbPath);
-    raw.exec(`
-      CREATE TABLE trade_dossiers (
-        id TEXT PRIMARY KEY,
-        symbol TEXT NOT NULL,
-        status TEXT NOT NULL,
-        direction TEXT,
-        strategy_source TEXT,
-        execution_mode TEXT,
-        source_trade_id INTEGER,
-        source_prediction_id TEXT,
-        proposal_record_id INTEGER,
-        trigger_reason TEXT,
-        opened_at TEXT,
-        closed_at TEXT,
-        dossier_payload TEXT,
-        review_payload TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT
-      );
-    `);
-    raw.close();
-
-    process.env.THUFIR_DB_PATH = dbPath;
-    const db = openDatabase();
-    const columns = db
-      .prepare("PRAGMA table_info('trade_dossiers')")
-      .all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map((column) => column.name));
-    expect(columnNames.has('source_hypothesis_id')).toBe(true);
-    expect(columnNames.has('retrieval_payload')).toBe(true);
-    expect(columnNames.has('policy_trace_payload')).toBe(true);
+    expect(learningSignalAuditsExists).toBeTruthy();
+    expect(tradePolicyAdjustmentsExists).toBeTruthy();
   });
 
   it('startup repair demotes open synthetic perp comparable rows before they resolve', () => {

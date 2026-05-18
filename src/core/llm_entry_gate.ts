@@ -3,7 +3,6 @@ import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
 import type { PositionBook } from './position_book.js';
 import { recordEntryGateDecision } from '../memory/llm_entry_gate_log.js';
-import { computeRollingWindowMetrics } from '../memory/learning_metrics.js';
 import { listPerpTradeJournals } from '../memory/perp_trade_journal.js';
 import { summarizeSignalPerformance, type SignalPerformanceSummary } from './signal_performance.js';
 import { Logger } from './logger.js';
@@ -18,7 +17,6 @@ export interface EntryGateCandidate {
   edge: number;
   confidence: number;
   signalClass: string;
-  domain?: string;
   regime: string;
   session: string;
   entryReasoning: string;
@@ -65,30 +63,6 @@ const DecisionSchema = z.object({
 
 const logger = new Logger('info');
 
-export function calibrationBlock(domain: string | undefined): {
-  blocked: boolean;
-  sizeMultiplier: number;
-  reason: string | null;
-} {
-  if (!domain) {
-    return { blocked: false, sizeMultiplier: 1, reason: null };
-  }
-
-  const windows = computeRollingWindowMetrics(domain);
-  const w50 = windows.find((window) => window.windowSize === 50);
-  const w20 = windows.find((window) => window.windowSize === 20);
-
-  if (w50 && w50.sampleCount >= 50 && w50.brierDelta != null && w50.brierDelta < 0) {
-    return { blocked: true, sizeMultiplier: 0, reason: 'domain_calibration_below_market' };
-  }
-
-  if (w20 && w20.sampleCount >= 20 && w20.brierDelta != null && w20.brierDelta < -0.05) {
-    return { blocked: false, sizeMultiplier: 0.5, reason: 'domain_calibration_degrading' };
-  }
-
-  return { blocked: false, sizeMultiplier: 1, reason: null };
-}
-
 function normalizeOptionalFieldPseudoJson(
   raw: string,
   optionalFields: string[]
@@ -99,75 +73,6 @@ function normalizeOptionalFieldPseudoJson(
     normalized = normalized.replace(pattern, '$1 null');
   }
   return normalized;
-}
-
-function normalizeReasonCode(
-  raw: unknown,
-  verdict: EntryGateDecision['verdict'],
-  reasoning: string
-): EntryGateReasonCode {
-  const normalized =
-    typeof raw === 'string' && raw.trim().length > 0
-      ? raw.trim()
-      : null;
-  switch (normalized) {
-    case 'approve':
-    case 'book_conflict':
-    case 'same_symbol_stacking':
-    case 'invalidation_missing':
-    case 'edge_too_low':
-    case 'confidence_too_low':
-    case 'regime_mismatch':
-    case 'no_fresh_catalyst':
-    case 'risk_reward_insufficient':
-    case 'size_downshift':
-    case 'llm_unavailable':
-    case 'discretionary_reject':
-      return normalized;
-    default:
-      break;
-  }
-
-  const lower = reasoning.toLowerCase();
-  if (
-    lower.includes('opposite-side') ||
-    lower.includes('opposite side') ||
-    lower.includes('conflicting trade') ||
-    lower.includes('book conflict')
-  ) {
-    return 'book_conflict';
-  }
-  if (lower.includes('stack') || lower.includes('same symbol')) {
-    return 'same_symbol_stacking';
-  }
-  if (lower.includes('no price invalidation') || lower.includes('concrete stop price')) {
-    return 'invalidation_missing';
-  }
-  if (lower.includes('fresh catalyst')) {
-    return 'no_fresh_catalyst';
-  }
-  if (lower.includes('risk reward') || lower.includes('reward-to-risk') || lower.includes('r:r')) {
-    return 'risk_reward_insufficient';
-  }
-  if (lower.includes('regime') || lower.includes('choppy')) {
-    return 'regime_mismatch';
-  }
-  if (lower.includes('confidence') && (lower.includes('too low') || lower.includes('below'))) {
-    return 'confidence_too_low';
-  }
-  if (lower.includes('edge') && (lower.includes('too low') || lower.includes('below') || lower.includes('moderate'))) {
-    return 'edge_too_low';
-  }
-  if (verdict === 'resize') {
-    return 'size_downshift';
-  }
-  if (lower.includes('llm unavailable')) {
-    return 'llm_unavailable';
-  }
-  if (verdict === 'approve') {
-    return 'approve';
-  }
-  return 'discretionary_reject';
 }
 
 function formatBookTable(entries: ReturnType<PositionBook['getAll']>): string {
@@ -342,6 +247,67 @@ function summarizeLlmError(error: unknown): { type: string; message: string } {
   return { type: 'llm_call', message };
 }
 
+function normalizeReasonCode(
+  raw: string | undefined,
+  verdict: EntryGateDecision['verdict'],
+  reasoning: string,
+): EntryGateReasonCode {
+  const normalized = String(raw ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const allowed = new Set<EntryGateReasonCode>([
+    'approve',
+    'book_conflict',
+    'same_symbol_stacking',
+    'invalidation_missing',
+    'edge_too_low',
+    'confidence_too_low',
+    'regime_mismatch',
+    'no_fresh_catalyst',
+    'risk_reward_insufficient',
+    'size_downshift',
+    'llm_unavailable',
+    'discretionary_reject',
+  ]);
+  if (allowed.has(normalized as EntryGateReasonCode)) {
+    return normalized as EntryGateReasonCode;
+  }
+
+  const lower = reasoning.trim().toLowerCase();
+  if (lower.includes('opposite-side position already open') || lower.includes('conflicting trade')) {
+    return 'book_conflict';
+  }
+  if (lower.includes('stack') || lower.includes('same-symbol') || lower.includes('same symbol')) {
+    return 'same_symbol_stacking';
+  }
+  if (lower.includes('no price invalidation') || lower.includes('concrete stop price')) {
+    return 'invalidation_missing';
+  }
+  if (lower.includes('fresh catalyst')) {
+    return 'no_fresh_catalyst';
+  }
+  if (lower.includes('risk reward') || lower.includes('reward-to-risk') || lower.includes('r:r')) {
+    return 'risk_reward_insufficient';
+  }
+  if (lower.includes('regime') || lower.includes('choppy')) {
+    return 'regime_mismatch';
+  }
+  if (lower.includes('confidence') && (lower.includes('too low') || lower.includes('below'))) {
+    return 'confidence_too_low';
+  }
+  if (lower.includes('edge') && (lower.includes('too low') || lower.includes('below') || lower.includes('moderate'))) {
+    return 'edge_too_low';
+  }
+  if (verdict === 'resize') {
+    return 'size_downshift';
+  }
+  if (lower.includes('llm unavailable')) {
+    return 'llm_unavailable';
+  }
+  if (verdict === 'approve') {
+    return 'approve';
+  }
+  return 'discretionary_reject';
+}
+
 export class LlmEntryGate {
   constructor(
     private mainLlm: LlmClient,
@@ -360,36 +326,6 @@ export class LlmEntryGate {
       const decision: EntryGateDecision = {
         verdict: 'reject',
         reasoning: 'Opposite-side position already open on this symbol. Cannot open conflicting trade.',
-        reasonCode: 'book_conflict',
-      };
-      recordEntryGateDecision({
-        symbol: candidate.symbol,
-        side: candidate.side,
-        notionalUsd: candidate.notionalUsd,
-        verdict: decision.verdict,
-        reasoning: decision.reasoning,
-        reasonCode: decision.reasonCode,
-        adjustedSizeUsd: undefined,
-        usedFallback: false,
-        signalClass: candidate.signalClass,
-        regime: candidate.regime,
-        session: candidate.session,
-        edge: candidate.edge,
-      });
-      return decision;
-    }
-
-    const oppositeSideLosers = this.book.findOppositeSideLosers(candidate.side);
-    if (oppositeSideLosers.length > 0) {
-      const loserSummary = oppositeSideLosers
-        .slice(0, 3)
-        .map((entry) => `${entry.symbol} ${entry.side} (${entry.unrealizedPnlUsd.toFixed(2)} USD)`)
-        .join(', ');
-      const decision: EntryGateDecision = {
-        verdict: 'reject',
-        reasoning:
-          `Opposite-side losers already open in the book (${loserSummary}). ` +
-          'Resolve or reduce incompatible losing positions before expanding exposure in the other direction.',
         reasonCode: 'book_conflict',
       };
       recordEntryGateDecision({
@@ -430,37 +366,6 @@ export class LlmEntryGate {
         session: candidate.session,
         edge: candidate.edge,
       });
-      return decision;
-    }
-
-    const calibration = calibrationBlock(candidate.domain);
-    if (calibration.blocked) {
-      const decision: EntryGateDecision = {
-        verdict: 'reject',
-        reasoning: calibration.reason ?? 'domain_calibration_below_market',
-        reasonCode: 'discretionary_reject',
-      };
-      recordEntryGateDecision({
-        symbol: candidate.symbol,
-        side: candidate.side,
-        notionalUsd: candidate.notionalUsd,
-        verdict: decision.verdict,
-        reasoning: decision.reasoning,
-        reasonCode: decision.reasonCode,
-        adjustedSizeUsd: undefined,
-        usedFallback: false,
-        signalClass: candidate.signalClass,
-        regime: candidate.regime,
-        session: candidate.session,
-        edge: candidate.edge,
-      });
-      try {
-        await this.notify(
-          `⚠️ Entry gate blocked ${candidate.symbol} ${candidate.side}: ${decision.reasoning}`
-        );
-      } catch {
-        // Best effort only.
-      }
       return decision;
     }
 
@@ -528,19 +433,6 @@ export class LlmEntryGate {
               reasonCode: 'llm_unavailable',
             };
       }
-    }
-
-    if (calibration.sizeMultiplier < 1) {
-      const adjustedSizeUsd =
-        decision.adjustedSizeUsd != null
-          ? Number((decision.adjustedSizeUsd * calibration.sizeMultiplier).toFixed(2))
-          : Number((candidate.notionalUsd * calibration.sizeMultiplier).toFixed(2));
-      decision = {
-        ...decision,
-        verdict: 'resize',
-        adjustedSizeUsd: Math.max(1, adjustedSizeUsd),
-        reasoning: calibration.reason ? `${decision.reasoning} | ${calibration.reason}` : decision.reasoning,
-      };
     }
 
     recordEntryGateDecision({

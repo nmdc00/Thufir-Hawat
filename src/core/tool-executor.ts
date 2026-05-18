@@ -24,14 +24,11 @@ import {
   recordPerpTrade,
   setActivePerpPositionLifecycle,
 } from '../memory/perp_trades.js';
+import { createLearningCase } from '../memory/learning_cases.js';
 import { recordPerpTradeJournal, listPerpTradeJournals } from '../memory/perp_trade_journal.js';
 import { findOpenPerpPrediction, findOpenPerpPredictionById } from '../memory/predictions.js';
 import { recordDecisionAudit } from '../memory/decision_audit.js';
 import { storeDecisionArtifact } from '../memory/decision_artifacts.js';
-import { createLearningCase } from '../memory/learning_cases.js';
-import { findOpenTradeDossierBySymbol, findTradeDossierByTradeId, upsertTradeDossier } from '../memory/trade_dossiers.js';
-import { createTradeCounterfactual } from '../memory/trade_counterfactuals.js';
-import { upsertTradeSimilarityFeatures } from '../memory/trade_similarity_features.js';
 import { listRecentAgentIncidents } from '../memory/incidents.js';
 import { getPlaybook, searchPlaybooks, upsertPlaybook } from '../memory/playbooks.js';
 import {
@@ -49,6 +46,8 @@ import { evaluateGlobalTradeGate } from './autonomy_policy.js';
 import { buildPaperPromotionReport } from './paper_promotion.js';
 import { resilientWebSearch } from '../intel/web_search_resilience.js';
 import { computeClosedTradeComponentScores } from './decision_component_scores.js';
+import { buildPerpExecutionLearningCase, toPerpExecutionLearningCaseInput } from './perp_lifecycle.js';
+import { materializeTradePolicyAdjustmentFromLearningCase } from './trade_policy_materialization.js';
 import {
   hydrateEntryTradeContract,
   normalizeReduceOnlyExitFsmInput,
@@ -65,14 +64,6 @@ import {
   getPositionExitPolicy,
   upsertPositionExitPolicy,
 } from '../memory/position_exit_policy.js';
-import {
-  buildPerpExecutionLearningCase,
-  toPerpExecutionLearningCaseInput,
-} from './perp_lifecycle.js';
-import { computePerpInterventionEvidence } from './thesis_learning.js';
-import { buildTradeCounterfactuals } from './trade_counterfactuals.js';
-import { deriveTradeSimilarityFeatures } from './trade_similarity_feature_derivation.js';
-import type { TradeReviewBand, TradeThesisVerdict } from './trade_review.js';
 
 /** Minimal interface for spending limit enforcement used in tool execution */
 export interface ToolSpendingLimiter {
@@ -458,6 +449,100 @@ function parsePlanContext(input: unknown): Record<string, unknown> | null {
   return input as Record<string, unknown>;
 }
 
+function pickPlanContextString(planContext: Record<string, unknown> | null, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = toOptionalNonEmptyString(planContext?.[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function inferPerpStrategySource(planContext: Record<string, unknown> | null, hypothesisId: string | null): string | null {
+  const explicit = pickPlanContextString(planContext, 'strategySource', 'strategy_source', 'source');
+  if (explicit) return explicit;
+  if (hypothesisId?.includes('news')) return 'discovery_news';
+  if (hypothesisId) return 'discovery_quant';
+  return null;
+}
+
+function inferPerpSession(planContext: Record<string, unknown> | null): string | null {
+  return pickPlanContextString(planContext, 'session', 'sessionTag', 'session_tag');
+}
+
+function inferPerpTriggerReason(
+  planContext: Record<string, unknown> | null,
+  entryTrigger: 'news' | 'technical' | 'hybrid' | null
+): string | null {
+  return (
+    pickPlanContextString(planContext, 'triggerReason', 'trigger_reason', 'entryReason', 'entry_reason') ??
+    entryTrigger
+  );
+}
+
+function inferPerpSymbolClass(symbol: string, planContext: Record<string, unknown> | null): string | null {
+  const explicit = pickPlanContextString(planContext, 'symbolClass', 'symbol_class');
+  if (explicit) return explicit;
+  const normalized = symbol.trim().toUpperCase();
+  if (normalized.endsWith('BTC') || normalized === 'BTC') return 'major';
+  if (normalized.endsWith('ETH') || normalized === 'ETH' || normalized.endsWith('SOL') || normalized === 'SOL') {
+    return 'liquid_alt';
+  }
+  return normalized.length > 0 ? 'alt' : null;
+}
+
+function readScopeDirection(
+  record: Record<string, unknown> | null | undefined
+): 'buy' | 'sell' | null {
+  const value = pickPlanContextString(record ?? null, 'direction', 'side');
+  return value === 'buy' || value === 'sell' ? value : null;
+}
+
+function invertSide(side: 'buy' | 'sell'): 'buy' | 'sell' {
+  return side === 'buy' ? 'sell' : 'buy';
+}
+
+function resolvePerpLearningScopeContext(params: {
+  side: 'buy' | 'sell';
+  reduceOnly: boolean;
+  entryTrigger: 'news' | 'technical' | 'hybrid' | null;
+  planContext: Record<string, unknown> | null;
+  closeReference: ReturnType<typeof resolveClosedTradeReference>;
+  hypothesisId: string | null;
+  symbol: string;
+}) {
+  const referenceSnapshot =
+    params.closeReference?.snapshot && typeof params.closeReference.snapshot === 'object'
+      ? (params.closeReference.snapshot as Record<string, unknown>)
+      : null;
+  const referencePlanContext = params.closeReference?.planContext ?? null;
+  return {
+    direction:
+      readScopeDirection(referenceSnapshot) ??
+      (params.closeReference?.side ?? null) ??
+      (params.reduceOnly ? invertSide(params.side) : params.side),
+    triggerReason:
+      pickPlanContextString(referenceSnapshot, 'triggerReason', 'trigger_reason') ??
+      pickPlanContextString(referencePlanContext, 'triggerReason', 'trigger_reason') ??
+      inferPerpTriggerReason(params.planContext, params.entryTrigger),
+    session:
+      pickPlanContextString(referenceSnapshot, 'session', 'sessionTag', 'session_tag') ??
+      pickPlanContextString(referencePlanContext, 'session', 'sessionTag', 'session_tag') ??
+      inferPerpSession(params.planContext),
+    strategySource:
+      pickPlanContextString(referenceSnapshot, 'strategySource', 'strategy_source') ??
+      pickPlanContextString(referencePlanContext, 'strategySource', 'strategy_source') ??
+      inferPerpStrategySource(params.planContext, params.hypothesisId),
+    symbolClass:
+      pickPlanContextString(referenceSnapshot, 'symbolClass', 'symbol_class') ??
+      pickPlanContextString(referencePlanContext, 'symbolClass', 'symbol_class') ??
+      inferPerpSymbolClass(params.symbol, params.planContext),
+    entryTrigger:
+      (pickPlanContextString(referenceSnapshot, 'entryTrigger', 'entry_trigger') ??
+        pickPlanContextString(referencePlanContext, 'entryTrigger', 'entry_trigger') ??
+        params.entryTrigger) as 'news' | 'technical' | 'hybrid' | null,
+  };
+}
+
 function toOptionalNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -550,7 +635,12 @@ function buildPerpTradeSnapshot(params: {
   reduceOnly: boolean;
   markPrice: number | null;
   hypothesisId: string | null;
+  direction?: 'buy' | 'sell' | 'long' | 'short' | null;
+  strategySource?: string | null;
+  triggerReason?: string | null;
   signalClass: string | null;
+  symbolClass?: string | null;
+  session?: string | null;
   marketRegime: string | null;
   volatilityBucket: string | null;
   liquidityBucket: string | null;
@@ -588,7 +678,12 @@ function buildPerpTradeSnapshot(params: {
     tradeId: params.lifecycleTradeId ?? null,
     markPrice: params.markPrice,
     hypothesisId: params.hypothesisId,
+    direction: params.direction ?? null,
+    strategySource: params.strategySource ?? null,
+    triggerReason: params.triggerReason ?? null,
     signalClass: params.signalClass,
+    symbolClass: params.symbolClass ?? null,
+    session: params.session ?? null,
     marketRegime: params.marketRegime,
     volatilityBucket: params.volatilityBucket,
     liquidityBucket: params.liquidityBucket,
@@ -640,8 +735,8 @@ function persistExecutionLearningCase(params: {
   fingerprint: string;
   learningCase: ReturnType<typeof buildPerpExecutionLearningCase>;
   signalClass: string | null;
-}): void {
-  createLearningCase(toPerpExecutionLearningCaseInput(params.learningCase));
+}) {
+  const stored = createLearningCase(toPerpExecutionLearningCaseInput(params.learningCase));
   storeDecisionArtifact({
     source: 'perps',
     kind: 'execution_learning_case',
@@ -655,159 +750,7 @@ function persistExecutionLearningCase(params: {
       persistence: 'decision_artifacts_compat',
     },
   });
-}
-
-function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function readString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-}
-
-function readNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim().length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function toReviewBand(score: number | null | undefined): TradeReviewBand {
-  if (score == null || !Number.isFinite(score)) return 'unknown';
-  if (score >= 0.8) return 'strong';
-  if (score >= 0.55) return 'adequate';
-  if (score >= 0.3) return 'weak';
-  return 'poor';
-}
-
-function buildTradeDossierReview(params: {
-  thesisCorrect: boolean | null;
-  timingScore: number | null;
-  sizingScore: number | null;
-  exitScore: number | null;
-  gateVerdict: 'approve' | 'reject' | 'resize' | null;
-  requestedSize: number | null;
-  executedSize: number | null;
-  requestedLeverage: number | null;
-  approvedLeverage: number | null;
-  exitMode: string | null;
-  thesisEvaluationReason: string | null;
-  marketRegime: string | null;
-  netRealizedPnlUsd: number | null;
-}): Record<string, unknown> {
-  const interventionEvidence = computePerpInterventionEvidence({
-    requestedSize: params.requestedSize,
-    approvedSize: params.executedSize,
-    requestedLeverage: params.requestedLeverage,
-    approvedLeverage: params.approvedLeverage,
-    netRealizedPnlUsd: params.netRealizedPnlUsd,
-    gateVerdict: params.gateVerdict,
-  });
-  const lessons: string[] = [];
-  const repeatTags: string[] = [];
-  const avoidTags: string[] = [];
-  const entryQuality = toReviewBand(params.timingScore);
-  const sizingQuality = toReviewBand(params.sizingScore);
-  const exitQuality = toReviewBand(params.exitScore);
-  const gateInterventionQuality = toReviewBand(interventionEvidence?.interventionScore ?? null);
-  const leverageQuality = toReviewBand(
-    interventionEvidence?.leverageFillRatio != null
-      ? Math.max(0, Math.min(1, interventionEvidence.leverageFillRatio))
-      : null
-  );
-  const contextFit = params.marketRegime === 'unknown'
-    ? (params.thesisCorrect == null ? 'unknown' : params.thesisCorrect ? 'adequate' : 'weak')
-    : params.thesisCorrect == null
-      ? 'unknown'
-      : params.thesisCorrect
-        ? 'strong'
-        : 'poor';
-
-  let thesisVerdict: TradeThesisVerdict = 'unclear';
-  if (params.thesisCorrect === true) thesisVerdict = 'correct';
-  if (params.thesisCorrect === false) thesisVerdict = 'incorrect';
-
-  if (entryQuality === 'weak' || entryQuality === 'poor') {
-    lessons.push('Entry timing degraded trade quality; keep similar setups size-capped or wait for cleaner entry.');
-    avoidTags.push('late_entry');
-  }
-  if (params.gateVerdict === 'resize') {
-    lessons.push('Gate resized the trade; compare future expectancy against the capped-size path, not the full request.');
-  }
-  if (gateInterventionQuality === 'strong' || gateInterventionQuality === 'adequate') {
-    lessons.push('Gate intervention added value on this path and should influence future sizing decisions.');
-    repeatTags.push('gate_intervention_helpful');
-  } else if (params.gateVerdict === 'resize' || params.gateVerdict === 'reject') {
-    avoidTags.push('gate_intervention_questionable');
-  }
-  if (sizingQuality === 'weak' || sizingQuality === 'poor') {
-    lessons.push('Sizing quality was weak relative to the realized path.');
-    avoidTags.push('oversized_entry');
-  }
-  if (exitQuality === 'strong' || exitQuality === 'adequate') {
-    repeatTags.push('disciplined_exit');
-  }
-  if (params.exitMode === 'manual' || params.exitMode === 'unknown') {
-    lessons.push('Exit discipline was discretionary; avoid teaching broad setup rules from this path without more review.');
-    avoidTags.push('discretionary_exit');
-  }
-  if (thesisVerdict === 'correct') {
-    repeatTags.push('thesis_valid');
-  } else if (thesisVerdict === 'incorrect') {
-    avoidTags.push('thesis_invalid');
-  }
-  if (lessons.length === 0) {
-    lessons.push('Trade lifecycle was orderly enough to reuse as structured evidence.');
-  }
-  const mainSuccessDriver =
-    gateInterventionQuality === 'strong'
-      ? 'gate intervention preserved edge'
-      : entryQuality === 'strong'
-        ? 'clean entry timing'
-        : exitQuality === 'strong'
-          ? 'disciplined exit management'
-          : thesisVerdict === 'correct'
-            ? 'thesis directionality held'
-            : null;
-  const mainFailureMode =
-    entryQuality === 'poor'
-      ? 'late or stretched entry'
-      : sizingQuality === 'poor'
-        ? 'oversized position relative to path'
-        : exitQuality === 'poor'
-          ? 'exit management degraded realized outcome'
-          : thesisVerdict === 'incorrect'
-            ? 'directional thesis failed'
-            : null;
-  return {
-    reviewVersion: 'v2.2',
-    thesisVerdict,
-    entryQuality,
-    sizingQuality,
-    leverageQuality,
-    exitQuality,
-    gateInterventionQuality,
-    contextFit,
-    gateVerdict: params.gateVerdict ?? 'unknown',
-    counterfactualNeeded:
-      params.gateVerdict === 'resize' ||
-      params.gateVerdict === 'reject' ||
-      interventionEvidence == null,
-    requestedSize: params.requestedSize,
-    executedSize: params.executedSize,
-    requestedLeverage: params.requestedLeverage,
-    approvedLeverage: params.approvedLeverage,
-    mainSuccessDriver,
-    mainFailureMode,
-    thesisEvaluationReason: params.thesisEvaluationReason,
-    lessons,
-    repeatTags: Array.from(new Set(repeatTags)),
-    avoidTags: Array.from(new Set(avoidTags)),
-  };
+  return stored;
 }
 
 type ReduceOnlyPositionSnapshot = {
@@ -1949,6 +1892,11 @@ export async function executeToolCall(
           marketRegimeRaw === 'low_vol_compression'
             ? marketRegimeRaw
             : null;
+        const defaultLearningDirection = reduceOnly ? invertSide(side as 'buy' | 'sell') : (side as 'buy' | 'sell');
+        const defaultTriggerReason = inferPerpTriggerReason(planContext, entryTrigger);
+        const defaultSession = inferPerpSession(planContext);
+        const defaultStrategySource = inferPerpStrategySource(planContext, hypothesisId);
+        const defaultSymbolClass = inferPerpSymbolClass(symbol, planContext);
         const tradeEvidenceBaseFingerprint =
           hypothesisId != null
             ? `${symbol}:${hypothesisId}:${Date.now()}`
@@ -2028,6 +1976,15 @@ export async function executeToolCall(
           } catch { /* best-effort: never block trading */ }
         }
         const effectiveSignalClass = signalClass ?? closeReference?.signalClass ?? null;
+        const learningScopeContext = resolvePerpLearningScopeContext({
+          side: side as 'buy' | 'sell',
+          reduceOnly,
+          entryTrigger,
+          planContext,
+          closeReference,
+          hypothesisId,
+          symbol,
+        });
         const exitFsmValidation = validateReduceOnlyExitFsm({
           enabled: exitFsmEnabled,
           reduceOnly,
@@ -2104,11 +2061,19 @@ export async function executeToolCall(
           markPrice: market.markPrice ?? null,
         });
         const policyGate = evaluateGlobalTradeGate(ctx.config, {
+          symbol,
+          direction: defaultLearningDirection,
+          strategySource: defaultStrategySource,
+          triggerReason: defaultTriggerReason,
           signalClass,
+          symbolClass: defaultSymbolClass,
+          session: defaultSession,
           marketRegime,
           volatilityBucket,
           liquidityBucket,
           expectedEdge,
+          requestedLeverage: leverage ?? null,
+          confirmationSatisfied: true,
         });
         if (!policyGate.allowed) {
           const blockedSnapshot = buildPerpTradeSnapshot({
@@ -2592,8 +2557,6 @@ export async function executeToolCall(
           isNativePaperExecutor,
           paperInitialCashUsdc,
         });
-        const closedPositionCompletely =
-          reduceOnly && positionBefore != null && (positionAfter == null || (positionAfter.size ?? 0) === 0);
         let lifecycleTradeId: number | null = null;
         try {
           lifecycleTradeId = await resolvePerpLifecycleTradeId({
@@ -2657,18 +2620,6 @@ export async function executeToolCall(
             });
           }
         }
-        const closeSummary =
-          closedPositionCompletely
-            ? await resolvePerpCloseSummary({
-                ctx,
-                mode: bookMode,
-                symbol,
-                predictionCreatedAt:
-                  typeof closeReference?.snapshot?.createdAtIso === 'string'
-                    ? closeReference.snapshot.createdAtIso
-                    : new Date(executionStartMs).toISOString(),
-              })
-            : null;
         const executedEvidenceFingerprint =
           lifecycleTradeId != null && lifecycleTradeId > 0
             ? `perp:${lifecycleTradeId}`
@@ -2683,12 +2634,17 @@ export async function executeToolCall(
           reduceOnly,
           markPrice: market.markPrice ?? null,
           hypothesisId,
+          direction: learningScopeContext.direction,
+          triggerReason: learningScopeContext.triggerReason,
+          session: learningScopeContext.session,
+          strategySource: learningScopeContext.strategySource,
           signalClass: effectiveSignalClass,
+          symbolClass: learningScopeContext.symbolClass,
           marketRegime,
           volatilityBucket,
           liquidityBucket,
           expectedEdge,
-          entryTrigger,
+          entryTrigger: learningScopeContext.entryTrigger,
           newsSubtype,
           newsSources,
           noveltyScore,
@@ -2781,190 +2737,43 @@ export async function executeToolCall(
             signalClass: effectiveSignalClass,
             confidence: 0.5,
           });
-          const existingDossier =
-            lifecycleTradeId != null && lifecycleTradeId > 0
-              ? findTradeDossierByTradeId(lifecycleTradeId)
-              : findOpenTradeDossierBySymbol(symbol);
-          const existingDossierPayload = readRecord(existingDossier?.dossier) ?? {};
-          const existingDossierContext = readRecord(existingDossierPayload.context) ?? {};
-          const existingDossierGate = readRecord(existingDossierPayload.gate) ?? {};
-          const existingDossierExecution = readRecord(existingDossierPayload.execution) ?? {};
-          const requestedEntrySize =
-            readNumber(existingDossierExecution.requestedSize) ??
-            readNumber(existingDossierGate.requestedNotionalUsd) ??
-            requestedSize;
-          const approvedEntrySize =
-            readNumber(existingDossierExecution.size) ??
-            readNumber(existingDossierExecution.filledNotionalUsd) ??
-            readNumber(existingDossierGate.approvedNotionalUsd) ??
-            size;
-          const requestedEntryLeverage =
-            readNumber(existingDossierGate.requestedLeverage) ??
-            (closeReference?.leverage ?? leverage ?? null);
-          const approvedEntryLeverage =
-            readNumber(existingDossierGate.approvedLeverage) ??
-            (closeReference?.leverage ?? leverage ?? null);
-          const gateVerdictForReview =
-            closeReference?.entryGateVerdict ?? readString(existingDossierGate.verdict);
-          const interventionEvidence = computePerpInterventionEvidence({
-            requestedSize: requestedEntrySize,
-            approvedSize: approvedEntrySize,
-            requestedLeverage: requestedEntryLeverage,
-            approvedLeverage: approvedEntryLeverage,
-            netRealizedPnlUsd: closeSummary?.netRealizedPnlUsd ?? null,
-            realizedFeeUsd: closeSummary?.feeUsd ?? realizedFee.realized_fee_usd ?? null,
-            gateVerdict: gateVerdictForReview,
-          });
-          const dossierReview = closedPositionCompletely
-            ? buildTradeDossierReview({
-                thesisCorrect: exitAssessment.thesisCorrect,
-                timingScore: componentScores?.timingScore ?? null,
-                sizingScore: componentScores?.sizingScore ?? null,
-                exitScore: componentScores?.exitScore ?? null,
-                gateVerdict:
-                  gateVerdictForReview === 'approve' ||
-                  gateVerdictForReview === 'reject' ||
-                  gateVerdictForReview === 'resize'
-                    ? gateVerdictForReview
-                    : null,
-                requestedSize: requestedEntrySize,
-                executedSize: approvedEntrySize,
-                requestedLeverage: requestedEntryLeverage,
-                approvedLeverage: approvedEntryLeverage,
-                exitMode: exitAssessment.exitMode,
-                thesisEvaluationReason: exitAssessment.thesisEvaluationReason,
-                marketRegime: marketRegime ?? closeReference?.marketRegime ?? null,
-                netRealizedPnlUsd: closeSummary?.netRealizedPnlUsd ?? null,
-              })
-            : null;
-          const upsertedDossier = upsertTradeDossier({
-            id: existingDossier?.id ?? undefined,
-            symbol,
-            status: closedPositionCompletely ? 'closed' : 'open',
-            direction:
-              existingDossier?.direction ??
-              (reduceOnly
-                ? ((side as 'buy' | 'sell') === 'buy' ? 'short' : 'long')
-                : ((side as 'buy' | 'sell') === 'buy' ? 'long' : 'short')),
-            strategySource: existingDossier?.strategySource ?? 'tool_executor',
-            executionMode: bookMode,
-            sourceTradeId: lifecycleTradeId,
-            sourcePredictionId: existingDossier?.sourcePredictionId ?? null,
-            triggerReason:
-              existingDossier?.triggerReason ??
-              entryTrigger ??
-              closeReference?.entryTrigger ??
-              null,
-            openedAt: existingDossier?.openedAt ?? new Date(executionStartMs).toISOString(),
-            closedAt: closedPositionCompletely ? new Date().toISOString() : null,
-            dossier: {
-              version: 'v2.2',
-              thesis: {
-                reasoning: policyReasoning,
-                expectedEdge: expectedEdge ?? closeReference?.expectedEdge ?? null,
-                invalidationPrice: invalidationPrice ?? closeReference?.invalidationPrice ?? null,
-                timeStopAtMs: timeStopAtMs ?? closeReference?.timeStopAtMs ?? null,
-              },
-              context: {
-                signalClass:
-                  effectiveSignalClass ??
-                  closeReference?.signalClass ??
-                  readString(existingDossierContext.signalClass) ??
-                  null,
-                marketRegime:
-                  marketRegime ??
-                  closeReference?.marketRegime ??
-                  readString(existingDossierContext.marketRegime) ??
-                  null,
-                volatilityBucket:
-                  volatilityBucket ??
-                  closeReference?.volatilityBucket ??
-                  readString(existingDossierContext.volatilityBucket) ??
-                  null,
-                liquidityBucket:
-                  liquidityBucket ??
-                  closeReference?.liquidityBucket ??
-                  readString(existingDossierContext.liquidityBucket) ??
-                  null,
-                entryTrigger:
-                  entryTrigger ??
-                  closeReference?.entryTrigger ??
-                  readString(existingDossierContext.entryTrigger) ??
-                  null,
-                tradeArchetype:
-                  tradeArchetype ??
-                  closeReference?.tradeArchetype ??
-                  readString(existingDossierContext.tradeArchetype) ??
-                  null,
-                newsSubtype:
-                  newsSubtype ??
-                  closeReference?.newsSubtype ??
-                  readString(existingDossierContext.newsSubtype) ??
-                  null,
-              },
-              gate: {
-                verdict: gateVerdictForReview ?? null,
-                reasonCode: closeReference?.entryGateReasonCode ?? readString(existingDossierGate.reasonCode),
-                policyReasonCode: closeReference?.policyReasonCode ?? null,
-                policySizeMultiplier: closeReference?.policySizeMultiplier ?? null,
-                requestedLeverage: requestedEntryLeverage,
-                approvedLeverage: approvedEntryLeverage,
-              },
-              execution: {
-                tradeId: lifecycleTradeId,
-                side,
-                size,
-                requestedSize,
-                fillPrice: market.markPrice ?? null,
-                orderId: inferredOrderId,
-                executionMessage: result.message,
-                estimatedNotionalUsd: feeEstimate.estimated_notional_usd,
-              },
-              close: {
-                closedPositionCompletely,
-                exitMode: exitAssessment.exitMode,
-                thesisCorrect: exitAssessment.thesisCorrect,
-                thesisInvalidationHit: exitAssessment.thesisInvalidationHit,
-                realizedPnlUsd: closeSummary?.realizedPnlUsd ?? null,
-                netRealizedPnlUsd: closeSummary?.netRealizedPnlUsd ?? null,
-                feeUsd: closeSummary?.feeUsd ?? realizedFee.realized_fee_usd ?? null,
-              },
-              counterfactuals: interventionEvidence,
-            },
-            review: dossierReview,
-          });
-          const dossierId = upsertedDossier.id;
-          if (closedPositionCompletely) {
+          if (reduceOnly) {
             const learningCase = buildPerpExecutionLearningCase({
               symbol,
               executionMode: bookMode,
               tradeId: lifecycleTradeId,
-              dossierId,
               hypothesisId,
               capturedAtMs: executionStartMs,
               side: side as 'buy' | 'sell',
               size,
               leverage: leverage ?? null,
-              signalClass: effectiveSignalClass ?? closeReference?.signalClass ?? null,
-              marketRegime: marketRegime ?? closeReference?.marketRegime ?? null,
-              volatilityBucket: volatilityBucket ?? closeReference?.volatilityBucket ?? null,
-              liquidityBucket: liquidityBucket ?? closeReference?.liquidityBucket ?? null,
-              tradeArchetype: tradeArchetype ?? closeReference?.tradeArchetype ?? null,
-              entryTrigger: entryTrigger ?? closeReference?.entryTrigger ?? null,
-              expectedEdge: expectedEdge ?? closeReference?.expectedEdge ?? null,
-              invalidationPrice: invalidationPrice ?? closeReference?.invalidationPrice ?? null,
-              timeStopAtMs: timeStopAtMs ?? closeReference?.timeStopAtMs ?? null,
-              entryPrice:
-                closeEntryPriceOverride ?? closeReference?.markPrice ?? market.markPrice ?? null,
+              direction: learningScopeContext.direction === 'buy' ? 'long' : learningScopeContext.direction === 'sell' ? 'short' : null,
+              signalClass: effectiveSignalClass,
+              triggerReason: learningScopeContext.triggerReason,
+              symbolClass: learningScopeContext.symbolClass,
+              session: learningScopeContext.session,
+              strategySource: learningScopeContext.strategySource,
+              marketRegime,
+              volatilityBucket,
+              liquidityBucket,
+              tradeArchetype,
+              entryTrigger: learningScopeContext.entryTrigger,
+              expectedEdge,
+              invalidationPrice,
+              timeStopAtMs,
+              entryPrice: closeEntryPriceOverride ?? closeReference?.markPrice ?? market.markPrice ?? null,
               exitPrice: market.markPrice ?? null,
               pricePathHigh: closePathHigh,
               pricePathLow: closePathLow,
               thesisCorrect: exitAssessment.thesisCorrect,
               thesisInvalidationHit: exitAssessment.thesisInvalidationHit,
               exitMode: exitAssessment.exitMode,
-              realizedPnlUsd: closeSummary?.realizedPnlUsd ?? null,
-              netRealizedPnlUsd: closeSummary?.netRealizedPnlUsd ?? null,
-              realizedFeeUsd: closeSummary?.feeUsd ?? realizedFee.realized_fee_usd ?? null,
+              realizedPnlUsd: result.realizedPnlUsd ?? null,
+              netRealizedPnlUsd:
+                typeof result.realizedPnlUsd === 'number'
+                  ? result.realizedPnlUsd - (realizedFee.realized_fee_usd ?? 0)
+                  : null,
+              realizedFeeUsd: realizedFee.realized_fee_usd,
               directionScore: componentScores?.directionScore ?? null,
               timingScore: componentScores?.timingScore ?? null,
               sizingScore: componentScores?.sizingScore ?? null,
@@ -2976,51 +2785,25 @@ export async function executeToolCall(
               maeProxy: null,
               mfeProxy: null,
               reasoning: policyReasoning,
-              planContext: planContext ?? closeReference?.planContext ?? null,
+              planContext,
               snapshot: executedSnapshot,
-              requestedSize: requestedEntrySize,
-              approvedSize: approvedEntrySize,
-              requestedLeverage: requestedEntryLeverage,
-              approvedLeverage: approvedEntryLeverage,
-              gateVerdict: gateVerdictForReview ?? null,
-              gateReasonCode:
-                closeReference?.entryGateReasonCode ?? readString(existingDossierGate.reasonCode),
             });
-            for (const counterfactual of buildTradeCounterfactuals({
-              requestedSize: requestedEntrySize,
-              approvedSize: approvedEntrySize,
-              requestedLeverage: requestedEntryLeverage,
-              approvedLeverage: approvedEntryLeverage,
-              netRealizedPnlUsd: closeSummary?.netRealizedPnlUsd ?? null,
-              capturedR: componentScores?.capturedR ?? null,
-              gateVerdict: gateVerdictForReview ?? null,
-            })) {
-              createTradeCounterfactual({
-                dossierId,
-                counterfactualType: counterfactual.counterfactualType,
-                baselineKind: counterfactual.baselineKind,
-                summary: counterfactual.summary,
-                score: counterfactual.score,
-                estimatedNetPnlUsd: counterfactual.estimatedNetPnlUsd,
-                estimatedRMultiple: counterfactual.estimatedRMultiple,
-                valueAddUsd: counterfactual.valueAddUsd,
-                confidence: counterfactual.confidence,
-                inputs: counterfactual.inputsPayload ?? null,
-                result: counterfactual.resultPayload ?? null,
-              });
-            }
-            upsertTradeSimilarityFeatures(
-              deriveTradeSimilarityFeatures({
-                dossier: upsertedDossier,
-                learningCase,
-              })
-            );
-            persistExecutionLearningCase({
+            const persistedLearningCase = persistExecutionLearningCase({
               symbol,
-              fingerprint: `${executedEvidenceFingerprint}:execution_quality`,
+              fingerprint: executedEvidenceFingerprint,
               learningCase,
               signalClass: effectiveSignalClass,
             });
+            if (positionBefore != null && (positionAfter == null || (positionAfter.size ?? 0) === 0)) {
+              try {
+                materializeTradePolicyAdjustmentFromLearningCase({
+                  config: ctx.config,
+                  learningCase: persistedLearningCase,
+                });
+              } catch {
+                // Best-effort adaptive persistence: never block trade finalization.
+              }
+            }
           }
         } catch {
           // Best-effort journaling: never block trading due to local DB issues.
@@ -3077,7 +2860,7 @@ export async function executeToolCall(
         } catch {
           // Best-effort resolution: never block trading on prediction write failures.
         }
-        if (closedPositionCompletely) {
+        if (reduceOnly && positionBefore != null && (positionAfter == null || (positionAfter.size ?? 0) === 0)) {
           // Reduce-only that fully closed the position: clear the policy after best-effort finalization.
           try { clearPositionExitPolicy(symbol); } catch { }
         }
@@ -3091,6 +2874,14 @@ export async function executeToolCall(
               reason_code: policyGate.reasonCode ?? null,
               reason: policyGate.reason ?? null,
               size_multiplier: policyGate.sizeMultiplier,
+              leverage_cap: policyGate.leverageCap ?? null,
+              active_adjustment_ids: policyGate.activeAdjustmentIds,
+              active_policies: policyGate.activePolicies,
+              size_haircuts: policyGate.sizeHaircuts,
+              leverage_caps: policyGate.leverageCaps,
+              confirmation_requirements: policyGate.confirmationRequirements,
+              triggered_cooldowns: policyGate.triggeredCooldowns,
+              adaptation_changed_outcome: policyGate.adaptationChangedOutcome,
               requested_size: requestedSize,
               effective_size: size,
             },

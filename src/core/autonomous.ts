@@ -16,8 +16,10 @@ import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
 import { runDiscovery } from '../discovery/engine.js';
 import { selectDiscoveryMarkets } from '../discovery/market_selector.js';
+import { countFinalPredictions } from '../memory/calibration.js';
+import { createLearningCase } from '../memory/learning_cases.js';
 import { createPrediction } from '../memory/predictions.js';
-import { recordPerpTrade, setActivePerpPositionLifecycle } from '../memory/perp_trades.js';
+import { recordPerpTrade } from '../memory/perp_trades.js';
 import { listPerpTradeJournals, recordPerpTradeJournal } from '../memory/perp_trade_journal.js';
 import { checkPerpRiskLimits } from '../execution/perp-risk.js';
 import { getDailyPnLRollup } from './daily_pnl.js';
@@ -31,13 +33,12 @@ import {
   computeFractionalKellyFraction,
   evaluateGlobalTradeGate,
   evaluateNewsEntryGate,
-  inferBroadMarketPosture,
   isSignalClassAllowedForRegime,
   resolveLiquidityBucket,
   resolveVolatilityBucket,
 } from './autonomy_policy.js';
 import { getAutonomyPolicyState } from '../memory/autonomy_policy_state.js';
-import { summarizeSignalPerformance, summarizeAllSignalClasses } from './signal_performance.js';
+import { summarizeSignalPerformance } from './signal_performance.js';
 import { SchedulerControlPlane } from './scheduler_control_plane.js';
 import { resolveSessionWeightContext } from './session-weight.js';
 import { AutonomousScanTelemetry } from './performance_metrics.js';
@@ -51,221 +52,91 @@ import { buildLegacyExitContract, serializeExitContract } from './exit_contract.
 import { TaSurface } from './ta_surface.js';
 import { OriginationTrigger } from './origination_trigger.js';
 import { LlmTradeOriginator } from './llm_trade_originator.js';
-import { getLatestThought, listEvents, listForecastsForEvent, listOutcomesForEvent } from '../memory/events.js';
+import { listEvents } from '../memory/events.js';
 import { updateTradeProposalOutcome, updateTradeProposalStatus } from '../memory/llm_trade_proposals.js';
 import { recordDecisionAudit } from '../memory/decision_audit.js';
+import { getSignalWeightsWithFallback, type SignalWeights } from '../memory/learning.js';
 import type { ToolExecutorContext } from './tool-executor.js';
-import { isSuppressed } from '../memory/signal_class_suppression.js';
-import { createLearningCase } from '../memory/learning_cases.js';
-import { getSignalWeights } from '../memory/learning.js';
-import { upsertTradeDossier } from '../memory/trade_dossiers.js';
-import { storeDecisionArtifact } from '../memory/decision_artifacts.js';
-import { searchHistoricalCases } from '../events/casebase.js';
-import { buildOriginationEventContext, resolveOriginationContextDomain } from './origination_context.js';
-import type { MarketContextDomain } from '../markets/context.js';
-import { listTradePolicyAdjustments } from '../memory/trade_policy_adjustments.js';
-import { applyAdaptiveDecisionEnforcement } from './adaptive_decision_enforcer.js';
-import type { AdaptivePolicyTrace } from './trade_dossier_types.js';
-import {
-  selectRuntimeTradePolicyAdjustments,
-  type TradePolicyAdjustmentRuntimeContext,
-} from './trade_policy_adaptation.js';
-import {
-  inferTradeSymbolClass,
-  retrieveSimilarTradeDossiers,
-  type TradeSimilaritySummary,
-} from './trade_similarity.js';
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function formatTradeSimilaritySummary(summary: TradeSimilaritySummary): string {
-  if ((summary.stats.sampleSize ?? 0) <= 0) {
-    return 'No materially similar historical dossiers found.';
+const DEFAULT_PREDICTION_SIGNAL_WEIGHTS: SignalWeights = {
+  technical: 0.5,
+  news: 0.3,
+  onChain: 0.2,
+};
+
+function clampSignedScore(value: number): number {
+  return Math.max(-1, Math.min(1, value));
+}
+
+function resolvePredictionSignalWeights(config: ThufirConfig): SignalWeights {
+  const learned = getSignalWeightsWithFallback(['perp', 'global']);
+  if (learned) return learned;
+  const configured = config.technical?.signals?.weights;
+  if (configured) {
+    return {
+      technical: Number(configured.technical ?? DEFAULT_PREDICTION_SIGNAL_WEIGHTS.technical),
+      news: Number(configured.news ?? DEFAULT_PREDICTION_SIGNAL_WEIGHTS.news),
+      onChain: Number(configured.onChain ?? DEFAULT_PREDICTION_SIGNAL_WEIGHTS.onChain),
+    };
   }
-  const winRatePct =
-    summary.stats.winRate != null ? `${(summary.stats.winRate * 100).toFixed(0)}%` : 'n/a';
-  const avgPnl =
-    summary.stats.averageRealizedPnlUsd != null
-      ? `$${summary.stats.averageRealizedPnlUsd.toFixed(2)}`
-      : 'n/a';
-  const lessons =
-    summary.topLessons.length > 0 ? summary.topLessons.slice(0, 2).join(' | ') : 'none';
-  const repeatTags = summary.repeatTags.length > 0 ? summary.repeatTags.slice(0, 3).join(', ') : 'none';
-  const avoidTags = summary.avoidTags.length > 0 ? summary.avoidTags.slice(0, 3).join(', ') : 'none';
-  return [
-    `recommendation=${summary.recommendation}`,
-    `sampleSize=${summary.stats.sampleSize}`,
-    `winRate=${winRatePct}`,
-    `avgNetPnl=${avgPnl}`,
-    `repeatTags=${repeatTags}`,
-    `avoidTags=${avoidTags}`,
-    `lessons=${lessons}`,
-  ].join(' ; ');
+  return DEFAULT_PREDICTION_SIGNAL_WEIGHTS;
 }
 
-function buildRetrievalSection(
-  summary: TradeSimilaritySummary,
-  summaryText: string
-): Record<string, unknown> {
+function buildOriginatorSignalScores(proposal: {
+  side: 'long' | 'short';
+  confidence: number;
+  expectedRMultiple: number;
+  tradeType: 'scalp' | 'tactical' | 'structural';
+}): SignalWeights {
+  const direction = proposal.side === 'long' ? 1 : -1;
+  const conviction = clamp01(proposal.confidence);
+  const rrBoost = clamp01((proposal.expectedRMultiple - 1) / 3);
+  const technicalBase =
+    proposal.tradeType === 'scalp' ? 0.85 : proposal.tradeType === 'tactical' ? 0.65 : 0.4;
+  const newsBase =
+    proposal.tradeType === 'structural' ? 0.8 : proposal.tradeType === 'tactical' ? 0.35 : 0.15;
+  const onChainBase =
+    proposal.tradeType === 'structural' ? 0.25 : proposal.tradeType === 'tactical' ? 0.15 : 0.05;
   return {
-    retrievalVersion: 'v2.2',
-    candidateCount: summary.stats.sampleSize,
-    nearestWins: summary.topMatches
-      .filter((match) => (match.realizedPnlUsd ?? 0) > 0)
-      .slice(0, 3)
-      .map((match) => match.dossierId),
-    nearestLosses: summary.topMatches
-      .filter((match) => (match.realizedPnlUsd ?? 0) < 0)
-      .slice(0, 3)
-      .map((match) => match.dossierId),
-    nearestExecutionMistakes: summary.topMatches
-      .filter((match) => match.review.entryQuality === 'poor' || match.review.exitQuality === 'poor')
-      .slice(0, 3)
-      .map((match) => match.dossierId),
-    nearestThesisMistakes: summary.topMatches
-      .filter((match) => match.thesisVerdict === 'incorrect')
-      .slice(0, 3)
-      .map((match) => match.dossierId),
-    nearestGateValueAddCases: summary.topMatches
-      .filter(
-        (match) =>
-          (match.interventionScore ?? -1) >= 0.1 ||
-          match.review.gateInterventionQuality === 'strong'
-      )
-      .slice(0, 3)
-      .map((match) => match.dossierId),
-    retrievedSummary: summaryText,
+    technical: direction * clampSignedScore(technicalBase * conviction + rrBoost * 0.15),
+    news: direction * clampSignedScore(newsBase * conviction),
+    onChain: direction * clampSignedScore(onChainBase * conviction),
   };
 }
 
-function buildPolicyTrace(params: {
-  stage: string;
-  requestedNotionalUsd: number | null;
-  approvedNotionalUsd: number | null;
-  requestedLeverage: number | null;
-  approvedLeverage: number | null;
-  gateVerdict?: string | null;
-  gateReasonCode?: string | null;
-  gateReasoning?: string | null;
-  policyReasonCode?: string | null;
-  policyReason?: string | null;
-  policySizeMultiplier?: number | null;
-  retrievalRecommendation?: string | null;
-  blockedReason?: string | null;
-  adaptiveTrace?: AdaptivePolicyTrace | null;
-}): Record<string, unknown> {
-  const baseTrace = params.adaptiveTrace ?? null;
-  const baselinePostSize = baseTrace?.postAdjustmentSize ?? params.requestedNotionalUsd;
-  const sizeHaircut =
-    baselinePostSize != null &&
-    baselinePostSize > 0 &&
-    params.approvedNotionalUsd != null
-      ? Math.max(0, 1 - params.approvedNotionalUsd / baselinePostSize)
-      : null;
-  const baselinePostLeverage = baseTrace?.postAdjustmentLeverage ?? params.requestedLeverage;
-  const leverageCap =
-    baselinePostLeverage != null &&
-    baselinePostLeverage > 0 &&
-    params.approvedLeverage != null &&
-    params.approvedLeverage < baselinePostLeverage
-      ? params.approvedLeverage
-      : null;
-  return {
-    activePolicies: [
-      ...(baseTrace?.activePolicies ?? ['retrieval_similarity']),
-      params.policyReasonCode ? 'adaptive_policy' : null,
-      params.gateVerdict != null ? 'llm_entry_gate' : null,
-    ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index),
-    activeAdjustmentIds: [...new Set(baseTrace?.activeAdjustmentIds ?? [])],
-    sizeHaircuts: [
-      ...(baseTrace?.sizeHaircuts ?? []),
-      ...(sizeHaircut != null && sizeHaircut > 0 ? [sizeHaircut] : []),
-    ],
-    leverageCaps: [
-      ...(baseTrace?.leverageCaps ?? []),
-      ...(leverageCap != null ? [leverageCap] : []),
-    ],
-    confirmationRequirements: [...new Set(baseTrace?.confirmationRequirements ?? [])],
-    confidencePenalties: [...(baseTrace?.confidencePenalties ?? [])],
-    triggeredCooldowns: [...new Set(baseTrace?.triggeredCooldowns ?? [])],
-    preAdjustmentSize: baseTrace?.preAdjustmentSize ?? params.requestedNotionalUsd,
-    postAdjustmentSize: params.approvedNotionalUsd ?? baseTrace?.postAdjustmentSize ?? null,
-    preAdjustmentLeverage: baseTrace?.preAdjustmentLeverage ?? params.requestedLeverage,
-    postAdjustmentLeverage: params.approvedLeverage ?? baseTrace?.postAdjustmentLeverage ?? null,
-    retrievalChangedVerdict: baseTrace?.retrievalChangedVerdict ?? (
-      params.retrievalRecommendation === 'size_reduction'
-        ? params.gateVerdict === 'reject' || (sizeHaircut ?? 0) > 0
-        : false
-    ),
-    adaptationChangedOutcome:
-      Boolean(baseTrace?.adaptationChangedOutcome) ||
-      params.blockedReason != null ||
-      params.gateVerdict === 'reject' ||
-      (sizeHaircut ?? 0) > 0 ||
-      leverageCap != null,
-    stage: params.stage,
-    blockedReason: params.blockedReason ?? null,
-    gateReasoning: params.gateReasoning ?? null,
-    policyReason: params.policyReason ?? null,
-  };
-}
-
-function loadRuntimePolicyAdjustments(
-  context: TradePolicyAdjustmentRuntimeContext
-) {
-  return selectRuntimeTradePolicyAdjustments(
-    listTradePolicyAdjustments({ active: true, limit: 100 }),
-    context
-  );
-}
-
-function persistAdaptiveDecisionTrace(params: {
-  symbol: string;
-  confidence: number | null;
-  outcome: 'executed' | 'blocked' | 'pending' | 'failed';
-  payload: Record<string, unknown>;
-  notes?: Record<string, unknown> | null;
-}): void {
-  storeDecisionArtifact({
-    source: 'autonomous',
-    kind: 'adaptive_pre_execution_trace',
-    marketId: params.symbol,
-    outcome: params.outcome,
-    confidence: params.confidence,
-    payload: params.payload,
-    notes: params.notes ?? null,
-  });
-}
-
-function buildSimilarityContextForMarkets(input: {
-  symbols: string[];
-  triggerReason: 'cadence' | 'ta_alert' | 'event';
+function buildDiscoverySignalScores(params: {
+  side: 'buy' | 'sell';
   signalClass: string;
-  regime?: string | null;
-  stretchBySymbol?: Map<string, number>;
-  limit?: number;
-}): string {
-  const sections: string[] = [];
-  const seen = new Set<string>();
-  for (const symbol of input.symbols) {
-    const normalized = String(symbol ?? '').trim().toUpperCase();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    const summary = retrieveSimilarTradeDossiers({
-      symbol: normalized,
-      signalClass: input.signalClass,
-      triggerReason: input.triggerReason,
-      regime: input.regime ?? null,
-      symbolClass: inferTradeSymbolClass(normalized),
-      entryStretchPct: input.stretchBySymbol?.get(normalized) ?? null,
-      limit: input.limit ?? 3,
-    });
-    sections.push(`${normalized}: ${formatTradeSimilaritySummary(summary)}`);
-    if (sections.length >= 3) break;
-  }
-  return sections.length > 0 ? sections.join('\n') : '(none)';
+  confidenceRaw: number;
+  confidenceWeighted: number;
+  noveltyScore?: number | null;
+  marketConfirmationScore?: number | null;
+  executionStatus?: string | null;
+  portfolioPosture?: string | null;
+}): SignalWeights {
+  const direction = params.side === 'buy' ? 1 : -1;
+  const technicalConfidence = Math.max(params.confidenceRaw, params.confidenceWeighted * 0.85);
+  const newsConfidence =
+    params.noveltyScore != null || params.marketConfirmationScore != null
+      ? ((params.noveltyScore ?? 0) + (params.marketConfirmationScore ?? 0)) / 2
+      : 0.05;
+  const executionBoost =
+    params.executionStatus === 'good' ? 0.1 : params.executionStatus === 'poor' ? -0.1 : 0;
+  const onChainBase =
+    params.signalClass === 'liquidation_cascade'
+      ? 0.65
+      : params.portfolioPosture === 'risk_on'
+        ? 0.25
+        : 0.1;
+  return {
+    technical: direction * clampSignedScore(technicalConfidence + executionBoost),
+    news: direction * clampSignedScore(newsConfidence),
+    onChain: direction * clampSignedScore(onChainBase * Math.max(params.confidenceWeighted, 0.5)),
+  };
 }
 
 interface ScanCycleSnapshot {
@@ -369,6 +240,8 @@ export interface AutonomousEvents {
 
 // Fires a one-time Telegram notification when learning_examples reaches the Phase 2 threshold.
 // Resets on process restart — intentional, as the system should remind on each deploy until acted on.
+let plilPhase2NotifiedThisRun = false;
+const PLIL_PHASE2_THRESHOLD = 50;
 
 export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   private config: AutonomousConfig;
@@ -578,6 +451,17 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return `Autonomous trading is paused: ${this.pauseReason}`;
     }
 
+    if (!plilPhase2NotifiedThisRun && this.notify) {
+      const count = countFinalPredictions();
+      if (count >= PLIL_PHASE2_THRESHOLD) {
+        plilPhase2NotifiedThisRun = true;
+        this.notify(
+          `🧠 PLIL Phase 2 threshold reached: ${count} confirmed predictions in learning_examples.\n` +
+          `PLIL metrics and calibration-aware gate wiring are live in release-v2.00.`
+        ).catch(() => {});
+      }
+    }
+
     const remaining = this.limiter.getRemainingDaily();
     if (remaining <= 0) {
       return 'Daily spending limit reached. No trades executed.';
@@ -603,13 +487,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     return this.runDiscoveryScan(scanInput);
   }
 
-  private async getMarketContextCached(domain: MarketContextDomain, signalSymbols: string[]): Promise<string> {
+  private async getMarketContextCached(signalSymbols: string[] = []): Promise<string> {
     const now = Date.now();
     const normalizedSymbols = signalSymbols
       .map((symbol) => String(symbol ?? '').trim().toUpperCase())
       .filter(Boolean)
       .slice(0, 3);
-    const cacheKey = `${domain}:${normalizedSymbols.join(',') || 'default'}`;
+    const cacheKey = normalizedSymbols.join(',') || 'default';
     if (
       this.marketContextCache &&
       this.marketContextCache.key === cacheKey &&
@@ -629,10 +513,10 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         {
           message:
             normalizedSymbols.length > 0
-              ? `${domain} markets overview for ${normalizedSymbols.join(', ')}`
-              : `${domain} markets overview`,
-          domain,
-          marketLimit: domain === 'crypto' ? 20 : 50,
+              ? `crypto perpetual markets overview for ${normalizedSymbols.join(', ')}`
+              : 'crypto perpetual markets overview',
+          domain: 'crypto',
+          marketLimit: 20,
           signalSymbols: normalizedSymbols,
         },
         executeTool
@@ -645,7 +529,11 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         })
         .join('\n')
         .slice(0, 1000);
-      this.marketContextCache = { key: cacheKey, value, expiresAt: now + 10 * 60 * 1000 };
+      this.marketContextCache = {
+        key: cacheKey,
+        value,
+        expiresAt: now + 10 * 60 * 1000,
+      };
       return value;
     } catch {
       return '';
@@ -680,7 +568,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     // Compute TA surface for all top markets
     const allSnapshots = await this.taSurface.computeAll(topMarkets);
-    const rawCoverage = this.taSurface.summarizeCoverage(topMarkets, allSnapshots);
 
     // Filter out symbols already in the book or on cooldown
     const now = Date.now();
@@ -694,49 +581,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       }
       return true;
     });
-    const usableSnapshotCount = taSnapshots.length;
-    const filteredOutCount = allSnapshots.length - taSnapshots.length;
-    const coverageMeta = {
-      requestedCount: rawCoverage.requestedCount,
-      snapshotCount: rawCoverage.snapshotCount,
-      coverageRatio: Number(rawCoverage.coverageRatio.toFixed(3)),
-      usableSnapshotCount,
-      usableCoverageRatio: Number(
-        (rawCoverage.requestedCount > 0
-          ? usableSnapshotCount / rawCoverage.requestedCount
-          : 0).toFixed(3)
-      ),
-      filteredOutCount,
-      missingMarkets: rawCoverage.missingMarkets.slice(0, 10),
-    };
-    if (rawCoverage.snapshotCount === 0) {
-      this.logger.warn('Originator TA coverage collapsed upstream', coverageMeta);
-    } else {
-      this.logger.info('Originator TA coverage', coverageMeta);
-    }
-    if (rawCoverage.snapshotCount === 0 || usableSnapshotCount === 0) {
-      const reason =
-        rawCoverage.snapshotCount === 0
-          ? `TA coverage collapsed upstream: 0/${rawCoverage.requestedCount} snapshots from selected markets`
-          : `TA usable coverage collapsed after filters: 0/${rawCoverage.requestedCount} snapshots after position/cooldown filters`;
-      try {
-        recordDecisionAudit({
-          source: 'autonomous',
-          mode: 'autonomous',
-          tradeOutcome: 'skipped',
-          notes: {
-            originatorExitStage: 'ta_unavailable',
-            originatorExitReason: reason,
-            requestedCount: rawCoverage.requestedCount,
-            snapshotCount: rawCoverage.snapshotCount,
-            usableSnapshotCount,
-            filteredOutCount,
-            missingMarkets: rawCoverage.missingMarkets.slice(0, 10),
-          },
-        });
-      } catch { }
-      return `Originator skipped: ta_unavailable (${reason}).`;
-    }
 
     // Get pending events for trigger
     const pendingEvents = listEvents({ limit: 10 });
@@ -754,7 +598,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     // Assemble recent events text
     const twoHoursAgo = new Date(now - 2 * 60 * 60 * 1000).toISOString();
-    const recentRaw = listEvents({ limit: 20, sinceIso: new Date(now - 24 * 60 * 60 * 1000).toISOString() });
+    const recentRaw = listEvents({ limit: 20 });
     const recent = recentRaw.filter((e) => e.createdAt > twoHoursAgo);
     const recentEvents =
       recent.length === 0
@@ -764,61 +608,17 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             .join('\n')
             .slice(0, 500);
 
-    const contextSymbols = taSnapshots.length > 0 ? taSnapshots.map((snapshot) => snapshot.symbol) : topMarkets;
-    const contextDomain = resolveOriginationContextDomain(contextSymbols, recentRaw);
-    const eventContext = buildOriginationEventContext({
-      topMarkets: contextSymbols,
-      recentEvents: recentRaw,
-      focusDomain: contextDomain,
-      getLatestThought,
-      listForecastsForEvent,
-      listOutcomesForEvent,
-      searchHistoricalCases,
-    });
-
     // Fetch market context (10-min cached)
-    const marketContext = await this.getMarketContextCached(contextDomain, contextSymbols);
-
-    if (isSuppressed('llm_originator')) {
-      this.logger.info('Originator skipped: signal class llm_originator is currently suppressed.');
-      return null;
-    }
+    const marketContext = await this.getMarketContextCached(topMarkets);
 
     // Assemble bundle and propose
-    const perfByClass = summarizeAllSignalClasses(listPerpTradeJournals({ limit: 200 }));
-    const performanceSummary =
-      Object.entries(perfByClass)
-        .map(
-          ([cls, s]) =>
-            `${cls}: ${s.sampleCount} trades, winRate=${(s.thesisCorrectRate * 100).toFixed(0)}%, expectancy=${s.expectancy.toFixed(2)}`
-        )
-        .join('\n') || '(no history yet)';
-
-    const stretchBySymbol = new Map(
-      taSnapshots.map((snapshot) => [
-        String(snapshot.symbol ?? '').trim().toUpperCase(),
-        Number.isFinite(snapshot.priceVsEma20_1h) ? snapshot.priceVsEma20_1h : 0,
-      ])
-    );
-    const similarityContext = buildSimilarityContextForMarkets({
-      symbols: triggerResult.alertedSymbols.length > 0 ? triggerResult.alertedSymbols : contextSymbols,
-      triggerReason: triggerResult.reason,
-      signalClass: 'llm_originator',
-      regime: 'unknown',
-      stretchBySymbol,
-    });
-
     const bundle = {
       book: book.getAll(),
       taSnapshots,
       marketContext,
       recentEvents,
-      eventContext,
-      similarityContext,
-      contextDomain,
       alertedSymbols: triggerResult.alertedSymbols,
       triggerReason: triggerResult.reason,
-      performanceSummary,
     };
 
     const proposal = await this.originator.propose(bundle);
@@ -960,164 +760,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       Number.isFinite(this.thufirConfig.hyperliquid.maxLeverage)
         ? Math.max(1, Number(this.thufirConfig.hyperliquid.maxLeverage))
         : 50;
-    const proposalEntryStretchPct = stretchBySymbol.get(symbol) ?? null;
-    const proposalSimilarity = retrieveSimilarTradeDossiers({
-      symbol,
-      direction: proposal.side === 'long' ? 'long' : 'short',
-      strategySource: 'autonomous_originator',
-      triggerReason: triggerResult.reason,
-      signalClass: 'llm_originator',
-      regime: 'unknown',
-      symbolClass: inferTradeSymbolClass(symbol),
-      entryStretchPct: proposalEntryStretchPct,
-      gateVerdict: null,
-      limit: 5,
-    });
-    const proposalSimilaritySummary = formatTradeSimilaritySummary(proposalSimilarity);
-    const proposalRetrieval = buildRetrievalSection(proposalSimilarity, proposalSimilaritySummary);
-    const requestedProbeUsd = probeUsd;
-    const requestedLeverage = targetLeverage;
-    const originatorRuntimeAdjustments = loadRuntimePolicyAdjustments({
-      symbol,
-      direction: proposal.side === 'long' ? 'long' : 'short',
-      strategySource: 'autonomous_originator',
-      triggerReason: triggerResult.reason,
-      signalClass: 'llm_originator',
-      regime: 'unknown',
-      symbolClass: inferTradeSymbolClass(symbol),
-      session: sessionContext.session,
-    });
-    const originatorAdaptiveDecision = applyAdaptiveDecisionEnforcement({
-      requestedNotionalUsd: requestedProbeUsd,
-      requestedLeverage,
-      retrieval: proposalSimilarity,
-      policyAdjustments: originatorRuntimeAdjustments,
-    });
-
-    if (originatorAdaptiveDecision.verdict === 'reject') {
-      const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
-      const adaptiveRejectReason =
-        originatorAdaptiveDecision.reasonCodes.join(' | ') ||
-        'adaptive policy runtime rejected candidate';
-      const policyTrace = buildPolicyTrace({
-        stage: 'adaptive_policy_rejected',
-        requestedNotionalUsd: requestedProbeUsd,
-        approvedNotionalUsd: null,
-        requestedLeverage,
-        approvedLeverage: null,
-        blockedReason: adaptiveRejectReason,
-        retrievalRecommendation: proposalSimilarity.recommendation,
-        adaptiveTrace: originatorAdaptiveDecision.policyTrace,
-      });
-      const blockedPayload = {
-        version: 'v2.2',
-        thesis: {
-          reasoning: proposal.thesisText,
-          invalidationPrice: proposal.invalidationPrice,
-          thesisConfidence: proposal.confidence,
-          uncertaintySummary: null,
-        },
-        context: {
-          signalClass: 'llm_originator',
-          symbolClass: inferTradeSymbolClass(symbol),
-          marketRegime: 'unknown',
-          session: sessionContext.session,
-          triggerReason: triggerResult.reason,
-          entryStretchPct: proposalEntryStretchPct,
-        },
-        request: {
-          requestedSize: requestedProbeUsd,
-          requestedLeverage,
-          requestedNotionalUsd: requestedProbeUsd,
-        },
-        gate: {
-          verdict: 'reject',
-          reasonCode: null,
-          requestedSize: requestedProbeUsd,
-          approvedSize: null,
-          requestedLeverage,
-          approvedLeverage: null,
-          interventionType: 'reject',
-          interventionSummary: adaptiveRejectReason,
-        },
-        execution: {
-          tradeId: null,
-          side,
-          size: markPrice > 0 ? requestedProbeUsd / markPrice : requestedProbeUsd,
-          fillPrice: markPrice || null,
-          executionMessage: adaptiveRejectReason,
-          estimatedNotionalUsd: requestedProbeUsd,
-        },
-        review: null,
-        counterfactual_summary: null,
-        retrieval: proposalRetrieval,
-        policy_trace: policyTrace,
-        regret: {
-          missedOpportunityFlag: null,
-          blockedWinnerFlag: null,
-          approvedLoserFlag: false,
-          resizeHelpedFlag: null,
-          resizeHurtFlag: null,
-        },
-      } satisfies Record<string, unknown>;
-      persistAdaptiveDecisionTrace({
-        symbol,
-        confidence: proposal.confidence,
-        outcome: 'blocked',
-        payload: {
-          stage: 'originator_adaptive_policy',
-          symbol,
-          triggerReason: triggerResult.reason,
-          originalRequest: {
-            notionalUsd: requestedProbeUsd,
-            leverage: requestedLeverage,
-            side,
-          },
-          retrieval: proposalRetrieval,
-          policyTrace,
-          finalRequest: null,
-          finalRejectReason: adaptiveRejectReason,
-        },
-        notes: {
-          signalClass: 'llm_originator',
-          dossierStatus: 'closed',
-        },
-      });
-      try {
-        upsertTradeDossier({
-          symbol,
-          status: 'closed',
-          direction: proposal.side === 'long' ? 'long' : 'short',
-          strategySource: 'autonomous_originator',
-          executionMode,
-          proposalRecordId: proposal.proposalRecordId ?? null,
-          triggerReason: triggerResult.reason,
-          openedAt: new Date().toISOString(),
-          closedAt: new Date().toISOString(),
-          dossier: blockedPayload,
-          review: null,
-          retrieval: proposalRetrieval,
-          policyTrace,
-        });
-      } catch { /* best-effort */ }
-      if (proposal.proposalRecordId != null) {
-        updateTradeProposalStatus(proposal.proposalRecordId, {
-          executeTrades: true,
-          originatorExitStage: 'adaptive_policy_rejected',
-          originatorExitReason: adaptiveRejectReason,
-          requestedLeverage: requestedLeverage ?? null,
-        });
-        updateTradeProposalOutcome(proposal.proposalRecordId, 'reject', false);
-      }
-      this.limiter.release(probeUsd);
-      return `${symbol}: Originator proposal rejected by adaptive policy runtime — ${adaptiveRejectReason}`;
-    }
-
-    probeUsd = originatorAdaptiveDecision.approvedNotionalUsd;
-    if (originatorAdaptiveDecision.approvedLeverage != null) {
-      targetLeverage = originatorAdaptiveDecision.approvedLeverage;
-    }
-
     const gateCandidate = {
       symbol,
       side: side as 'buy' | 'sell',
@@ -1127,10 +769,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       edge: 0.1,
       confidence: proposal.confidence,
       signalClass: 'llm_originator',
-      domain: 'perp',
       regime: 'unknown',
       session: sessionContext.session,
-      entryReasoning: `${proposal.thesisText}\nHistorical similarity: ${proposalSimilaritySummary}`,
+      entryReasoning: proposal.thesisText,
       invalidationPrice: proposal.invalidationPrice,
       suggestedTtlMinutes: proposal.suggestedTtlMinutes,
       expectedRMultiple: proposal.expectedRMultiple,
@@ -1138,7 +779,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     let originatorGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
     let originatorGateReasonCode: string | null = null;
-    let originatorGateReasoning: string | null = null;
     if (this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false) {
       if (proposal.proposalRecordId != null) {
         updateTradeProposalStatus(proposal.proposalRecordId, {
@@ -1150,117 +790,11 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const gateDecision = await this.entryGate.evaluate(gateCandidate, markPrice);
       originatorGateVerdict = gateDecision.verdict;
       originatorGateReasonCode = gateDecision.reasonCode ?? null;
-      originatorGateReasoning = gateDecision.reasoning ?? null;
       if (gateDecision.verdict === 'reject') {
-        const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
-        const policyTrace = buildPolicyTrace({
-          stage: 'entry_gate_rejected',
-          requestedNotionalUsd: requestedProbeUsd,
-          approvedNotionalUsd: null,
-          requestedLeverage,
-          approvedLeverage: targetLeverage,
-          gateVerdict: originatorGateVerdict,
-          gateReasonCode: originatorGateReasonCode,
-          gateReasoning: gateDecision.reasoning,
-          retrievalRecommendation: proposalSimilarity.recommendation,
-          blockedReason: gateDecision.reasoning,
-          adaptiveTrace: originatorAdaptiveDecision.policyTrace,
-        });
-        const blockedPayload = {
-          version: 'v2.2',
-          thesis: {
-            reasoning: proposal.thesisText,
-            invalidationPrice: proposal.invalidationPrice,
-            thesisConfidence: proposal.confidence,
-            uncertaintySummary: null,
-          },
-          context: {
-            signalClass: 'llm_originator',
-            symbolClass: inferTradeSymbolClass(symbol),
-            marketRegime: 'unknown',
-            session: sessionContext.session,
-            triggerReason: triggerResult.reason,
-            entryStretchPct: proposalEntryStretchPct,
-          },
-          request: {
-            requestedSize: requestedProbeUsd,
-            requestedLeverage,
-            requestedNotionalUsd: requestedProbeUsd,
-          },
-          gate: {
-            verdict: originatorGateVerdict,
-            reasonCode: originatorGateReasonCode,
-            requestedSize: requestedProbeUsd,
-            approvedSize: null,
-            requestedLeverage,
-            approvedLeverage: targetLeverage,
-            interventionType: 'reject',
-            interventionSummary: gateDecision.reasoning,
-          },
-          execution: {
-            tradeId: null,
-            side,
-            size: markPrice > 0 ? requestedProbeUsd / markPrice : requestedProbeUsd,
-            fillPrice: markPrice || null,
-            executionMessage: gateDecision.reasoning,
-            estimatedNotionalUsd: requestedProbeUsd,
-          },
-          review: null,
-          counterfactual_summary: null,
-          retrieval: proposalRetrieval,
-          policy_trace: policyTrace,
-          regret: {
-            missedOpportunityFlag: null,
-            blockedWinnerFlag: null,
-            approvedLoserFlag: false,
-            resizeHelpedFlag: null,
-            resizeHurtFlag: null,
-          },
-        } satisfies Record<string, unknown>;
-        persistAdaptiveDecisionTrace({
-          symbol,
-          confidence: proposal.confidence,
-          outcome: 'blocked',
-          payload: {
-            stage: 'originator_entry_gate',
-            symbol,
-            triggerReason: triggerResult.reason,
-            originalRequest: {
-              notionalUsd: requestedProbeUsd,
-              leverage: requestedLeverage,
-              side,
-            },
-            retrieval: proposalRetrieval,
-            policyTrace,
-            finalRequest: null,
-            finalRejectReason: gateDecision.reasoning,
-          },
-          notes: {
-            signalClass: 'llm_originator',
-            dossierStatus: 'closed',
-          },
-        });
-        try {
-          upsertTradeDossier({
-            symbol,
-            status: 'closed',
-            direction: proposal.side === 'long' ? 'long' : 'short',
-            strategySource: 'autonomous_originator',
-            executionMode,
-            proposalRecordId: proposal.proposalRecordId ?? null,
-            triggerReason: triggerResult.reason,
-            openedAt: new Date().toISOString(),
-            closedAt: new Date().toISOString(),
-            dossier: blockedPayload,
-            review: null,
-            retrieval: proposalRetrieval,
-            policyTrace,
-          });
-        } catch { /* best-effort */ }
         try {
           recordPerpTradeJournal({
             kind: 'perp_trade_journal',
-            execution_mode: executionMode,
+            execution_mode: this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper',
             tradeId: null,
             symbol,
             side,
@@ -1308,43 +842,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     }
 
     let size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
-    const originatorPolicyTrace = buildPolicyTrace({
-      stage: originatorGateVerdict === 'resize' ? 'entry_gate_resized' : 'entry_gate_approved',
-      requestedNotionalUsd: requestedProbeUsd,
-      approvedNotionalUsd: probeUsd,
-      requestedLeverage,
-      approvedLeverage: targetLeverage,
-      gateVerdict: originatorGateVerdict,
-      gateReasonCode: originatorGateReasonCode,
-      gateReasoning: originatorGateReasoning,
-      retrievalRecommendation: proposalSimilarity.recommendation,
-      adaptiveTrace: originatorAdaptiveDecision.policyTrace,
-    });
-    const originatorExecutionTrace = {
-      stage: 'originator_pre_execution',
-      symbol,
-      triggerReason: triggerResult.reason,
-      originalRequest: {
-        notionalUsd: requestedProbeUsd,
-        leverage: requestedLeverage,
-        side,
-      },
-      retrieval: proposalRetrieval,
-      policyTrace: originatorPolicyTrace,
-      finalRequest: {
-        notionalUsd: probeUsd,
-        leverage: targetLeverage,
-        side,
-      },
-      finalRejectReason: null,
-    } satisfies Record<string, unknown>;
-    persistAdaptiveDecisionTrace({
-      symbol,
-      confidence: proposal.confidence,
-      outcome: 'pending',
-      payload: originatorExecutionTrace,
-      notes: { signalClass: 'llm_originator' },
-    });
 
     const decision: TradeDecision = {
       action: side,
@@ -1372,26 +869,21 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
       // Record learning prediction — resolved when position closes
       let predictionId: string | null = null;
-      let dossierId: string | null = null;
-      const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
-      const lifecycleTradeId = tradeResult.tradeId ?? null;
-      if (lifecycleTradeId != null && lifecycleTradeId > 0) {
-        try {
-          setActivePerpPositionLifecycle({
-            symbol,
-            tradeId: lifecycleTradeId,
-            side: proposal.side === 'long' ? 'long' : 'short',
-          });
-        } catch { /* best-effort */ }
-      }
       try {
         const predictedOutcome = side === 'buy' ? 'YES' : 'NO';
+        const signalWeightsSnapshot = resolvePredictionSignalWeights(this.thufirConfig);
+        const signalScores = buildOriginatorSignalScores(proposal);
         predictionId = createPrediction({
           marketId: `perp:${symbol}`,
           marketTitle: `${symbol} ${side === 'buy' ? 'long' : 'short'}: ${proposal.thesisText.slice(0, 100)}`,
           predictedOutcome,
           predictedProbability: proposal.confidence,
           modelProbability: proposal.confidence,
+          signalScores,
+          signalWeightsSnapshot,
+          sessionTag: resolveSessionWeightContext(new Date()).session,
+          regimeTag: undefined,
+          strategyClass: undefined,
           symbol,
           domain: 'perp',
           learningComparable: false,
@@ -1401,89 +893,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           executionPrice: markPrice || undefined,
           positionSize: size,
         });
-        dossierId = upsertTradeDossier({
-          symbol,
-          status: 'open',
-          direction: proposal.side === 'long' ? 'long' : 'short',
-          strategySource: 'autonomous_originator',
-          executionMode,
-          sourceTradeId: lifecycleTradeId,
-          sourcePredictionId: predictionId,
-          proposalRecordId: proposal.proposalRecordId ?? null,
-          triggerReason: triggerResult.reason,
-          openedAt: new Date().toISOString(),
-          retrieval: proposalRetrieval,
-          policyTrace: originatorPolicyTrace,
-          dossier: {
-            version: 'v2.2',
-            thesis: {
-              reasoning: proposal.thesisText,
-              expectedEdge: 0.1,
-              invalidationPrice: proposal.invalidationPrice,
-              timeStopAtMs: now + proposal.suggestedTtlMinutes * 60_000,
-              thesisConfidence: proposal.confidence,
-              uncertaintySummary: null,
-              thesisText: proposal.thesisText,
-              invalidationCondition: proposal.invalidationCondition,
-              suggestedTtlMinutes: proposal.suggestedTtlMinutes,
-              tradeType: proposal.tradeType ?? null,
-              expectedRMultiple: proposal.expectedRMultiple ?? null,
-              confidence: proposal.confidence,
-            },
-            context: {
-              triggerReason: triggerResult.reason,
-              signalClass: 'llm_originator',
-              symbolClass: inferTradeSymbolClass(symbol),
-              marketRegime: 'unknown',
-              session: sessionContext.session,
-              entryStretchPct: proposalEntryStretchPct,
-              similarity: proposalSimilarity,
-            },
-            request: {
-              requestedSize: requestedProbeUsd,
-              requestedLeverage,
-              requestedNotionalUsd: requestedProbeUsd,
-            },
-            gate: {
-              verdict: originatorGateVerdict,
-              reasonCode: originatorGateReasonCode,
-              requestedSize: gateCandidate.notionalUsd,
-              approvedSize: probeUsd,
-              requestedNotionalUsd: gateCandidate.notionalUsd,
-              approvedNotionalUsd: probeUsd,
-              requestedLeverage,
-              approvedLeverage: targetLeverage,
-              interventionType: originatorGateVerdict === 'resize' ? 'resize' : 'approve',
-              interventionSummary: originatorGateReasoning,
-              historicalSimilarity: proposalSimilaritySummary,
-            },
-            execution: {
-              tradeId: lifecycleTradeId,
-              side,
-              size,
-              fillPrice: markPrice || null,
-              filledNotionalUsd: markPrice > 0 ? size * markPrice : probeUsd,
-              orderId: tradeResult.orderId ?? null,
-              executionMessage: tradeResult.message,
-              entryStretchPct: proposalEntryStretchPct,
-            },
-            review: null,
-            counterfactual_summary: null,
-            retrieval: proposalRetrieval,
-            policy_trace: originatorPolicyTrace,
-            regret: {
-              missedOpportunityFlag: null,
-              blockedWinnerFlag: null,
-              approvedLoserFlag: null,
-              resizeHelpedFlag: originatorGateVerdict === 'resize' ? null : false,
-              resizeHurtFlag: originatorGateVerdict === 'resize' ? null : false,
-            },
-            exitPlan: {
-              invalidationPrice: proposal.invalidationPrice,
-              predictionId,
-            },
-          },
-        }).id;
         createLearningCase({
           caseType: 'comparable_forecast',
           domain: 'perp',
@@ -1493,8 +902,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           comparatorKind: null,
           exclusionReason: 'missing_comparator',
           sourcePredictionId: predictionId,
-          sourceTradeId: lifecycleTradeId,
-          sourceDossierId: dossierId,
           belief: {
             modelProbability: proposal.confidence,
             predictedOutcome,
@@ -1504,57 +911,12 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           },
           context: {
             horizonMinutes: proposal.suggestedTtlMinutes,
-            mode: executionMode,
-              signalClass: 'llm_originator',
-              triggerReason: triggerResult.reason,
-              entryGateVerdict: originatorGateVerdict,
-              entryGateReasonCode: originatorGateReasonCode,
-              requestedNotionalUsd: gateCandidate.notionalUsd,
-              approvedNotionalUsd: probeUsd,
-              invalidationPrice: proposal.invalidationPrice,
-              historicalSimilarity: proposalSimilarity,
-            },
+            mode: this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper',
+          },
           action: {
             side,
             executed: true,
             executionPrice: markPrice || null,
-            positionSize: size,
-          },
-        });
-        const timeStopAtMs = now + proposal.suggestedTtlMinutes * 60_000;
-        recordPerpTradeJournal({
-          kind: 'perp_trade_journal',
-          execution_mode: executionMode,
-          tradeId: lifecycleTradeId,
-          hypothesisId: null,
-          symbol,
-          side,
-          size,
-          leverage: targetLeverage ?? null,
-          orderType: 'market',
-          reduceOnly: false,
-          markPrice: markPrice || null,
-          confidence: String(proposal.confidence),
-          reasoning: decision.reasoning ?? null,
-          entryGateVerdict: originatorGateVerdict,
-          entryGateReasonCode: originatorGateReasonCode,
-          signalClass: 'llm_originator',
-          marketRegime: null,
-          volatilityBucket: null,
-          liquidityBucket: null,
-          expectedEdge: null,
-          entryTrigger: triggerResult.reason === 'event' ? 'news' : 'technical',
-          thesisExpiresAtMs: timeStopAtMs,
-          invalidationPrice: proposal.invalidationPrice,
-          timeStopAtMs,
-          thesisCorrect: null,
-          outcome: 'executed',
-          message: tradeResult.message,
-          snapshot: {
-            dossierId,
-            entryPrice: markPrice || null,
-            requestedNotionalUsd: gateCandidate.notionalUsd,
-            approvedNotionalUsd: probeUsd,
             positionSize: size,
           },
         });
@@ -1584,7 +946,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         const positionSide = proposal.side === 'long' ? 'long' : 'short';
         const exitContract = buildLegacyExitContract({
           thesis: decision.reasoning ?? `${symbol} ${positionSide} thesis`,
-          invalidationPrice: proposal.invalidationPrice,
           side: positionSide,
           tradeType: proposal.tradeType,
         });
@@ -1631,7 +992,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     const result = await runDiscovery(this.thufirConfig);
     telemetry.markDiscoveryDone();
     const cycleSnapshot = createScanCycleSnapshot(result);
-    const broadMarketPosture = inferBroadMarketPosture(result.clusters);
     if (result.expressions.length === 0) {
       telemetry.markFilterDone();
       telemetry.markFinished();
@@ -1659,10 +1019,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             liquidityBucket: expr.contextPack?.regime.liquidityBucket ?? liquidityBucket,
             executionStatus: expr.contextPack?.executionQuality.status ?? 'unknown',
             eventKind: expr.contextPack?.event.kind ?? (expr.newsTrigger?.enabled ? 'news_event' : 'technical'),
-            portfolioPosture:
-              expr.contextPack?.portfolioState.posture && expr.contextPack.portfolioState.posture !== 'unknown'
-                ? expr.contextPack.portfolioState.posture
-                : broadMarketPosture,
+            portfolioPosture: expr.contextPack?.portfolioState.posture ?? 'unknown',
             missing: expr.contextPack?.missing ?? ['contextPack.provider'],
           });
           try {
@@ -1714,10 +1071,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             liquidityBucket: expr.contextPack?.regime.liquidityBucket ?? expr.liquidityBucket ?? 'normal',
             executionStatus: expr.contextPack?.executionQuality.status ?? 'unknown',
             eventKind: expr.contextPack?.event.kind ?? (expr.newsTrigger?.enabled ? 'news_event' : 'technical'),
-            portfolioPosture:
-              expr.contextPack?.portfolioState.posture && expr.contextPack.portfolioState.posture !== 'unknown'
-                ? expr.contextPack.portfolioState.posture
-                : broadMarketPosture,
+            portfolioPosture: expr.contextPack?.portfolioState.posture ?? 'unknown',
             missing: expr.contextPack?.missing ?? ['contextPack.provider'],
           });
           return `- ${expr.symbol} ${expr.side} probe=${expr.probeSizeUsd.toFixed(2)} leverage=${expr.leverage} (${expr.expectedMove}) ${contextTrace}`;
@@ -1742,14 +1096,22 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     const eligible = result.expressions.filter((expr) => {
       const cluster = cycleSnapshot.clusterBySymbol.get(expr.symbol);
+      const symbol = expr.symbol.includes('/') ? expr.symbol.split('/')[0]! : expr.symbol;
+      const sessionContext = resolveSessionWeightContext(new Date());
       const regime = cluster ? classifyMarketRegime(cluster) : 'choppy';
       const signalClass = classifySignalClass(expr);
       const globalGate = evaluateGlobalTradeGate(this.thufirConfig, {
+        symbol,
+        direction: expr.side,
+        strategySource: expr.newsTrigger?.enabled ? 'discovery_news' : 'discovery_quant',
+        triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
         signalClass,
+        symbolClass: symbol === 'BTC' ? 'major' : symbol === 'ETH' || symbol === 'SOL' ? 'liquid_alt' : 'alt',
+        session: sessionContext.session,
         marketRegime: regime,
         expectedEdge: expr.expectedEdge,
-        tradeSide: expr.side,
-        broadMarketPosture,
+        requestedLeverage: expr.leverage ?? null,
+        confirmationSatisfied: true,
       });
       if (!globalGate.allowed) {
         return false;
@@ -1767,7 +1129,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       if (expr.expectedEdge < adaptiveMinEdge) {
         return false;
       }
-      const { sessionWeight } = resolveSessionWeightContext(new Date());
+      const { sessionWeight } = sessionContext;
       const weightedConfidence = clamp01(expr.confidence * sessionWeight);
       if (this.config.requireHighConfidence && weightedConfidence < 0.7) {
         return false;
@@ -1820,44 +1182,19 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const volatilityBucket = cluster ? resolveVolatilityBucket(cluster) : 'medium';
       const liquidityBucket = cluster ? resolveLiquidityBucket(cluster) : 'normal';
       const globalGate = evaluateGlobalTradeGate(this.thufirConfig, {
+        symbol,
+        direction: expr.side,
+        strategySource: expr.newsTrigger?.enabled ? 'discovery_news' : 'discovery_quant',
+        triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
         signalClass,
+        symbolClass: symbol === 'BTC' ? 'major' : symbol === 'ETH' || symbol === 'SOL' ? 'liquid_alt' : 'alt',
+        session: sessionContext.session,
         marketRegime: regime,
         expectedEdge: expr.expectedEdge,
-        tradeSide: expr.side,
-        broadMarketPosture,
+        requestedLeverage: expr.leverage ?? null,
+        confirmationSatisfied: true,
       });
       if (!globalGate.allowed) {
-        const blockedPolicyTrace = buildPolicyTrace({
-          stage: 'policy_gate_blocked',
-          requestedNotionalUsd: Number.isFinite(expr.probeSizeUsd) ? expr.probeSizeUsd : null,
-          approvedNotionalUsd: null,
-          requestedLeverage: expr.leverage,
-          approvedLeverage: null,
-          gateVerdict: 'reject',
-          gateReasonCode: globalGate.reasonCode ?? null,
-          policyReasonCode: globalGate.reasonCode ?? null,
-          policyReason: globalGate.reason ?? null,
-          blockedReason: globalGate.reason ?? 'policy gate',
-        });
-        persistAdaptiveDecisionTrace({
-          symbol,
-          confidence: confidenceWeighted,
-          outcome: 'blocked',
-          payload: {
-            stage: 'quant_pre_execution',
-            symbol,
-            originalRequest: {
-              notionalUsd: Number.isFinite(expr.probeSizeUsd) ? expr.probeSizeUsd : null,
-              leverage: expr.leverage,
-              side: expr.side,
-            },
-            retrieval: null,
-            policyTrace: blockedPolicyTrace,
-            finalRequest: null,
-            finalRejectReason: globalGate.reason ?? 'policy gate',
-          },
-          notes: { signalClass, regime },
-        });
         outputs.push(`${symbol}: Blocked (${globalGate.reason ?? 'policy gate'})`);
         continue;
       }
@@ -1937,7 +1274,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         continue;
       }
       let size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
-      let targetLeverage = expr.leverage;
+      let targetLeverage =
+        globalGate.leverageCap != null ? Math.min(expr.leverage, globalGate.leverageCap) : expr.leverage;
 
       const riskCheck = await checkPerpRiskLimits({
         config: this.thufirConfig,
@@ -1948,7 +1286,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         reduceOnly: false,
         markPrice: markPrice || null,
         notionalUsd: Number.isFinite(probeUsd) ? probeUsd : undefined,
-        enforceAutonomousDefaults: true,
         marketMaxLeverage:
           typeof market.metadata?.maxLeverage === 'number'
             ? (market.metadata.maxLeverage as number)
@@ -1971,157 +1308,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         Number.isFinite(this.thufirConfig.hyperliquid.maxLeverage)
           ? Math.max(1, Number(this.thufirConfig.hyperliquid.maxLeverage))
           : 50;
-      const quantSimilarity = retrieveSimilarTradeDossiers({
-        symbol,
-        direction: expr.side === 'buy' ? 'long' : 'short',
-        strategySource: 'autonomous_quant',
-        triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-        signalClass,
-        regime,
-        symbolClass: inferTradeSymbolClass(symbol),
-        gateVerdict: null,
-        limit: 5,
-      });
-      const quantSimilaritySummary = formatTradeSimilaritySummary(quantSimilarity);
-      const quantRetrieval = buildRetrievalSection(quantSimilarity, quantSimilaritySummary);
-      const requestedProbeUsd = probeUsd;
-      const requestedLeverage = targetLeverage;
-      const quantRuntimeAdjustments = loadRuntimePolicyAdjustments({
-        symbol,
-        direction: expr.side === 'buy' ? 'long' : 'short',
-        strategySource: 'autonomous_quant',
-        triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-        signalClass,
-        regime,
-        symbolClass: inferTradeSymbolClass(symbol),
-        session: sessionContext.session,
-      });
-      const quantAdaptiveDecision = applyAdaptiveDecisionEnforcement({
-        requestedNotionalUsd: requestedProbeUsd,
-        requestedLeverage,
-        retrieval: quantSimilarity,
-        policyAdjustments: quantRuntimeAdjustments,
-      });
-
-      if (quantAdaptiveDecision.verdict === 'reject') {
-        const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
-        const adaptiveRejectReason =
-          quantAdaptiveDecision.reasonCodes.join(' | ') ||
-          'adaptive policy runtime rejected candidate';
-        const policyTrace = buildPolicyTrace({
-          stage: 'adaptive_policy_rejected',
-          requestedNotionalUsd: requestedProbeUsd,
-          approvedNotionalUsd: null,
-          requestedLeverage,
-          approvedLeverage: null,
-          policyReasonCode: globalGate.reasonCode ?? null,
-          policyReason: globalGate.reason ?? null,
-          policySizeMultiplier: policySizeMultiplier < 1 ? policySizeMultiplier : null,
-          retrievalRecommendation: quantSimilarity.recommendation,
-          blockedReason: adaptiveRejectReason,
-          adaptiveTrace: quantAdaptiveDecision.policyTrace,
-        });
-        const blockedPayload = {
-          version: 'v2.2',
-          thesis: {
-            reasoning: expr.expectedMove ?? null,
-            expectedEdge: expr.expectedEdge,
-            invalidationPrice: null,
-            timeStopAtMs: expr.newsTrigger?.expiresAtMs ?? null,
-            thesisConfidence: confidenceWeighted,
-            uncertaintySummary: null,
-          },
-          context: {
-            signalClass,
-            symbolClass: inferTradeSymbolClass(symbol),
-            marketRegime: regime,
-            volatilityBucket,
-            liquidityBucket,
-            session: sessionContext.session,
-            triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-            similarity: quantSimilarity,
-          },
-          request: {
-            requestedSize: requestedProbeUsd,
-            requestedLeverage,
-            requestedNotionalUsd: requestedProbeUsd,
-          },
-          gate: {
-            verdict: 'reject',
-            reasonCode: globalGate.reasonCode ?? null,
-            requestedSize: requestedProbeUsd,
-            approvedSize: null,
-            requestedLeverage,
-            approvedLeverage: null,
-            interventionType: 'reject',
-            interventionSummary: adaptiveRejectReason,
-          },
-          execution: {
-            tradeId: null,
-            side: expr.side,
-            size,
-            fillPrice: markPrice || null,
-            executionMessage: adaptiveRejectReason,
-            estimatedNotionalUsd: requestedProbeUsd,
-          },
-          review: null,
-          counterfactual_summary: null,
-          retrieval: quantRetrieval,
-          policy_trace: policyTrace,
-          regret: {
-            missedOpportunityFlag: null,
-            blockedWinnerFlag: null,
-            approvedLoserFlag: false,
-            resizeHelpedFlag: null,
-            resizeHurtFlag: null,
-          },
-        } satisfies Record<string, unknown>;
-        persistAdaptiveDecisionTrace({
-          symbol,
-          confidence: confidenceWeighted,
-          outcome: 'blocked',
-          payload: {
-            stage: 'quant_adaptive_policy',
-            symbol,
-            originalRequest: {
-              notionalUsd: requestedProbeUsd,
-              leverage: requestedLeverage,
-              side: expr.side,
-            },
-            retrieval: quantRetrieval,
-            policyTrace,
-            finalRequest: null,
-            finalRejectReason: adaptiveRejectReason,
-          },
-          notes: { signalClass, regime, strategySource: 'autonomous_quant' },
-        });
-        try {
-          upsertTradeDossier({
-            symbol,
-            status: 'closed',
-            direction: expr.side === 'buy' ? 'long' : 'short',
-            strategySource: 'autonomous_quant',
-            executionMode,
-            sourcePredictionId: null,
-            triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-            openedAt: new Date().toISOString(),
-            closedAt: new Date().toISOString(),
-            dossier: blockedPayload,
-            review: null,
-            retrieval: quantRetrieval,
-            policyTrace,
-          });
-        } catch { /* best-effort */ }
-        outputs.push(`${symbol}: Rejected by adaptive policy runtime — ${adaptiveRejectReason}`);
-        this.limiter.release(probeUsd);
-        continue;
-      }
-
-      probeUsd = quantAdaptiveDecision.approvedNotionalUsd;
-      if (quantAdaptiveDecision.approvedLeverage != null) {
-        targetLeverage = quantAdaptiveDecision.approvedLeverage;
-      }
-      size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
       const gateCandidate = {
         symbol,
         side: expr.side,
@@ -2133,130 +1319,19 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         signalClass,
         regime,
         session: sessionContext.session,
-        entryReasoning: `${expr.expectedMove ?? ''}\nHistorical similarity: ${quantSimilaritySummary}`,
+        entryReasoning: expr.expectedMove ?? '',
       };
-      let gateStopLevelPrice: number | null = null;
       let entryGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
       let entryGateReasonCode: string | null = null;
-      let entryGateReasoning: string | null = null;
       if (this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false) {
         const gateDecision = await this.entryGate.evaluate(gateCandidate, markPrice);
         entryGateVerdict = gateDecision.verdict;
         entryGateReasonCode = gateDecision.reasonCode ?? null;
-        entryGateReasoning = gateDecision.reasoning ?? null;
         if (gateDecision.verdict === 'reject') {
-          const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
-          const policyTrace = buildPolicyTrace({
-            stage: 'entry_gate_rejected',
-            requestedNotionalUsd: requestedProbeUsd,
-            approvedNotionalUsd: null,
-            requestedLeverage,
-            approvedLeverage: targetLeverage,
-            gateVerdict: entryGateVerdict,
-            gateReasonCode: entryGateReasonCode,
-            gateReasoning: entryGateReasoning,
-            policyReasonCode: globalGate.reasonCode ?? null,
-            policyReason: globalGate.reason ?? null,
-            policySizeMultiplier: policySizeMultiplier < 1 ? policySizeMultiplier : null,
-            retrievalRecommendation: quantSimilarity.recommendation,
-            blockedReason: gateDecision.reasoning,
-            adaptiveTrace: quantAdaptiveDecision.policyTrace,
-          });
-          const blockedPayload = {
-            version: 'v2.2',
-            thesis: {
-              reasoning: expr.expectedMove ?? null,
-              expectedEdge: expr.expectedEdge,
-              invalidationPrice: null,
-              timeStopAtMs: expr.newsTrigger?.expiresAtMs ?? null,
-              thesisConfidence: confidenceWeighted,
-              uncertaintySummary: null,
-            },
-            context: {
-            signalClass,
-            symbolClass: inferTradeSymbolClass(symbol),
-              marketRegime: regime,
-              volatilityBucket,
-              liquidityBucket,
-              session: sessionContext.session,
-              triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-              similarity: quantSimilarity,
-            },
-            request: {
-              requestedSize: requestedProbeUsd,
-              requestedLeverage,
-              requestedNotionalUsd: requestedProbeUsd,
-            },
-            gate: {
-              verdict: entryGateVerdict,
-              reasonCode: entryGateReasonCode,
-              requestedSize: requestedProbeUsd,
-              approvedSize: null,
-              requestedLeverage,
-              approvedLeverage: targetLeverage,
-              interventionType: 'reject',
-              interventionSummary: gateDecision.reasoning,
-            },
-            execution: {
-              tradeId: null,
-              side: expr.side,
-              size,
-              fillPrice: markPrice || null,
-              executionMessage: gateDecision.reasoning,
-              estimatedNotionalUsd: requestedProbeUsd,
-            },
-            review: null,
-            counterfactual_summary: null,
-            retrieval: quantRetrieval,
-            policy_trace: policyTrace,
-            regret: {
-              missedOpportunityFlag: null,
-              blockedWinnerFlag: null,
-              approvedLoserFlag: false,
-              resizeHelpedFlag: null,
-              resizeHurtFlag: null,
-            },
-          } satisfies Record<string, unknown>;
-          persistAdaptiveDecisionTrace({
-            symbol,
-            confidence: confidenceWeighted,
-            outcome: 'blocked',
-            payload: {
-              stage: 'quant_pre_execution',
-              symbol,
-              originalRequest: {
-                notionalUsd: requestedProbeUsd,
-                leverage: requestedLeverage,
-                side: expr.side,
-              },
-              retrieval: quantRetrieval,
-              policyTrace,
-              finalRequest: null,
-              finalRejectReason: gateDecision.reasoning,
-            },
-            notes: { signalClass, regime, strategySource: 'autonomous_quant' },
-          });
-          try {
-            upsertTradeDossier({
-              symbol,
-              status: 'closed',
-              direction: expr.side === 'buy' ? 'long' : 'short',
-              strategySource: 'autonomous_quant',
-              executionMode,
-              sourcePredictionId: null,
-              triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-              openedAt: new Date().toISOString(),
-              closedAt: new Date().toISOString(),
-              dossier: blockedPayload,
-              review: null,
-              retrieval: quantRetrieval,
-              policyTrace,
-            });
-          } catch { /* best-effort */ }
           try {
             recordPerpTradeJournal({
               kind: 'perp_trade_journal',
-              execution_mode: executionMode,
+              execution_mode: this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper',
               tradeId: null,
               hypothesisId: expr.hypothesisId ?? null,
               symbol,
@@ -2286,7 +1361,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           this.limiter.release(probeUsd);
           continue;
         }
-        gateStopLevelPrice = gateDecision.stopLevelPrice ?? null;
         if (gateDecision.verdict === 'resize' && gateDecision.adjustedSizeUsd) {
           probeUsd = gateDecision.adjustedSizeUsd;
           size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
@@ -2295,44 +1369,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           targetLeverage = gateDecision.suggestedLeverage;
         }
       }
-      const quantPolicyTrace = buildPolicyTrace({
-        stage: entryGateVerdict === 'resize' ? 'entry_gate_resized' : 'entry_gate_approved',
-        requestedNotionalUsd: requestedProbeUsd,
-        approvedNotionalUsd: probeUsd,
-        requestedLeverage,
-        approvedLeverage: targetLeverage,
-        gateVerdict: entryGateVerdict,
-        gateReasonCode: entryGateReasonCode,
-        gateReasoning: entryGateReasoning,
-        policyReasonCode: globalGate.reasonCode ?? null,
-        policyReason: globalGate.reason ?? null,
-        policySizeMultiplier: policySizeMultiplier < 1 ? policySizeMultiplier : null,
-        retrievalRecommendation: quantSimilarity.recommendation,
-        adaptiveTrace: quantAdaptiveDecision.policyTrace,
-      });
-      persistAdaptiveDecisionTrace({
-        symbol,
-        confidence: confidenceWeighted,
-        outcome: 'pending',
-        payload: {
-          stage: 'quant_pre_execution',
-          symbol,
-          originalRequest: {
-            notionalUsd: requestedProbeUsd,
-            leverage: requestedLeverage,
-            side: expr.side,
-          },
-          retrieval: quantRetrieval,
-          policyTrace: quantPolicyTrace,
-          finalRequest: {
-            notionalUsd: probeUsd,
-            leverage: targetLeverage,
-            side: expr.side,
-          },
-          finalRejectReason: null,
-        },
-        notes: { signalClass, regime, strategySource: 'autonomous_quant' },
-      });
       // gate approved or was disabled; fall through to executor.execute()
 
       const decision: TradeDecision = {
@@ -2362,7 +1398,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       };
 
       const tradeResult = await this.executor.execute(market, decision);
-      let dossierId: string | null = null;
       if (tradeResult.executed) {
         executedCount += 1;
         this.limiter.confirm(probeUsd);
@@ -2371,22 +1406,30 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           ((this.thufirConfig.autonomy as any)?.newsEntry?.thesisTtlMinutes ?? 120) * 60_000;
         const timeStopAtMs = expr.newsTrigger?.expiresAtMs ?? Date.now() + defaultThesisTtlMs;
         let predictionId: string | null = null;
-        const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
         try {
           const predictedOutcome = expr.side === 'buy' ? 'YES' : 'NO';
-          const signalWeightsSnapshot =
-            getSignalWeights('perp') ??
-            getSignalWeights('global') ??
-            undefined;
+          const signalWeightsSnapshot = resolvePredictionSignalWeights(this.thufirConfig);
+          const signalScores = buildDiscoverySignalScores({
+            side: expr.side,
+            signalClass,
+            confidenceRaw,
+            confidenceWeighted,
+            noveltyScore: expr.newsTrigger?.noveltyScore ?? null,
+            marketConfirmationScore: expr.newsTrigger?.marketConfirmationScore ?? null,
+            executionStatus: expr.contextPack?.executionQuality.status ?? null,
+            portfolioPosture: expr.contextPack?.portfolioState.posture ?? null,
+          });
           predictionId = createPrediction({
             marketId: `perp:${symbol}`,
             marketTitle: `${symbol} ${expr.side === 'buy' ? 'long' : 'short'}: quant scan`,
             predictedOutcome,
             predictedProbability: confidenceWeighted,
             modelProbability: confidenceWeighted,
-            confidenceRaw,
-            confidenceAdjusted: confidenceWeighted,
+            signalScores,
             signalWeightsSnapshot,
+            sessionTag: sessionContext.session,
+            regimeTag: regime,
+            strategyClass: signalClass,
             symbol,
             domain: 'perp',
             learningComparable: false,
@@ -2395,86 +1438,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             executionPrice: markPrice || undefined,
             positionSize: size,
           });
-          dossierId = upsertTradeDossier({
-            symbol,
-            status: 'open',
-            direction: expr.side === 'buy' ? 'long' : 'short',
-            strategySource: 'autonomous_quant',
-            executionMode,
-            sourceTradeId: tradeResult.tradeId ?? null,
-            sourcePredictionId: predictionId,
-            triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-            openedAt: new Date().toISOString(),
-            retrieval: quantRetrieval,
-            policyTrace: quantPolicyTrace,
-            dossier: {
-              version: 'v2.2',
-              thesis: {
-                reasoning: decision.reasoning ?? null,
-                expectedEdge: expr.expectedEdge,
-                invalidationPrice: gateStopLevelPrice,
-                timeStopAtMs,
-                thesisConfidence: confidenceWeighted,
-                uncertaintySummary: null,
-                confidenceRaw,
-                confidenceWeighted,
-              },
-              context: {
-                signalClass,
-                symbolClass: inferTradeSymbolClass(symbol),
-                marketRegime: regime,
-                volatilityBucket,
-                liquidityBucket,
-                session: sessionContext.session,
-                triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-                similarity: quantSimilarity,
-              },
-              request: {
-                requestedSize: requestedProbeUsd,
-                requestedLeverage,
-                requestedNotionalUsd: requestedProbeUsd,
-              },
-              gate: {
-                verdict: entryGateVerdict,
-                reasonCode: entryGateReasonCode,
-                requestedSize: gateCandidate.notionalUsd,
-                approvedSize: probeUsd,
-                requestedNotionalUsd: gateCandidate.notionalUsd,
-                approvedNotionalUsd: probeUsd,
-                requestedLeverage,
-                approvedLeverage: targetLeverage,
-                stopLevelPrice: gateStopLevelPrice,
-                interventionType: entryGateVerdict === 'resize' ? 'resize' : 'approve',
-                interventionSummary: entryGateReasoning,
-                historicalSimilarity: quantSimilaritySummary,
-              },
-              execution: {
-                tradeId: tradeResult.tradeId ?? null,
-                side: expr.side,
-                size,
-                fillPrice: markPrice || null,
-                filledNotionalUsd: markPrice > 0 ? size * markPrice : probeUsd,
-                orderId: tradeResult.orderId ?? null,
-                executionMessage: tradeResult.message,
-              },
-              review: null,
-              counterfactual_summary: null,
-              retrieval: quantRetrieval,
-              policy_trace: quantPolicyTrace,
-              regret: {
-                missedOpportunityFlag: null,
-                blockedWinnerFlag: null,
-                approvedLoserFlag: null,
-                resizeHelpedFlag: entryGateVerdict === 'resize' ? null : false,
-                resizeHurtFlag: entryGateVerdict === 'resize' ? null : false,
-              },
-              exitPlan: {
-                timeStopAtMs,
-                invalidationPrice: gateStopLevelPrice,
-                predictionId,
-              },
-            },
-          }).id;
           createLearningCase({
             caseType: 'comparable_forecast',
             domain: 'perp',
@@ -2484,8 +1447,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             comparatorKind: null,
             exclusionReason: 'missing_comparator',
             sourcePredictionId: predictionId,
-            sourceTradeId: tradeResult.tradeId ?? null,
-            sourceDossierId: dossierId,
             belief: {
               modelProbability: confidenceWeighted,
               predictedOutcome,
@@ -2495,15 +1456,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             },
             context: {
               horizonMinutes: Math.round((timeStopAtMs - Date.now()) / 60_000),
-              mode: executionMode,
-              signalClass,
-              regime,
-              triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
-              entryGateVerdict,
-              entryGateReasonCode,
-              requestedNotionalUsd: gateCandidate.notionalUsd,
-              approvedNotionalUsd: probeUsd,
-              historicalSimilarity: quantSimilarity,
+              mode: this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper',
             },
             action: {
               side: expr.side,
@@ -2517,7 +1470,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           const side = expr.side === 'buy' ? 'long' : 'short';
           const exitContract = buildLegacyExitContract({
             thesis: decision.reasoning ?? `${symbol} ${side} thesis`,
-            invalidationPrice: gateStopLevelPrice,
             side,
             tradeType: expr.newsTrigger?.enabled ? 'structural' : 'tactical',
           });
@@ -2525,7 +1477,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             symbol,
             side,
             timeStopAtMs,
-            gateStopLevelPrice,
+            null,
             serializeExitContract(exitContract),
             predictionId
           );
@@ -2566,34 +1518,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           orderType: expr.orderType,
           status: tradeResult.executed ? 'executed' : 'failed',
         });
-        if (tradeResult.executed) {
-          try {
-            setActivePerpPositionLifecycle({
-              symbol,
-              tradeId,
-              side: expr.side === 'buy' ? 'long' : 'short',
-            });
-          } catch { /* best-effort */ }
-          try {
-            upsertTradeDossier({
-              id: dossierId ?? undefined,
-              symbol,
-              status: 'open',
-              direction: expr.side === 'buy' ? 'long' : 'short',
-              strategySource: 'autonomous_quant',
-              executionMode,
-              sourceTradeId: tradeId,
-              dossier: {
-                execution: {
-                  tradeId,
-                  fillPrice: markPrice || null,
-                  orderId: tradeResult.orderId ?? null,
-                  executionMessage: tradeResult.message,
-                },
-              },
-            });
-          } catch { /* best-effort */ }
-        }
         const db = openDatabase();
         db.prepare(`
           INSERT INTO autonomous_trades (
