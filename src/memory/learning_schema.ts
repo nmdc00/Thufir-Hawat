@@ -151,6 +151,7 @@ const LEARNING_CASE_COLUMNS: ColumnSpec[] = [
 
 const TRADE_POLICY_ADJUSTMENT_COLUMNS: ColumnSpec[] = [
   { name: 'policy_key', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN policy_key TEXT NOT NULL DEFAULT 'size'" },
+  { name: 'scope_key', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN scope_key TEXT NOT NULL DEFAULT ''" },
   { name: 'symbol', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN symbol TEXT' },
   { name: 'direction', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN direction TEXT' },
   { name: 'strategy_source', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN strategy_source TEXT' },
@@ -234,6 +235,25 @@ function ensureTradePolicyAdjustmentColumns(db: Database.Database): void {
       db.exec(column.sql);
     }
   }
+  backfillTradePolicyAdjustmentScopeKeys(db);
+}
+
+function backfillTradePolicyAdjustmentScopeKeys(db: Database.Database): void {
+  db.exec(`
+    UPDATE trade_policy_adjustments
+    SET scope_key =
+      'symbol=' || COALESCE(NULLIF(TRIM(symbol), ''), 'any') ||
+      '|direction=' || COALESCE(NULLIF(TRIM(direction), ''), 'any') ||
+      '|strategySource=' || COALESCE(NULLIF(TRIM(strategy_source), ''), 'any') ||
+      '|triggerReason=' || COALESCE(NULLIF(TRIM(trigger_reason), ''), 'any') ||
+      '|signalClass=' || COALESCE(NULLIF(TRIM(signal_class), ''), 'any') ||
+      '|symbolClass=' || COALESCE(NULLIF(TRIM(symbol_class), ''), 'any') ||
+      '|session=' || COALESCE(NULLIF(TRIM(session_tag), ''), 'any') ||
+      '|marketRegime=' || COALESCE(NULLIF(TRIM(market_regime), ''), 'any') ||
+      '|volatilityBucket=' || COALESCE(NULLIF(TRIM(volatility_bucket), ''), 'any') ||
+      '|liquidityBucket=' || COALESCE(NULLIF(TRIM(liquidity_bucket), ''), 'any')
+    WHERE scope_key IS NULL OR TRIM(scope_key) = ''
+  `);
 }
 
 export function cleanupLegacyPerpComparableRows(db: Database.Database): number {
