@@ -156,6 +156,41 @@ function parseJsonObject(value: string | null): Record<string, unknown> | null {
   }
 }
 
+function getTradePolicyAdjustmentColumns(): Set<string> {
+  const db = openDatabase();
+  const rows = db.prepare("PRAGMA table_info('trade_policy_adjustments')").all() as Array<{ name?: string }>;
+  return new Set(rows.map((row) => String(row.name ?? '')));
+}
+
+function toLegacyAdjustmentType(policyKey: TradePolicyKey, action: TradePolicyAdjustmentAction): 'set' | 'scale' | 'flag' {
+  if (policyKey === 'confirmation' || policyKey === 'cooldown') {
+    return 'flag';
+  }
+  if (policyKey === 'size' && action === 'downweight') {
+    return 'scale';
+  }
+  return 'set';
+}
+
+function toLegacyNewValue(params: {
+  policyKey: TradePolicyKey;
+  sizeMultiplier: number;
+  leverageCap: number | null;
+  confirmationRequired: number | null;
+  cooldownMinutes: number | null;
+}): number | null {
+  switch (params.policyKey) {
+    case 'leverage':
+      return params.leverageCap;
+    case 'confirmation':
+      return params.confirmationRequired;
+    case 'cooldown':
+      return params.cooldownMinutes;
+    default:
+      return params.sizeMultiplier;
+  }
+}
+
 function toRecord(row: TradePolicyAdjustmentRow): TradePolicyAdjustment {
   const policyKey = normalizePolicyKey(row.policy_key, row.action);
   const scope = {
@@ -261,111 +296,288 @@ export function deactivateTradePolicyAdjustmentsForScope(
 
 export function createTradePolicyAdjustment(input: TradePolicyAdjustmentInput): TradePolicyAdjustmentRecord {
   const db = openDatabase();
+  const columns = getTradePolicyAdjustmentColumns();
   const id = input.id ?? randomUUID();
   const policyKey = normalizePolicyKey(input.policyKey, input.action);
   const scopeKey = buildTradePolicyAdjustmentScopeKey(input);
-  db.prepare(
-    `
-      INSERT INTO trade_policy_adjustments (
-        id,
-        domain,
-        policy_key,
-        scope_key,
-        symbol,
-        direction,
-        strategy_source,
-        trigger_reason,
-        signal_class,
-        symbol_class,
-        session_tag,
-        market_regime,
-        volatility_bucket,
-        liquidity_bucket,
-        action,
-        size_multiplier,
-        leverage_cap,
-        confirmation_required,
-        cooldown_minutes,
-        confidence,
-        evidence_count,
-        thesis_failure_rate,
-        negative_pnl_rate,
-        average_quality_score,
-        source_learning_case_id,
-        source_trade_id,
-        rationale,
-        evidence_payload,
-        expires_at,
-        active
-      ) VALUES (
-        @id,
-        @domain,
-        @policyKey,
-        @scopeKey,
-        @symbol,
-        @direction,
-        @strategySource,
-        @triggerReason,
-        @signalClass,
-        @symbolClass,
-        @session,
-        @marketRegime,
-        @volatilityBucket,
-        @liquidityBucket,
-        @action,
-        @sizeMultiplier,
-        @leverageCap,
-        @confirmationRequired,
-        @cooldownMinutes,
-        @confidence,
-        @evidenceCount,
-        @thesisFailureRate,
-        @negativePnlRate,
-        @averageQualityScore,
-        @sourceLearningCaseId,
-        @sourceTradeId,
-        @rationale,
-        @evidencePayload,
-        @expiresAt,
-        @active
-      )
-    `
-  ).run({
-    id,
-    domain: input.domain,
-    policyKey,
-    scopeKey,
-    symbol: normalizeScopeValue(input.symbol),
-    direction: normalizeScopeValue(input.direction),
-    strategySource: normalizeScopeValue(input.strategySource),
-    triggerReason: normalizeScopeValue(input.triggerReason),
-    signalClass: normalizeScopeValue(input.signalClass),
-    symbolClass: normalizeScopeValue(input.symbolClass),
-    session: normalizeScopeValue(input.session),
-    marketRegime: normalizeScopeValue(input.marketRegime),
-    volatilityBucket: normalizeScopeValue(input.volatilityBucket),
-    liquidityBucket: normalizeScopeValue(input.liquidityBucket),
-    action: input.action,
-    sizeMultiplier:
-      input.action === 'downweight' || input.action === 'block'
-        ? Math.max(0, Math.min(1, normalizeFinite(input.sizeMultiplier, input.action === 'block' ? 0 : 1)))
-        : 1,
-    leverageCap: input.leverageCap ?? null,
-    confirmationRequired: input.confirmationRequired == null ? null : input.confirmationRequired ? 1 : 0,
-    cooldownMinutes:
-      input.cooldownMinutes == null ? null : Math.max(1, Math.floor(input.cooldownMinutes)),
-    confidence: input.confidence ?? null,
-    evidenceCount: Math.max(0, Math.floor(input.evidenceCount)),
-    thesisFailureRate: input.thesisFailureRate ?? null,
-    negativePnlRate: input.negativePnlRate ?? null,
-    averageQualityScore: input.averageQualityScore ?? null,
-    sourceLearningCaseId: input.sourceLearningCaseId ?? null,
-    sourceTradeId: input.sourceTradeId ?? null,
-    rationale: input.rationale ?? null,
-    evidencePayload: input.evidencePayload ? JSON.stringify(input.evidencePayload) : null,
-    expiresAt: input.expiresAt ?? null,
-    active: input.active === false ? 0 : 1,
-  });
+  const symbol = normalizeScopeValue(input.symbol);
+  const direction = normalizeScopeValue(input.direction);
+  const strategySource = normalizeScopeValue(input.strategySource);
+  const triggerReason = normalizeScopeValue(input.triggerReason);
+  const signalClass = normalizeScopeValue(input.signalClass);
+  const symbolClass = normalizeScopeValue(input.symbolClass);
+  const session = normalizeScopeValue(input.session);
+  const marketRegime = normalizeScopeValue(input.marketRegime);
+  const volatilityBucket = normalizeScopeValue(input.volatilityBucket);
+  const liquidityBucket = normalizeScopeValue(input.liquidityBucket);
+  const sizeMultiplier =
+    input.action === 'downweight' || input.action === 'block'
+      ? Math.max(0, Math.min(1, normalizeFinite(input.sizeMultiplier, input.action === 'block' ? 0 : 1)))
+      : 1;
+  const leverageCap = input.leverageCap ?? null;
+  const confirmationRequired = input.confirmationRequired == null ? null : input.confirmationRequired ? 1 : 0;
+  const cooldownMinutes =
+    input.cooldownMinutes == null ? null : Math.max(1, Math.floor(input.cooldownMinutes));
+  const confidence = input.confidence ?? null;
+  const evidenceCount = Math.max(0, Math.floor(input.evidenceCount));
+  const thesisFailureRate = input.thesisFailureRate ?? null;
+  const negativePnlRate = input.negativePnlRate ?? null;
+  const averageQualityScore = input.averageQualityScore ?? null;
+  const sourceLearningCaseId = input.sourceLearningCaseId ?? null;
+  const sourceTradeId = input.sourceTradeId ?? null;
+  const rationale = input.rationale ?? null;
+  const evidencePayload = input.evidencePayload ? JSON.stringify(input.evidencePayload) : null;
+  const expiresAt = input.expiresAt ?? null;
+  const active = input.active === false ? 0 : 1;
+
+  if (columns.has('policy_domain') && columns.has('adjustment_type')) {
+    const scopePayload = JSON.stringify({
+      symbol,
+      direction,
+      strategySource,
+      triggerReason,
+      signalClass,
+      symbolClass,
+      session,
+      marketRegime,
+      volatilityBucket,
+      liquidityBucket,
+    });
+    const legacyNewValue = toLegacyNewValue({
+      policyKey,
+      sizeMultiplier,
+      leverageCap,
+      confirmationRequired,
+      cooldownMinutes,
+    });
+    const legacyDelta = policyKey === 'size' && legacyNewValue != null ? legacyNewValue - 1 : null;
+
+    db.prepare(
+      `
+        INSERT INTO trade_policy_adjustments (
+          id,
+          policy_domain,
+          policy_key,
+          scope_payload,
+          adjustment_type,
+          old_value,
+          new_value,
+          delta,
+          evidence_count,
+          reason_summary,
+          confidence,
+          active,
+          created_at,
+          expires_at,
+          old_value_payload,
+          new_value_payload,
+          symbol,
+          direction,
+          strategy_source,
+          trigger_reason,
+          symbol_class,
+          session_tag,
+          leverage_cap,
+          confirmation_required,
+          cooldown_minutes,
+          scope_key,
+          domain,
+          signal_class,
+          market_regime,
+          volatility_bucket,
+          liquidity_bucket,
+          action,
+          size_multiplier,
+          thesis_failure_rate,
+          negative_pnl_rate,
+          average_quality_score,
+          source_learning_case_id,
+          source_trade_id,
+          rationale,
+          evidence_payload,
+          updated_at
+        ) VALUES (
+          @id,
+          @policyDomain,
+          @policyKey,
+          @scopePayload,
+          @adjustmentType,
+          NULL,
+          @newValue,
+          @delta,
+          @evidenceCount,
+          @reasonSummary,
+          @confidence,
+          @active,
+          datetime('now'),
+          @expiresAt,
+          NULL,
+          NULL,
+          @symbol,
+          @direction,
+          @strategySource,
+          @triggerReason,
+          @symbolClass,
+          @session,
+          @leverageCap,
+          @confirmationRequired,
+          @cooldownMinutes,
+          @scopeKey,
+          @domain,
+          @signalClass,
+          @marketRegime,
+          @volatilityBucket,
+          @liquidityBucket,
+          @action,
+          @sizeMultiplier,
+          @thesisFailureRate,
+          @negativePnlRate,
+          @averageQualityScore,
+          @sourceLearningCaseId,
+          @sourceTradeId,
+          @rationale,
+          @evidencePayload,
+          datetime('now')
+        )
+      `
+    ).run({
+      id,
+      policyDomain: input.domain,
+      policyKey,
+      scopePayload,
+      adjustmentType: toLegacyAdjustmentType(policyKey, input.action),
+      newValue: legacyNewValue,
+      delta: legacyDelta,
+      evidenceCount,
+      reasonSummary: rationale,
+      confidence,
+      active,
+      expiresAt,
+      symbol,
+      direction,
+      strategySource,
+      triggerReason,
+      symbolClass,
+      session,
+      leverageCap,
+      confirmationRequired,
+      cooldownMinutes,
+      scopeKey,
+      domain: input.domain,
+      signalClass,
+      marketRegime,
+      volatilityBucket,
+      liquidityBucket,
+      action: input.action,
+      sizeMultiplier,
+      thesisFailureRate,
+      negativePnlRate,
+      averageQualityScore,
+      sourceLearningCaseId,
+      sourceTradeId,
+      rationale,
+      evidencePayload,
+    });
+  } else {
+    db.prepare(
+      `
+        INSERT INTO trade_policy_adjustments (
+          id,
+          domain,
+          policy_key,
+          scope_key,
+          symbol,
+          direction,
+          strategy_source,
+          trigger_reason,
+          signal_class,
+          symbol_class,
+          session_tag,
+          market_regime,
+          volatility_bucket,
+          liquidity_bucket,
+          action,
+          size_multiplier,
+          leverage_cap,
+          confirmation_required,
+          cooldown_minutes,
+          confidence,
+          evidence_count,
+          thesis_failure_rate,
+          negative_pnl_rate,
+          average_quality_score,
+          source_learning_case_id,
+          source_trade_id,
+          rationale,
+          evidence_payload,
+          expires_at,
+          active
+        ) VALUES (
+          @id,
+          @domain,
+          @policyKey,
+          @scopeKey,
+          @symbol,
+          @direction,
+          @strategySource,
+          @triggerReason,
+          @signalClass,
+          @symbolClass,
+          @session,
+          @marketRegime,
+          @volatilityBucket,
+          @liquidityBucket,
+          @action,
+          @sizeMultiplier,
+          @leverageCap,
+          @confirmationRequired,
+          @cooldownMinutes,
+          @confidence,
+          @evidenceCount,
+          @thesisFailureRate,
+          @negativePnlRate,
+          @averageQualityScore,
+          @sourceLearningCaseId,
+          @sourceTradeId,
+          @rationale,
+          @evidencePayload,
+          @expiresAt,
+          @active
+        )
+      `
+    ).run({
+      id,
+      domain: input.domain,
+      policyKey,
+      scopeKey,
+      symbol,
+      direction,
+      strategySource,
+      triggerReason,
+      signalClass,
+      symbolClass,
+      session,
+      marketRegime,
+      volatilityBucket,
+      liquidityBucket,
+      action: input.action,
+      sizeMultiplier,
+      leverageCap,
+      confirmationRequired,
+      cooldownMinutes,
+      confidence,
+      evidenceCount,
+      thesisFailureRate,
+      negativePnlRate,
+      averageQualityScore,
+      sourceLearningCaseId,
+      sourceTradeId,
+      rationale,
+      evidencePayload,
+      expiresAt,
+      active,
+    });
+  }
   return getTradePolicyAdjustmentById(id);
 }
 
