@@ -1,3 +1,7 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -5,11 +9,13 @@ import {
   computeFractionalKellyFraction,
   evaluateCalibrationSegmentPolicy,
   evaluateDailyTradeCap,
+  evaluateGlobalTradeGate,
   evaluateNewsEntryGate,
-  inferBroadMarketPosture,
   isSignalClassAllowedForRegime,
   shouldForceObservationMode,
 } from '../../src/core/autonomy_policy.js';
+import { openDatabase } from '../../src/memory/db.js';
+import { createTradePolicyAdjustment } from '../../src/memory/trade_policy_adjustments.js';
 
 describe('autonomy_policy', () => {
   it('classifies regimes deterministically from price/vol signal metrics', () => {
@@ -56,42 +62,6 @@ describe('autonomy_policy', () => {
     expect(isSignalClassAllowedForRegime('liquidation_cascade', 'choppy')).toBe(true);
     expect(isSignalClassAllowedForRegime('momentum_breakout', 'low_vol_compression')).toBe(true);
     expect(isSignalClassAllowedForRegime('unknown', 'trending')).toBe(false);
-  });
-
-  it('infers broad-market posture from BTC/ETH anchor clusters', () => {
-    expect(
-      inferBroadMarketPosture([
-        {
-          symbol: 'BTC/USDT',
-          directionalBias: 'up',
-          confidence: 0.9,
-          signals: [{ kind: 'price_vol_regime', metrics: { trend: 0.009 } }],
-        },
-        {
-          symbol: 'ETH/USDT',
-          directionalBias: 'neutral',
-          confidence: 0.7,
-          signals: [{ kind: 'price_vol_regime', metrics: { trend: 0.003 } }],
-        },
-      ] as any)
-    ).toBe('risk_on');
-
-    expect(
-      inferBroadMarketPosture([
-        {
-          symbol: 'BTC/USDT',
-          directionalBias: 'down',
-          confidence: 0.8,
-          signals: [{ kind: 'price_vol_regime', metrics: { trend: -0.008 } }],
-        },
-        {
-          symbol: 'ETH/USDT',
-          directionalBias: 'down',
-          confidence: 0.8,
-          signals: [{ kind: 'price_vol_regime', metrics: { trend: -0.004 } }],
-        },
-      ] as any)
-    ).toBe('risk_off');
   });
 
   it('gates news entries by novelty/confirmation/liquidity/volatility/expiry', () => {
@@ -277,5 +247,39 @@ describe('autonomy_policy', () => {
     expect(result.sizeMultiplier).toBe(0);
     expect(result.reasonCode).toBe('calibration.segment.block');
     expect(result.reason).toMatch(/blocked by calibration policy/i);
+  });
+
+  it('applies a persisted trade policy adjustment inside the global trade gate', () => {
+    process.env.THUFIR_DB_PATH = join(mkdtempSync(join(tmpdir(), 'thufir-autonomy-policy-')), 'thufir.sqlite');
+    openDatabase();
+    createTradePolicyAdjustment({
+      domain: 'perp',
+      signalClass: 'momentum_breakout',
+      marketRegime: 'trending',
+      action: 'downweight',
+      sizeMultiplier: 0.4,
+      evidenceCount: 3,
+      rationale: 'segment recently degraded',
+    });
+
+    const result = evaluateGlobalTradeGate(
+      {
+        autonomy: {
+          enabled: true,
+          signalPerformance: { minSamples: 99 },
+          calibrationRisk: { enabled: false },
+          tradeQuality: { enabled: false },
+        },
+      } as any,
+      {
+        signalClass: 'momentum_breakout',
+        marketRegime: 'trending',
+      }
+    );
+
+    expect(result.allowed).toBe(true);
+    expect(result.reasonCode).toBe('policy:size:downweight');
+    expect(result.sizeMultiplier).toBeCloseTo(0.4, 6);
+    expect(result.activeAdjustmentIds).toHaveLength(1);
   });
 });

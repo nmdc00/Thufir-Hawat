@@ -1,8 +1,5 @@
 import { openDatabase } from './db.js';
-import {
-  getLearningRuntimeContext,
-  recordLearningSignalAudit,
-} from './learning_observability.js';
+import { recordLearningSignalAudit } from './learning_observability.js';
 
 export interface SignalWeights {
   technical: number;
@@ -29,11 +26,32 @@ export interface LearningEventInput {
   notes?: Record<string, unknown> | null;
 }
 
-export const DEFAULT_SIGNAL_WEIGHTS: SignalWeights = {
+const DEFAULT_SIGNAL_WEIGHTS: SignalWeights = {
   technical: 0.5,
   news: 0.3,
   onChain: 0.2,
 };
+
+function getSignalWeightState(domain: string): { weights: SignalWeights; samples: number } | null {
+  const db = openDatabase();
+  const row = db
+    .prepare(
+      `
+        SELECT weights, samples
+        FROM signal_weights
+        WHERE domain = ?
+        LIMIT 1
+      `
+    )
+    .get(domain) as { weights?: string; samples?: number } | undefined;
+  if (!row?.weights) return null;
+  const weights = parse<SignalWeights>(row.weights);
+  if (!weights) return null;
+  return {
+    weights,
+    samples: Number.isFinite(Number(row.samples)) ? Number(row.samples) : 0,
+  };
+}
 
 function serialize(value: unknown): string | null {
   if (value == null) return null;
@@ -55,12 +73,6 @@ function parse<T>(value: unknown): T | null {
 
 export function recordLearningEvent(input: LearningEventInput): number {
   const db = openDatabase();
-  const runtime = getLearningRuntimeContext(db);
-  const notes = {
-    ...(input.notes ?? {}),
-    runId: runtime.runId,
-    policyVersion: runtime.policyVersion,
-  };
   const res = db
     .prepare(
       `
@@ -120,7 +132,7 @@ export function recordLearningEvent(input: LearningEventInput): number {
       signalWeights: serialize(input.signalWeights ?? null),
       marketSnapshot: serialize(input.marketSnapshot ?? null),
       modelVersion: input.modelVersion ?? null,
-      notes: serialize(notes),
+      notes: serialize(input.notes ?? null),
     });
   const learningEventId = Number(res.lastInsertRowid ?? 0);
 
@@ -131,16 +143,19 @@ export function recordLearningEvent(input: LearningEventInput): number {
         ? 0
         : null;
   const domain = input.domain ?? 'global';
-  const currentWeights = getSignalWeights(domain) ?? DEFAULT_SIGNAL_WEIGHTS;
-  const decisionWeights = input.signalWeights ?? currentWeights;
-  if (outcome != null && input.signalScores) {
+  const currentWeightState = getSignalWeightState(domain);
+  const currentWeights = currentWeightState?.weights ?? DEFAULT_SIGNAL_WEIGHTS;
+  const currentSamples = currentWeightState?.samples ?? 0;
+  const signalScores = input.signalScores ?? null;
+  const signalWeights = input.signalWeights ?? currentWeights;
+  if (outcome != null && signalScores != null) {
     const { updated, delta } = updateSignalWeights({
       domain,
-      scores: input.signalScores,
-      weights: decisionWeights,
+      scores: signalScores,
+      weights: signalWeights,
       outcome,
     });
-    setSignalWeights(domain, updated);
+    setSignalWeights(domain, updated, currentSamples + 1);
     recordWeightUpdate({
       learningEventId,
       domain,
@@ -148,14 +163,14 @@ export function recordLearningEvent(input: LearningEventInput): number {
     });
     recordLearningSignalAudit({
       learningEventId,
-      predictionId: input.predictionId ?? null,
       domain,
-      signalScores: input.signalScores,
-      defaultWeights: DEFAULT_SIGNAL_WEIGHTS,
-      decisionWeights,
+      signalScores,
+      baselineWeights: DEFAULT_SIGNAL_WEIGHTS,
+      decisionWeights: signalWeights,
       activeWeightsBefore: currentWeights,
       activeWeightsAfter: updated,
-      db,
+      weightDelta: delta,
+      outcomeValue: outcome,
     });
   }
 

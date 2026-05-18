@@ -3,6 +3,7 @@ import type { ThufirConfig } from './config.js';
 import type { PerpTradeJournalEntry } from '../memory/perp_trade_journal.js';
 import { listPerpTradeJournals } from '../memory/perp_trade_journal.js';
 import { openDatabase } from '../memory/db.js';
+import { listActiveTradePolicyAdjustments } from '../memory/trade_policy_adjustments.js';
 import { getAutonomyPolicyState, upsertAutonomyPolicyState } from '../memory/autonomy_policy_state.js';
 import { summarizeSignalPerformance } from './signal_performance.js';
 import { getDailyPnLRollup } from './daily_pnl.js';
@@ -18,7 +19,6 @@ export type SignalClass =
 export type NewsGateResult = { allowed: boolean; reason?: string };
 export type VolatilityBucket = 'low' | 'medium' | 'high';
 export type LiquidityBucket = 'thin' | 'normal' | 'deep';
-export type BroadMarketPosture = 'risk_on' | 'risk_off' | 'neutral' | 'unknown';
 export type CalibrationPolicyReasonCode =
   | 'calibration.segment.block'
   | 'calibration.segment.downweight'
@@ -60,10 +60,16 @@ export type GlobalTradeGateResult = {
   reason?: string;
   reasonCode?: string;
   sizeMultiplier: number;
+  leverageCap: number | null;
+  activeAdjustmentIds: string[];
+  activePolicies: string[];
+  sizeHaircuts: Array<{ adjustmentId: string; multiplier: number }>;
+  leverageCaps: Array<{ adjustmentId: string; leverageCap: number }>;
+  confirmationRequirements: Array<{ adjustmentId: string; rationale: string | null }>;
+  triggeredCooldowns: Array<{ adjustmentId: string; expiresAt: string | null }>;
+  adaptationChangedOutcome: boolean;
   policyState: ReturnType<typeof getAutonomyPolicyState>;
 };
-
-type BroadMarketSignalSnapshot = Pick<SignalCluster, 'symbol' | 'directionalBias' | 'confidence' | 'signals'>;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -115,38 +121,6 @@ export function resolveLiquidityBucket(cluster: SignalCluster): 'thin' | 'normal
   if (count >= 18) return 'deep';
   if (count <= 4) return 'thin';
   return 'normal';
-}
-
-export function inferBroadMarketPosture(
-  clusters: BroadMarketSignalSnapshot[],
-  anchors: string[] = ['BTC/USDT', 'ETH/USDT']
-): BroadMarketPosture {
-  const anchorSet = new Set(anchors.map((symbol) => symbol.trim().toUpperCase()));
-  const relevant = clusters.filter((cluster) => anchorSet.has(cluster.symbol.trim().toUpperCase()));
-  if (relevant.length === 0) {
-    return 'unknown';
-  }
-
-  const directionalScore = relevant.reduce((acc, cluster) => {
-    if (cluster.directionalBias === 'up') return acc + 1;
-    if (cluster.directionalBias === 'down') return acc - 1;
-    return acc;
-  }, 0) / relevant.length;
-
-  const weightedTrend = relevant.reduce((acc, cluster) => {
-    const pv = cluster.signals.find((signal) => signal.kind === 'price_vol_regime');
-    const trend = typeof pv?.metrics?.trend === 'number' ? pv.metrics.trend : 0;
-    const confidence = Number.isFinite(cluster.confidence) ? clamp(cluster.confidence, 0, 1) : 0;
-    return acc + trend * Math.max(0.25, confidence);
-  }, 0) / relevant.length;
-
-  if (weightedTrend >= 0.004 || directionalScore >= 0.5) {
-    return 'risk_on';
-  }
-  if (weightedTrend <= -0.004 || directionalScore <= -0.5) {
-    return 'risk_off';
-  }
-  return 'neutral';
 }
 
 function normalizeSegmentValue(value: string | null | undefined): string {
@@ -525,13 +499,19 @@ export function shouldForceObservationMode(
 }
 
 export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
+  symbol?: string | null;
+  direction?: string | null;
+  strategySource?: string | null;
+  triggerReason?: string | null;
+  symbolClass?: string | null;
+  session?: string | null;
   signalClass?: string | null;
   marketRegime?: MarketRegime | null;
   volatilityBucket?: VolatilityBucket | null;
   liquidityBucket?: LiquidityBucket | null;
   expectedEdge?: number | null;
-  tradeSide?: 'buy' | 'sell' | null;
-  broadMarketPosture?: BroadMarketPosture | null;
+  requestedLeverage?: number | null;
+  confirmationSatisfied?: boolean | null;
 }): GlobalTradeGateResult {
   const autonomyEnabled = Boolean((config.autonomy as any)?.enabled);
   const fullAutoEnabled = Boolean((config.autonomy as any)?.fullAuto);
@@ -539,6 +519,14 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
     return {
       allowed: true,
       sizeMultiplier: 1,
+      leverageCap: null,
+      activeAdjustmentIds: [],
+      activePolicies: [],
+      sizeHaircuts: [],
+      leverageCaps: [],
+      confirmationRequirements: [],
+      triggeredCooldowns: [],
+      adaptationChangedOutcome: false,
       policyState: {
         minEdgeOverride: null,
         maxTradesPerScanOverride: null,
@@ -558,6 +546,14 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
       reasonCode: 'policy.observation_only',
       reason: `observation-only mode active until ${new Date(policyState.observationOnlyUntilMs).toISOString()}`,
       sizeMultiplier: 1,
+      leverageCap: null,
+      activeAdjustmentIds: [],
+      activePolicies: [],
+      sizeHaircuts: [],
+      leverageCaps: [],
+      confirmationRequirements: [],
+      triggeredCooldowns: [],
+      adaptationChangedOutcome: false,
       policyState,
     };
   }
@@ -573,6 +569,14 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
       reasonCode: 'policy.daily_drawdown_cap',
       reason: drawdownCap.reason ?? 'daily drawdown cap reached',
       sizeMultiplier: 1,
+      leverageCap: null,
+      activeAdjustmentIds: [],
+      activePolicies: [],
+      sizeHaircuts: [],
+      leverageCaps: [],
+      confirmationRequirements: [],
+      triggeredCooldowns: [],
+      adaptationChangedOutcome: false,
       policyState,
     };
   }
@@ -590,6 +594,14 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
       reasonCode: 'policy.daily_trade_cap',
       reason: dailyCap.reason ?? 'maxTradesPerDay reached',
       sizeMultiplier: 1,
+      leverageCap: null,
+      activeAdjustmentIds: [],
+      activePolicies: [],
+      sizeHaircuts: [],
+      leverageCaps: [],
+      confirmationRequirements: [],
+      triggeredCooldowns: [],
+      adaptationChangedOutcome: false,
       policyState,
     };
   }
@@ -612,6 +624,14 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
         reasonCode: 'policy.signal_sharpe',
         reason: `signal_class ${input.signalClass} sharpeLike ${perf.sharpeLike.toFixed(2)} below ${minSharpe.toFixed(2)}`,
         sizeMultiplier: 1,
+        leverageCap: null,
+        activeAdjustmentIds: [],
+        activePolicies: [],
+        sizeHaircuts: [],
+        leverageCaps: [],
+        confirmationRequirements: [],
+        triggeredCooldowns: [],
+        adaptationChangedOutcome: false,
         policyState,
       };
     }
@@ -622,23 +642,14 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
         reasonCode: 'policy.signal_regime_matrix',
         reason: `signal_class ${input.signalClass} disallowed in regime ${input.marketRegime}`,
         sizeMultiplier: 1,
-        policyState,
-      };
-    }
-
-    if (
-      input.signalClass === 'momentum_breakout' &&
-      input.tradeSide === 'sell' &&
-      input.broadMarketPosture != null &&
-      input.broadMarketPosture !== 'risk_off'
-    ) {
-      return {
-        allowed: false,
-        reasonCode: 'policy.broad_market_posture',
-        reason:
-          `momentum short blocked while broad market posture is ${input.broadMarketPosture}; ` +
-          'fresh downside continuation shorts require BTC/ETH posture to be risk_off',
-        sizeMultiplier: 1,
+        leverageCap: null,
+        activeAdjustmentIds: [],
+        activePolicies: [],
+        sizeHaircuts: [],
+        leverageCaps: [],
+        confirmationRequirements: [],
+        triggeredCooldowns: [],
+        adaptationChangedOutcome: false,
         policyState,
       };
     }
@@ -655,6 +666,14 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
         reasonCode: calibrationPolicy.reasonCode,
         reason: `${calibrationPolicy.reasonCode}: ${calibrationPolicy.reason}`,
         sizeMultiplier: 1,
+        leverageCap: null,
+        activeAdjustmentIds: [],
+        activePolicies: [],
+        sizeHaircuts: [],
+        leverageCaps: [],
+        confirmationRequirements: [],
+        triggeredCooldowns: [],
+        adaptationChangedOutcome: false,
         policyState,
       };
     }
@@ -680,6 +699,14 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
         reasonCode: 'policy.decision_quality',
         reason: `${qualityPolicy.reasonCode}: ${qualityPolicy.reason}`,
         sizeMultiplier: 1,
+        leverageCap: null,
+        activeAdjustmentIds: [],
+        activePolicies: [],
+        sizeHaircuts: [],
+        leverageCaps: [],
+        confirmationRequirements: [],
+        triggeredCooldowns: [],
+        adaptationChangedOutcome: false,
         policyState,
       };
     }
@@ -689,16 +716,149 @@ export function evaluateGlobalTradeGate(config: ThufirConfig, input?: {
       policyReason = `${qualityPolicy.reasonCode}: ${qualityPolicy.reason}`;
     }
 
+    const persistedAdjustments = listActiveTradePolicyAdjustments({
+      domain: 'perp',
+      symbol: input.symbol ?? null,
+      direction: input.direction ?? null,
+      strategySource: input.strategySource ?? null,
+      triggerReason: input.triggerReason ?? null,
+      signalClass: input.signalClass,
+      symbolClass: input.symbolClass ?? null,
+      session: input.session ?? null,
+      marketRegime: input.marketRegime ?? null,
+      volatilityBucket: input.volatilityBucket ?? null,
+      liquidityBucket: input.liquidityBucket ?? null,
+    });
+    const activeAdjustmentIds: string[] = [];
+    const activePolicies: string[] = [];
+    const sizeHaircuts: Array<{ adjustmentId: string; multiplier: number }> = [];
+    const leverageCaps: Array<{ adjustmentId: string; leverageCap: number }> = [];
+    const confirmationRequirements: Array<{ adjustmentId: string; rationale: string | null }> = [];
+    const triggeredCooldowns: Array<{ adjustmentId: string; expiresAt: string | null }> = [];
+    let effectiveLeverageCap: number | null = null;
+    for (const adjustment of persistedAdjustments) {
+      activeAdjustmentIds.push(adjustment.id);
+      activePolicies.push(`${adjustment.policyKey}:${adjustment.action}`);
+      if (adjustment.policyKey === 'size') {
+        if (adjustment.action === 'block') {
+          return {
+            allowed: false,
+            reasonCode: 'policy:size:block',
+            reason: `policy:size:block: ${adjustment.rationale ?? adjustment.scopeKey}`,
+            sizeMultiplier: 1,
+            leverageCap: null,
+            activeAdjustmentIds,
+            activePolicies,
+            sizeHaircuts,
+            leverageCaps,
+            confirmationRequirements,
+            triggeredCooldowns,
+            adaptationChangedOutcome: true,
+            policyState,
+          };
+        }
+        if (adjustment.action === 'downweight') {
+          const multiplier = Math.max(0.05, Math.min(1, adjustment.sizeMultiplier));
+          accumulatedSizeMultiplier *= multiplier;
+          sizeHaircuts.push({ adjustmentId: adjustment.id, multiplier });
+          policyReasonCode = 'policy:size:downweight';
+          policyReason = `policy:size:downweight: ${adjustment.rationale ?? adjustment.scopeKey}`;
+        }
+      }
+      if (adjustment.policyKey === 'leverage' && adjustment.action === 'cap_leverage' && adjustment.leverageCap != null) {
+        effectiveLeverageCap =
+          effectiveLeverageCap == null
+            ? adjustment.leverageCap
+            : Math.min(effectiveLeverageCap, adjustment.leverageCap);
+        leverageCaps.push({ adjustmentId: adjustment.id, leverageCap: adjustment.leverageCap });
+        if (
+          input.requestedLeverage != null &&
+          Number.isFinite(Number(input.requestedLeverage)) &&
+          Number(input.requestedLeverage) > adjustment.leverageCap
+        ) {
+          policyReasonCode = 'policy:leverage:cap';
+          policyReason = `policy:leverage:cap: ${adjustment.rationale ?? adjustment.scopeKey}`;
+        }
+      }
+      if (adjustment.policyKey === 'confirmation' && adjustment.action === 'require_confirmation') {
+        confirmationRequirements.push({ adjustmentId: adjustment.id, rationale: adjustment.rationale ?? null });
+        if (input.confirmationSatisfied === false) {
+          return {
+            allowed: false,
+            reasonCode: 'policy:confirmation:required',
+            reason: `policy:confirmation:required: ${adjustment.rationale ?? adjustment.scopeKey}`,
+            sizeMultiplier: clamp(accumulatedSizeMultiplier, 0.05, 1),
+            leverageCap: effectiveLeverageCap,
+            activeAdjustmentIds,
+            activePolicies,
+            sizeHaircuts,
+            leverageCaps,
+            confirmationRequirements,
+            triggeredCooldowns,
+            adaptationChangedOutcome: true,
+            policyState,
+          };
+        }
+        if (policyReasonCode == null) {
+          policyReasonCode = 'policy:confirmation:required';
+          policyReason = `policy:confirmation:required: ${adjustment.rationale ?? adjustment.scopeKey}`;
+        }
+      }
+      if (adjustment.policyKey === 'cooldown' && adjustment.action === 'cooldown') {
+        triggeredCooldowns.push({ adjustmentId: adjustment.id, expiresAt: adjustment.expiresAt ?? null });
+        return {
+          allowed: false,
+          reasonCode: 'policy:cooldown:active',
+          reason: `policy:cooldown:active: ${adjustment.rationale ?? adjustment.scopeKey}`,
+          sizeMultiplier: clamp(accumulatedSizeMultiplier, 0.05, 1),
+          leverageCap: effectiveLeverageCap,
+          activeAdjustmentIds,
+          activePolicies,
+          sizeHaircuts,
+          leverageCaps,
+          confirmationRequirements,
+          triggeredCooldowns,
+          adaptationChangedOutcome: true,
+          policyState,
+        };
+      }
+    }
+
     return {
       allowed: true,
       reasonCode: policyReasonCode,
       reason: policyReason,
       sizeMultiplier: clamp(accumulatedSizeMultiplier, 0.05, 1),
+      leverageCap: effectiveLeverageCap,
+      activeAdjustmentIds,
+      activePolicies,
+      sizeHaircuts,
+      leverageCaps,
+      confirmationRequirements,
+      triggeredCooldowns,
+      adaptationChangedOutcome:
+        activeAdjustmentIds.length > 0 &&
+        (sizeHaircuts.length > 0 ||
+          leverageCaps.length > 0 ||
+          confirmationRequirements.length > 0 ||
+          triggeredCooldowns.length > 0),
       policyState,
     };
   }
 
-  return { allowed: true, sizeMultiplier: 1, policyState };
+  return {
+    allowed: true,
+    sizeMultiplier: 1,
+    leverageCap: null,
+    activeAdjustmentIds: [],
+    activePolicies: [],
+    sizeHaircuts: [],
+    leverageCaps: [],
+    confirmationRequirements: [],
+    triggeredCooldowns: [],
+    adaptationChangedOutcome: false,
+    policyState,
+  };
 }
 
 export function applyReflectionMutation(config: ThufirConfig, entries: PerpTradeJournalEntry[]): {

@@ -7,12 +7,6 @@ import { loadConfig, type ThufirConfig } from '../core/config.js';
 import { getDailyPnLRollup } from '../core/daily_pnl.js';
 import { HyperliquidClient } from '../execution/hyperliquid/client.js';
 import { openDatabase } from '../memory/db.js';
-import { getLearningRuntimeContext } from '../memory/learning_observability.js';
-import {
-  computeDomainWindowMetrics,
-  computeRollingWindowMetrics,
-  type WindowMetrics,
-} from '../memory/learning_metrics.js';
 import type { PerpTradeJournalEntry } from '../memory/perp_trade_journal.js';
 import { cached, cachedAsync } from './dashboard_cache.js';
 
@@ -819,776 +813,6 @@ function buildEmptyEquitySeries(): EquityCurveSection {
   };
 }
 
-type PredictionAccuracySection = {
-  global: WindowMetrics[];
-  byDomain: Record<string, WindowMetrics[]>;
-  totalFinalPredictions: number;
-};
-
-type LearningAuditDomainCount = {
-  domain: string;
-  count: number;
-};
-
-type LearningAuditExclusionCount = {
-  reason: string;
-  count: number;
-};
-
-type LearningAuditPolicyAction = 'block' | 'resize' | 'bias' | 'suppress' | 'prior_adjustment';
-type LearningAuditPolicySourceTrack = 'comparable_forecast' | 'execution_quality' | 'combined';
-
-type LearningAuditPolicyOutput = {
-  sourceTrack: LearningAuditPolicySourceTrack;
-  action: LearningAuditPolicyAction;
-  scope: string;
-  count: number;
-  blocked: boolean;
-  sizeMultiplier: number | null;
-  reason: string | null;
-  updatedAt: string | null;
-};
-
-type LearningAuditSection = {
-  comparable: {
-    totalCaseCount: number;
-    byDomain: LearningAuditDomainCount[];
-  };
-  execution: {
-    totalCaseCount: number;
-    byDomain: LearningAuditDomainCount[];
-  };
-  exclusions: {
-    totalCaseCount: number;
-    byReason: LearningAuditExclusionCount[];
-  };
-  policyOutputs: LearningAuditPolicyOutput[];
-};
-
-type LearningObservabilityWeightsRow = {
-  domain: string;
-  weights: {
-    technical: number;
-    news: number;
-    onChain: number;
-  } | null;
-  samples: number;
-  updatedAt: string | null;
-};
-
-type LearningObservabilityRunSummary = {
-  runId: string;
-  policyVersion: string;
-  eventCount: number;
-  changedVsDefaultCount: number;
-  changedAfterUpdateCount: number;
-  avgConfidenceDeltaVsDefault: number | null;
-  avgConfidenceDeltaAfterUpdate: number | null;
-  lastRecordedAt: string | null;
-};
-
-type LearningObservabilityRecentAudit = {
-  domain: string;
-  runId: string;
-  policyVersion: string;
-  baselineDirection: string;
-  decisionDirection: string;
-  activeDirectionAfter: string;
-  changedVsDefault: boolean;
-  changedAfterUpdate: boolean;
-  confidenceDeltaVsDefault: number | null;
-  confidenceDeltaAfterUpdate: number | null;
-  createdAt: string | null;
-};
-
-type LearningObservabilitySection = {
-  runtimeContext: {
-    runId: string;
-    policyVersion: string;
-    source: 'db' | 'env' | 'default';
-    updatedAt: string | null;
-  };
-  activeWeights: LearningObservabilityWeightsRow[];
-  totalShadowAudits: number;
-  runSummaries: LearningObservabilityRunSummary[];
-  recentAudits: LearningObservabilityRecentAudit[];
-};
-
-type GateAttributionSection = {
-  config: {
-    minEdge: number | null;
-    requireHighConfidence: boolean;
-    maxTradesPerScan: number | null;
-    llmEntryGateEnabled: boolean;
-    tradeQualityEnabled: boolean;
-    calibrationRiskEnabled: boolean;
-    signalPerformanceMinSharpe: number | null;
-    signalPerformanceMinSamples: number | null;
-  };
-  policyState: {
-    observationMode: boolean;
-    minEdgeOverride: number | null;
-    maxTradesPerScanOverride: number | null;
-    leverageCapOverride: number | null;
-    reason: string | null;
-    updatedAt: string | null;
-  };
-  entryGate: {
-    verdictCounts: {
-      approve: number;
-      reject: number;
-      resize: number;
-    };
-    reasonCounts: Array<{
-      reasonCode: string;
-      count: number;
-    }>;
-    recentDecisions: Array<{
-      createdAt: string;
-      symbol: string;
-      verdict: string;
-      reasonCode: string | null;
-      adjustedSizeUsd: number | null;
-      suggestedLeverage: number | null;
-      reasoning: string;
-    }>;
-  };
-  journal: {
-    outcomeCounts: {
-      executed: number;
-      failed: number;
-      blocked: number;
-    };
-    blockedReasons: Array<{
-      reason: string;
-      count: number;
-    }>;
-    recentPolicyAdjustments: Array<{
-      createdAt: string;
-      symbol: string;
-      policyReasonCode: string | null;
-      policySizeMultiplier: number | null;
-      entryGateVerdict: string | null;
-      entryGateReasonCode: string | null;
-      reasoning: string | null;
-    }>;
-  };
-};
-
-function buildPredictionAccuracySection(db: Database.Database): PredictionAccuracySection {
-  try {
-    const total = (
-      db.prepare(`SELECT COUNT(*) AS c FROM learning_examples`).get() as { c?: number } | undefined
-    )?.c ?? 0;
-    return {
-      global: computeRollingWindowMetrics(undefined, db),
-      byDomain: computeDomainWindowMetrics(db),
-      totalFinalPredictions: Number(total),
-    };
-  } catch {
-    return {
-      global: [],
-      byDomain: {},
-      totalFinalPredictions: 0,
-    };
-  }
-}
-
-function listDomainCounts(
-  db: Database.Database,
-  query: string,
-  params: ReadonlyArray<unknown> = []
-): LearningAuditDomainCount[] {
-  try {
-    const rows = db.prepare(query).all(...params) as Array<{ domain?: string | null; count?: number | null }>;
-    return rows
-      .map((row) => ({
-        domain: typeof row.domain === 'string' && row.domain.trim().length > 0 ? row.domain : 'unknown',
-        count: Number(row.count ?? 0),
-      }))
-      .filter((row) => Number.isFinite(row.count) && row.count > 0);
-  } catch {
-    return [];
-  }
-}
-
-function viewExists(db: Database.Database, viewName: string): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name = ? LIMIT 1")
-    .get(viewName) as { name?: string } | undefined;
-  return Boolean(row?.name);
-}
-
-function listExecutionFallbackRows(db: Database.Database): Array<{ domain: string; payload: Record<string, unknown> }> {
-  if (!tableExists(db, 'decision_artifacts')) {
-    return [];
-  }
-  try {
-    const rows = db
-      .prepare(
-        `
-          SELECT payload
-          FROM decision_artifacts
-          WHERE kind = 'perp_trade_journal'
-        `
-      )
-      .all() as Array<{ payload?: string | null }>;
-    const result: Array<{ domain: string; payload: Record<string, unknown> }> = [];
-    for (const row of rows) {
-      const payload = parseJson<Record<string, unknown>>(row.payload ?? null);
-      if (!payload) continue;
-      const capturedR = Number(payload.capturedR ?? payload.captured_r ?? NaN);
-      if (!Number.isFinite(capturedR)) continue;
-      const domainRaw = typeof payload.domain === 'string' ? payload.domain.trim() : '';
-      result.push({ domain: domainRaw || 'perp', payload });
-    }
-    return result;
-  } catch {
-    return [];
-  }
-}
-
-function buildFallbackExclusionCounts(db: Database.Database): LearningAuditExclusionCount[] {
-  if (!tableExists(db, 'predictions')) {
-    return [];
-  }
-  try {
-    const rows = db
-      .prepare(
-        `
-          SELECT
-            CASE
-              WHEN domain = 'perp' AND (learning_comparable = 0 OR market_probability IS NULL) THEN 'perp_without_real_comparator'
-              WHEN outcome_basis IS NOT NULL AND outcome_basis != 'final' THEN 'outcome_not_final'
-              WHEN market_probability IS NULL THEN 'missing_market_probability'
-              WHEN model_probability IS NULL THEN 'missing_model_probability'
-              WHEN outcome IS NULL THEN 'missing_outcome'
-              WHEN learning_comparable = 0 THEN 'excluded_by_flag'
-              ELSE 'excluded_unspecified'
-            END AS reason,
-            COUNT(*) AS count
-          FROM predictions
-          WHERE learning_comparable = 0
-             OR outcome_basis IS NULL
-             OR outcome_basis != 'final'
-             OR model_probability IS NULL
-             OR market_probability IS NULL
-             OR outcome IS NULL
-          GROUP BY 1
-          ORDER BY count DESC, reason ASC
-        `
-      )
-      .all() as Array<{ reason?: string | null; count?: number | null }>;
-    return rows
-      .map((row) => ({
-        reason: typeof row.reason === 'string' && row.reason.trim().length > 0 ? row.reason : 'excluded_unspecified',
-        count: Number(row.count ?? 0),
-      }))
-      .filter((row) => Number.isFinite(row.count) && row.count > 0);
-  } catch {
-    return [];
-  }
-}
-
-function deriveComparablePolicyOutputs(
-  predictionAccuracy: PredictionAccuracySection
-): LearningAuditPolicyOutput[] {
-  const outputs: LearningAuditPolicyOutput[] = [];
-  for (const [domain, rows] of Object.entries(predictionAccuracy.byDomain)) {
-    const w50 = rows.find((row) => row.windowSize === 50);
-    const w20 = rows.find((row) => row.windowSize === 20);
-    if (w50 && w50.sampleCount >= 50 && w50.brierDelta != null && w50.brierDelta < 0) {
-      outputs.push({
-        sourceTrack: 'comparable_forecast',
-        action: 'block',
-        scope: domain,
-        count: 1,
-        blocked: true,
-        sizeMultiplier: 0,
-        reason: 'domain_calibration_below_market',
-        updatedAt: null,
-      });
-      continue;
-    }
-    if (w20 && w20.sampleCount >= 20 && w20.brierDelta != null && w20.brierDelta < -0.05) {
-      outputs.push({
-        sourceTrack: 'comparable_forecast',
-        action: 'resize',
-        scope: domain,
-        count: 1,
-        blocked: false,
-        sizeMultiplier: 0.5,
-        reason: 'domain_calibration_degrading',
-        updatedAt: null,
-      });
-    }
-  }
-  return outputs;
-}
-
-function actionFromReason(reason: string | null, blocked: boolean, sizeMultiplier: number | null): LearningAuditPolicyAction {
-  const normalized = (reason ?? '').trim().toLowerCase();
-  if (blocked) return 'block';
-  if (normalized.includes('suppress') || normalized.includes('observation')) return 'suppress';
-  if (sizeMultiplier != null && sizeMultiplier < 1) return 'resize';
-  if (normalized.includes('bias')) return 'bias';
-  return 'prior_adjustment';
-}
-
-function trackFromReason(reason: string | null): LearningAuditPolicySourceTrack {
-  const normalized = (reason ?? '').trim().toLowerCase();
-  if (normalized.startsWith('domain_calibration')) return 'comparable_forecast';
-  if (normalized.startsWith('quality.segment') || normalized.startsWith('calibration.segment')) {
-    return 'execution_quality';
-  }
-  return 'combined';
-}
-
-function buildFallbackPolicyOutputs(
-  policyState: ReturnType<typeof buildPolicyStateSection>,
-  predictionAccuracy: PredictionAccuracySection
-): LearningAuditPolicyOutput[] {
-  const outputs = deriveComparablePolicyOutputs(predictionAccuracy);
-  if (policyState.observationMode) {
-    outputs.push({
-      sourceTrack: 'combined',
-      action: 'suppress',
-      scope: 'global',
-      count: 1,
-      blocked: true,
-      sizeMultiplier: null,
-      reason: policyState.reason ?? 'observation_mode_active',
-      updatedAt: policyState.updatedAt,
-    });
-  }
-  if (policyState.leverageCap != null) {
-    outputs.push({
-      sourceTrack: 'execution_quality',
-      action: 'resize',
-      scope: 'global',
-      count: 1,
-      blocked: false,
-      sizeMultiplier: null,
-      reason: 'leverage_cap_override',
-      updatedAt: policyState.updatedAt,
-    });
-  }
-  if (policyState.reason) {
-    const sourceTrack = trackFromReason(policyState.reason);
-    const action = actionFromReason(policyState.reason, policyState.observationMode, null);
-    const dedupeKey = `${sourceTrack}:${action}:${policyState.reason}`;
-    const seen = new Set(outputs.map((item) => `${item.sourceTrack}:${item.action}:${item.reason ?? ''}`));
-    if (!seen.has(dedupeKey)) {
-      outputs.push({
-        sourceTrack,
-        action,
-        scope: 'global',
-        count: 1,
-        blocked: action === 'block' || action === 'suppress',
-        sizeMultiplier: null,
-        reason: policyState.reason,
-        updatedAt: policyState.updatedAt,
-      });
-    }
-  }
-  return outputs;
-}
-
-function parseLearningCasePolicyOutput(
-  row: {
-    domain?: string | null;
-    case_type?: string | null;
-    policy_input_payload?: string | null;
-    updated_at?: string | null;
-    created_at?: string | null;
-  }
-): LearningAuditPolicyOutput | null {
-  const payload = parseJson<Record<string, unknown>>(row.policy_input_payload ?? null);
-  if (!payload) return null;
-
-  const sourceTrackRaw =
-    payload.sourceTrack ??
-    payload.source_track ??
-    (row.case_type === 'comparable_forecast' ? 'comparable_forecast' : 'execution_quality');
-  const sourceTrack =
-    sourceTrackRaw === 'comparable_forecast' ||
-    sourceTrackRaw === 'execution_quality' ||
-    sourceTrackRaw === 'combined'
-      ? sourceTrackRaw
-      : row.case_type === 'comparable_forecast'
-        ? 'comparable_forecast'
-        : 'execution_quality';
-
-  const blockedRaw = payload.blocked ?? payload.isBlocked ?? payload.suppressed ?? false;
-  const blocked = blockedRaw === true || blockedRaw === 1;
-  const sizeMultiplierRaw = Number(payload.sizeMultiplier ?? payload.size_multiplier ?? NaN);
-  const sizeMultiplier = Number.isFinite(sizeMultiplierRaw) ? sizeMultiplierRaw : null;
-  const reason =
-    typeof payload.reason === 'string' && payload.reason.trim().length > 0
-      ? payload.reason
-      : typeof payload.suppressionReason === 'string' && payload.suppressionReason.trim().length > 0
-        ? payload.suppressionReason
-        : typeof payload.suppression_reason === 'string' && payload.suppression_reason.trim().length > 0
-          ? payload.suppression_reason
-          : null;
-  const actionRaw = payload.action ?? payload.policyAction ?? payload.policy_action;
-  const action =
-    actionRaw === 'block' ||
-    actionRaw === 'resize' ||
-    actionRaw === 'bias' ||
-    actionRaw === 'suppress' ||
-    actionRaw === 'prior_adjustment'
-      ? actionRaw
-      : actionFromReason(reason, blocked, sizeMultiplier);
-
-  return {
-    sourceTrack,
-    action,
-    scope: typeof payload.scope === 'string' && payload.scope.trim().length > 0
-      ? payload.scope
-      : typeof row.domain === 'string' && row.domain.trim().length > 0
-        ? row.domain
-        : 'global',
-    count: 1,
-    blocked,
-    sizeMultiplier,
-    reason,
-    updatedAt: row.updated_at ?? row.created_at ?? null,
-  };
-}
-
-function buildLearningCasePolicyOutputs(db: Database.Database): LearningAuditPolicyOutput[] {
-  if (!tableExists(db, 'learning_cases') || !tableHasColumn(db, 'learning_cases', 'policy_input_payload')) {
-    return [];
-  }
-  try {
-    const rows = db
-      .prepare(
-        `
-          SELECT domain, case_type, policy_input_payload, updated_at, created_at
-          FROM learning_cases
-          WHERE policy_input_payload IS NOT NULL
-            AND TRIM(policy_input_payload) != ''
-          ORDER BY COALESCE(updated_at, created_at) DESC
-          LIMIT 200
-        `
-      )
-      .all() as Array<{
-        domain?: string | null;
-        case_type?: string | null;
-        policy_input_payload?: string | null;
-        updated_at?: string | null;
-        created_at?: string | null;
-      }>;
-    const aggregates = new Map<string, LearningAuditPolicyOutput>();
-    for (const row of rows) {
-      const parsed = parseLearningCasePolicyOutput(row);
-      if (!parsed) continue;
-      const key = [
-        parsed.sourceTrack,
-        parsed.action,
-        parsed.scope,
-        parsed.blocked ? '1' : '0',
-        parsed.sizeMultiplier == null ? 'null' : parsed.sizeMultiplier.toFixed(6),
-        parsed.reason ?? '',
-      ].join('|');
-      const existing = aggregates.get(key);
-      if (existing) {
-        existing.count += 1;
-        if ((parsed.updatedAt ?? '') > (existing.updatedAt ?? '')) {
-          existing.updatedAt = parsed.updatedAt;
-        }
-      } else {
-        aggregates.set(key, { ...parsed });
-      }
-    }
-    return [...aggregates.values()].sort((a, b) => {
-      const updated = (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '');
-      if (updated !== 0) return updated;
-      return b.count - a.count;
-    });
-  } catch {
-    return [];
-  }
-}
-
-function buildLearningAuditSection(
-  db: Database.Database,
-  predictionAccuracy: PredictionAccuracySection,
-  policyState: ReturnType<typeof buildPolicyStateSection>
-): LearningAuditSection {
-  const empty: LearningAuditSection = {
-    comparable: { totalCaseCount: 0, byDomain: [] },
-    execution: { totalCaseCount: 0, byDomain: [] },
-    exclusions: { totalCaseCount: 0, byReason: [] },
-    policyOutputs: buildFallbackPolicyOutputs(policyState, predictionAccuracy),
-  };
-
-  if (tableExists(db, 'learning_cases')) {
-    const learningCaseCount = safeCount(db, 'SELECT COUNT(*) AS c FROM learning_cases');
-    if (learningCaseCount <= 0) {
-      return buildLearningAuditSectionFromFallback(db, predictionAccuracy, policyState);
-    }
-    const comparableSource = viewExists(db, 'comparable_learning_cases')
-      ? 'comparable_learning_cases'
-      : 'learning_cases';
-    const comparableWhere = comparableSource === 'learning_cases'
-      ? "WHERE case_type = 'comparable_forecast' AND comparable = 1"
-      : '';
-    const executionSource = viewExists(db, 'execution_learning_cases')
-      ? 'execution_learning_cases'
-      : 'learning_cases';
-    const executionWhere = executionSource === 'learning_cases'
-      ? "WHERE case_type = 'execution_quality'"
-      : '';
-    const comparableByDomain = listDomainCounts(
-      db,
-      `
-        SELECT domain, COUNT(*) AS count
-        FROM ${comparableSource}
-        ${comparableWhere}
-        GROUP BY domain
-        ORDER BY count DESC, domain ASC
-      `
-    );
-    const executionByDomain = listDomainCounts(
-      db,
-      `
-        SELECT domain, COUNT(*) AS count
-        FROM ${executionSource}
-        ${executionWhere}
-        GROUP BY domain
-        ORDER BY count DESC, domain ASC
-      `
-    );
-    const exclusionRows = tableHasColumn(db, 'learning_cases', 'exclusion_reason')
-      ? (() => {
-          try {
-            const rows = db
-              .prepare(
-                `
-                  SELECT COALESCE(NULLIF(TRIM(exclusion_reason), ''), 'excluded_unspecified') AS reason,
-                         COUNT(*) AS count
-                  FROM learning_cases
-                  WHERE comparable = 0
-                  GROUP BY 1
-                  ORDER BY count DESC, reason ASC
-                `
-              )
-              .all() as Array<{ reason?: string | null; count?: number | null }>;
-            return rows
-              .map((row) => ({
-                reason: typeof row.reason === 'string' && row.reason.trim().length > 0 ? row.reason : 'excluded_unspecified',
-                count: Number(row.count ?? 0),
-              }))
-              .filter((row) => Number.isFinite(row.count) && row.count > 0);
-          } catch {
-            return [] as LearningAuditExclusionCount[];
-          }
-        })()
-      : [];
-    const policyOutputs = buildLearningCasePolicyOutputs(db);
-    return {
-      comparable: {
-        totalCaseCount: comparableByDomain.reduce((sum, row) => sum + row.count, 0),
-        byDomain: comparableByDomain,
-      },
-      execution: {
-        totalCaseCount: executionByDomain.reduce((sum, row) => sum + row.count, 0),
-        byDomain: executionByDomain,
-      },
-      exclusions: {
-        totalCaseCount: exclusionRows.reduce((sum, row) => sum + row.count, 0),
-        byReason: exclusionRows,
-      },
-      policyOutputs: policyOutputs.length > 0 ? policyOutputs : empty.policyOutputs,
-    };
-  }
-
-  return buildLearningAuditSectionFromFallback(db, predictionAccuracy, policyState);
-}
-
-function parseSignalWeightRecord(value: string | null): LearningObservabilityWeightsRow['weights'] {
-  const parsed = parseJson<Record<string, unknown>>(value);
-  if (!parsed) return null;
-  const technical = Number(parsed.technical);
-  const news = Number(parsed.news);
-  const onChain = Number(parsed.onChain);
-  if (![technical, news, onChain].every((entry) => Number.isFinite(entry))) {
-    return null;
-  }
-  return { technical, news, onChain };
-}
-
-function buildLearningObservabilitySection(
-  db: Database.Database
-): LearningObservabilitySection {
-  const runtime = getLearningRuntimeContext(db);
-  const activeWeights = tableExists(db, 'signal_weights')
-    ? (() => {
-        try {
-          const rows = db.prepare(
-            `
-              SELECT domain, weights, samples, updated_at AS updatedAt
-              FROM signal_weights
-              ORDER BY domain ASC
-            `
-          ).all() as Array<{
-            domain?: string | null;
-            weights?: string | null;
-            samples?: number | null;
-            updatedAt?: string | null;
-          }>;
-          return rows.map((row) => ({
-            domain: typeof row.domain === 'string' && row.domain.trim().length > 0 ? row.domain : 'unknown',
-            weights: parseSignalWeightRecord(row.weights ?? null),
-            samples: Number(row.samples ?? 0),
-            updatedAt: row.updatedAt ?? null,
-          }));
-        } catch {
-          return [] as LearningObservabilityWeightsRow[];
-        }
-      })()
-    : [];
-
-  if (!tableExists(db, 'learning_signal_audits')) {
-    return {
-      runtimeContext: runtime,
-      activeWeights,
-      totalShadowAudits: 0,
-      runSummaries: [],
-      recentAudits: [],
-    };
-  }
-
-  const totalShadowAudits = safeCount(db, 'SELECT COUNT(*) AS c FROM learning_signal_audits');
-  const runSummaries = (() => {
-    try {
-      const rows = db.prepare(
-        `
-          SELECT
-            run_id AS runId,
-            policy_version AS policyVersion,
-            COUNT(*) AS eventCount,
-            SUM(changed_vs_default) AS changedVsDefaultCount,
-            SUM(changed_after_update) AS changedAfterUpdateCount,
-            AVG(decision_confidence - baseline_confidence) AS avgConfidenceDeltaVsDefault,
-            AVG(active_confidence_after - decision_confidence) AS avgConfidenceDeltaAfterUpdate,
-            MAX(created_at) AS lastRecordedAt
-          FROM learning_signal_audits
-          GROUP BY run_id, policy_version
-          ORDER BY lastRecordedAt DESC, eventCount DESC
-          LIMIT 20
-        `
-      ).all() as Array<Record<string, unknown>>;
-      return rows.map((row) => ({
-        runId: String(row.runId ?? 'unknown'),
-        policyVersion: String(row.policyVersion ?? 'unknown'),
-        eventCount: Number(row.eventCount ?? 0),
-        changedVsDefaultCount: Number(row.changedVsDefaultCount ?? 0),
-        changedAfterUpdateCount: Number(row.changedAfterUpdateCount ?? 0),
-        avgConfidenceDeltaVsDefault:
-          row.avgConfidenceDeltaVsDefault == null ? null : Number(row.avgConfidenceDeltaVsDefault),
-        avgConfidenceDeltaAfterUpdate:
-          row.avgConfidenceDeltaAfterUpdate == null ? null : Number(row.avgConfidenceDeltaAfterUpdate),
-        lastRecordedAt: row.lastRecordedAt == null ? null : String(row.lastRecordedAt),
-      }));
-    } catch {
-      return [] as LearningObservabilityRunSummary[];
-    }
-  })();
-
-  const recentAudits = (() => {
-    try {
-      const rows = db.prepare(
-        `
-          SELECT
-            domain,
-            run_id AS runId,
-            policy_version AS policyVersion,
-            baseline_direction AS baselineDirection,
-            decision_direction AS decisionDirection,
-            active_direction_after AS activeDirectionAfter,
-            changed_vs_default AS changedVsDefault,
-            changed_after_update AS changedAfterUpdate,
-            (decision_confidence - baseline_confidence) AS confidenceDeltaVsDefault,
-            (active_confidence_after - decision_confidence) AS confidenceDeltaAfterUpdate,
-            created_at AS createdAt
-          FROM learning_signal_audits
-          ORDER BY created_at DESC, id DESC
-          LIMIT 20
-        `
-      ).all() as Array<Record<string, unknown>>;
-      return rows.map((row) => ({
-        domain: String(row.domain ?? 'unknown'),
-        runId: String(row.runId ?? 'unknown'),
-        policyVersion: String(row.policyVersion ?? 'unknown'),
-        baselineDirection: String(row.baselineDirection ?? 'unknown'),
-        decisionDirection: String(row.decisionDirection ?? 'unknown'),
-        activeDirectionAfter: String(row.activeDirectionAfter ?? 'unknown'),
-        changedVsDefault: Number(row.changedVsDefault ?? 0) === 1,
-        changedAfterUpdate: Number(row.changedAfterUpdate ?? 0) === 1,
-        confidenceDeltaVsDefault:
-          row.confidenceDeltaVsDefault == null ? null : Number(row.confidenceDeltaVsDefault),
-        confidenceDeltaAfterUpdate:
-          row.confidenceDeltaAfterUpdate == null ? null : Number(row.confidenceDeltaAfterUpdate),
-        createdAt: row.createdAt == null ? null : String(row.createdAt),
-      }));
-    } catch {
-      return [] as LearningObservabilityRecentAudit[];
-    }
-  })();
-
-  return {
-    runtimeContext: runtime,
-    activeWeights,
-    totalShadowAudits,
-    runSummaries,
-    recentAudits,
-  };
-}
-
-function buildLearningAuditSectionFromFallback(
-  db: Database.Database,
-  predictionAccuracy: PredictionAccuracySection,
-  policyState: ReturnType<typeof buildPolicyStateSection>
-): LearningAuditSection {
-  const emptyPolicyOutputs = buildFallbackPolicyOutputs(policyState, predictionAccuracy);
-  const comparableByDomain = listDomainCounts(
-    db,
-    `
-      SELECT COALESCE(NULLIF(TRIM(domain), ''), 'unknown') AS domain, COUNT(*) AS count
-      FROM learning_examples
-      GROUP BY domain
-      ORDER BY count DESC, domain ASC
-    `
-  );
-  const executionRows = listExecutionFallbackRows(db);
-  const executionByDomainMap = new Map<string, number>();
-  for (const row of executionRows) {
-    executionByDomainMap.set(row.domain, (executionByDomainMap.get(row.domain) ?? 0) + 1);
-  }
-  const executionByDomain = [...executionByDomainMap.entries()]
-    .map(([domain, count]) => ({ domain, count }))
-    .sort((a, b) => b.count - a.count || a.domain.localeCompare(b.domain));
-  const exclusionRows = buildFallbackExclusionCounts(db);
-
-  return {
-    comparable: {
-      totalCaseCount: comparableByDomain.reduce((sum, row) => sum + row.count, 0),
-      byDomain: comparableByDomain,
-    },
-    execution: {
-      totalCaseCount: executionRows.length,
-      byDomain: executionByDomain,
-    },
-    exclusions: {
-      totalCaseCount: exclusionRows.reduce((sum, row) => sum + row.count, 0),
-      byReason: exclusionRows,
-    },
-    policyOutputs: emptyPolicyOutputs,
-  };
-}
 type LiveWalletSnapshot = {
   equityCurve: EquityCurveSection;
   openPositions: {
@@ -2223,6 +1447,67 @@ type PerformanceBreakdownRow = {
   sampleCount: number;
 };
 
+type GateAttributionSection = {
+  config: {
+    minEdge: number | null;
+    requireHighConfidence: boolean;
+    maxTradesPerScan: number | null;
+    llmEntryGateEnabled: boolean;
+    tradeQualityEnabled: boolean;
+    calibrationRiskEnabled: boolean;
+    signalPerformanceMinSharpe: number | null;
+    signalPerformanceMinSamples: number | null;
+  };
+  policyState: {
+    observationMode: boolean;
+    minEdgeOverride: number | null;
+    maxTradesPerScanOverride: number | null;
+    leverageCapOverride: number | null;
+    reason: string | null;
+    updatedAt: string | null;
+  };
+  entryGate: {
+    verdictCounts: {
+      approve: number;
+      reject: number;
+      resize: number;
+    };
+    reasonCounts: Array<{
+      reasonCode: string;
+      count: number;
+    }>;
+    recentDecisions: Array<{
+      createdAt: string;
+      symbol: string;
+      verdict: string;
+      reasonCode: string | null;
+      adjustedSizeUsd: number | null;
+      suggestedLeverage: number | null;
+      reasoning: string;
+    }>;
+  };
+  journal: {
+    outcomeCounts: {
+      executed: number;
+      failed: number;
+      blocked: number;
+    };
+    blockedReasons: Array<{
+      reason: string;
+      count: number;
+    }>;
+    recentPolicyAdjustments: Array<{
+      createdAt: string;
+      symbol: string;
+      policyReasonCode: string | null;
+      policySizeMultiplier: number | null;
+      entryGateVerdict: string | null;
+      entryGateReasonCode: string | null;
+      reasoning: string | null;
+    }>;
+  };
+};
+
 function resolveJournalOutcome(payload: Record<string, unknown>): 'executed' | 'failed' | 'blocked' | 'unknown' {
   const raw = String(payload.outcome ?? '')
     .trim()
@@ -2493,7 +1778,6 @@ function buildPolicyStateSection(db: Database.Database): {
   drawdownCapRemainingUsd: number | null;
   tradesRemainingToday: number | null;
   updatedAt: string | null;
-  reason: string | null;
 } {
   const defaults = {
     observationMode: false,
@@ -2501,7 +1785,6 @@ function buildPolicyStateSection(db: Database.Database): {
     drawdownCapRemainingUsd: null,
     tradesRemainingToday: null,
     updatedAt: null,
-    reason: null,
   } as const;
 
   if (!tableExists(db, 'autonomy_policy_state')) {
@@ -2513,7 +1796,6 @@ function buildPolicyStateSection(db: Database.Database): {
   let drawdownCapRemainingUsdRaw: unknown = null;
   let tradesRemainingTodayRaw: unknown = null;
   let updatedAtRaw: unknown = null;
-  let reasonRaw: unknown = null;
   try {
     if (tableHasColumn(db, 'autonomy_policy_state', 'payload')) {
       const row = db
@@ -2540,7 +1822,6 @@ function buildPolicyStateSection(db: Database.Database): {
             payload.drawdown_cap_remaining_usd ??
             payload.drawdownRemainingUsd ??
             null;
-          reasonRaw = payload.reason ?? null;
           tradesRemainingTodayRaw =
             payload.tradesRemainingToday ??
             payload.trades_remaining_today ??
@@ -2655,7 +1936,6 @@ function buildPolicyStateSection(db: Database.Database): {
     drawdownCapRemainingUsd: drawdownCapRemainingUsdFinal,
     tradesRemainingToday,
     updatedAt: updatedAtRaw ? String(updatedAtRaw) : null,
-    reason: typeof reasonRaw === 'string' && reasonRaw.trim().length > 0 ? String(reasonRaw) : null,
   };
 }
 
@@ -2667,7 +1947,7 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
     config = null;
   }
 
-  const section: GateAttributionSection = {
+  const empty: GateAttributionSection = {
     config: {
       minEdge: null,
       requireHighConfidence: false,
@@ -2707,7 +1987,7 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
   };
 
   if (config) {
-    section.config = {
+    empty.config = {
       minEdge: Number.isFinite(Number((config.autonomy as any)?.minEdge))
         ? Number((config.autonomy as any)?.minEdge)
         : null,
@@ -2739,7 +2019,7 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
       if (row?.payload) {
         const payload = JSON.parse(row.payload) as Record<string, unknown>;
         const observationOnlyUntilMs = Number(payload.observationOnlyUntilMs ?? NaN);
-        section.policyState = {
+        empty.policyState = {
           observationMode: Number.isFinite(observationOnlyUntilMs) && observationOnlyUntilMs > Date.now(),
           minEdgeOverride: Number.isFinite(Number(payload.minEdgeOverride))
             ? Number(payload.minEdgeOverride)
@@ -2757,7 +2037,7 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
         };
       }
     } catch {
-      // keep defaults
+      // keep empty policy state
     }
   }
 
@@ -2774,13 +2054,13 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
         const verdict = String(row.verdict ?? '').trim().toLowerCase();
         const count = Number(row.count ?? 0);
         if (verdict === 'approve' || verdict === 'reject' || verdict === 'resize') {
-          section.entryGate.verdictCounts[verdict] = count;
+          empty.entryGate.verdictCounts[verdict] = count;
         }
       }
 
       const hasReasonCode = tableHasColumn(db, 'llm_entry_gate_log', 'reason_code');
       if (hasReasonCode) {
-        section.entryGate.reasonCounts = (db.prepare(
+        empty.entryGate.reasonCounts = (db.prepare(
           `
             SELECT COALESCE(NULLIF(TRIM(reason_code), ''), 'unknown') AS reasonCode,
                    COUNT(*) AS count
@@ -2808,7 +2088,7 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
             ORDER BY id DESC
             LIMIT 15
           `;
-      section.entryGate.recentDecisions = (db.prepare(recentSql).all() as Array<{
+      empty.entryGate.recentDecisions = (db.prepare(recentSql).all() as Array<{
         created_at?: string | null;
         symbol?: string | null;
         verdict?: string | null;
@@ -2826,12 +2106,12 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
         reasoning: String(row.reasoning ?? ''),
       }));
     } catch {
-      // keep defaults
+      // keep empty gate data
     }
   }
 
   if (!tableExists(db, 'decision_artifacts')) {
-    return section;
+    return empty;
   }
 
   try {
@@ -2846,27 +2126,33 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
     ).all() as Array<{ payload?: string | null; created_at?: string | null }>;
 
     const blockedReasonCounts = new Map<string, number>();
+    const recentPolicyAdjustments: GateAttributionSection['journal']['recentPolicyAdjustments'] = [];
+
     for (const row of rows) {
-      const payload = parseJson<Record<string, unknown>>(row.payload ?? null);
-      if (!payload) continue;
+      if (!row.payload) continue;
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(row.payload) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
 
       const outcome = resolveJournalOutcome(payload);
       if (outcome === 'executed' || outcome === 'failed' || outcome === 'blocked') {
-        section.journal.outcomeCounts[outcome] += 1;
+        empty.journal.outcomeCounts[outcome] += 1;
       }
 
       if (outcome === 'blocked') {
-        const reason = String(payload.reasoning ?? payload.error ?? 'unknown').trim().slice(0, 120) || 'unknown';
+        const reason = String(payload.reasoning ?? payload.error ?? 'unknown')
+          .trim()
+          .slice(0, 120) || 'unknown';
         blockedReasonCounts.set(reason, (blockedReasonCounts.get(reason) ?? 0) + 1);
       }
 
       const policySizeMultiplier = Number(payload.policySizeMultiplier ?? NaN);
-      if (
-        Number.isFinite(policySizeMultiplier) &&
-        policySizeMultiplier < 1 &&
-        section.journal.recentPolicyAdjustments.length < 12
-      ) {
-        section.journal.recentPolicyAdjustments.push({
+      const hasPolicyAdjustment = Number.isFinite(policySizeMultiplier) && policySizeMultiplier < 1;
+      if (hasPolicyAdjustment && recentPolicyAdjustments.length < 12) {
+        recentPolicyAdjustments.push({
           createdAt: row.created_at ? String(row.created_at) : '',
           symbol: typeof payload.symbol === 'string' ? payload.symbol : '',
           policyReasonCode:
@@ -2890,15 +2176,16 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
       }
     }
 
-    section.journal.blockedReasons = [...blockedReasonCounts.entries()]
+    empty.journal.blockedReasons = [...blockedReasonCounts.entries()]
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
       .slice(0, 12);
+    empty.journal.recentPolicyAdjustments = recentPolicyAdjustments;
   } catch {
-    return section;
+    return empty;
   }
 
-  return section;
+  return empty;
 }
 
 export function buildDashboardApiPayload(params?: {
@@ -2951,16 +2238,12 @@ export function buildDashboardApiPayload(params?: {
       drawdownCapRemainingUsd: number | null;
       tradesRemainingToday: number | null;
       updatedAt: string | null;
-      reason: string | null;
     };
     performanceBreakdown: {
       bySignalClass: unknown[];
       byRegime: unknown[];
       bySession: unknown[];
     };
-    predictionAccuracy: PredictionAccuracySection;
-    learningAudit: LearningAuditSection;
-    learningObservability: LearningObservabilitySection;
     gateAttribution: GateAttributionSection;
   };
 } {
@@ -2997,7 +2280,6 @@ export function buildDashboardApiPayload(params?: {
   const promotionGateRows = listPromotionGateRows(db, filters);
   const policyState = buildPolicyStateSection(db);
   const performanceBreakdown = listPerformanceBreakdown(db, filters);
-  const predictionAccuracy = buildPredictionAccuracySection(db);
   const gateAttribution = buildGateAttributionSection(db);
 
   return {
@@ -3038,16 +2320,12 @@ export function buildDashboardApiPayload(params?: {
         drawdownCapRemainingUsd: policyState.drawdownCapRemainingUsd,
         tradesRemainingToday: policyState.tradesRemainingToday,
         updatedAt: policyState.updatedAt,
-        reason: policyState.reason,
       },
       performanceBreakdown: {
         bySignalClass: performanceBreakdown.bySignalClass,
         byRegime: performanceBreakdown.byRegime,
         bySession: performanceBreakdown.bySession,
       },
-      predictionAccuracy,
-      learningAudit: buildLearningAuditSection(db, predictionAccuracy, policyState),
-      learningObservability: buildLearningObservabilitySection(db),
       gateAttribution,
     },
   };

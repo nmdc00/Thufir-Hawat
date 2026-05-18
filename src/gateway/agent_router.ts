@@ -90,6 +90,10 @@ function mergeConfig(
         ...base.autonomy.tradeQuality,
         ...(override?.autonomy?.tradeQuality ?? {}),
       },
+      tradePolicyAdjustments: {
+        ...base.autonomy.tradePolicyAdjustments,
+        ...(override?.autonomy?.tradePolicyAdjustments ?? {}),
+      },
       newsEntry: {
         ...base.autonomy.newsEntry,
         ...(override?.autonomy?.newsEntry ?? {}),

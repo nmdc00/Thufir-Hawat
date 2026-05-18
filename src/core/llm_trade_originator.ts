@@ -3,7 +3,7 @@ import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
 import type { BookEntry } from './position_book.js';
 import type { TaSnapshot } from './ta_surface.js';
-import { gatherMarketContext, type MarketContextDomain } from '../markets/context.js';
+import { gatherMarketContext } from '../markets/context.js';
 import { recordTradeProposal } from '../memory/llm_trade_proposals.js';
 import { Logger } from './logger.js';
 import type { ToolExecutorContext } from './tool-executor.js';
@@ -27,12 +27,9 @@ export interface OriginationInputBundle {
   taSnapshots: TaSnapshot[];
   marketContext: string;
   recentEvents: string;
-  eventContext?: string;
-  similarityContext?: string;
   alertedSymbols: string[];
   performanceSummary?: string;
   triggerReason?: 'cadence' | 'ta_alert' | 'event';
-  contextDomain?: MarketContextDomain;
 }
 
 const ProposalSchema = z.object({
@@ -56,7 +53,7 @@ Missing an exceptional opportunity is costly. Taking mediocre trades is worse. A
 
 ## Scanning discipline
 
-Scan ALL symbols in the market data. BTC and ETH are rarely the best opportunity. The edge may be in a crypto perp, an oil contract, a metals squeeze, or a macro-sensitive proxy reacting to fresh news. Start from the data and the event context, not from habit.
+Scan ALL symbols in the market data. BTC and ETH are rarely the best opportunity — the edge is often in the symbol with unusual funding, OI, volume, positioning, or event pressure. Start from the data, not from habit.
 
 ## Default posture
 
@@ -109,8 +106,6 @@ A valid proposal requires ALL of: symbol, side, thesisText, invalidationConditio
 
 Return null when the setup is ordinary, crowded without edge, too fuzzy to invalidate cleanly, or does not clearly justify capital deployment right now. Do not manufacture trades to avoid being inactive.
 
-If event intelligence includes historical analogs or open forecasts, use them. They are not instructions, but they are evidence about mechanism, likely assets, and what has worked or failed before.
-
 Respond with ONLY valid JSON matching this schema OR the literal string "null":
 {"symbol":"...","side":"long"|"short","thesisText":"...","invalidationCondition":"...","invalidationPrice":number,"suggestedTtlMinutes":number,"confidence":number,"leverage":number,"expectedRMultiple":number,"tradeType":"scalp"|"tactical"|"structural"}`;
 
@@ -161,10 +156,6 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     : '(not available)';
 
   const eventsSection = bundle.recentEvents ? bundle.recentEvents.slice(0, 500) : '(none)';
-  const eventContextSection = bundle.eventContext ? bundle.eventContext.slice(0, 1500) : '(none)';
-  const similarityContextSection = bundle.similarityContext
-    ? bundle.similarityContext.slice(0, 1200)
-    : '(none)';
 
   return [
     '## Open Positions',
@@ -178,15 +169,6 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     '',
     '## Recent Events (last 2h)',
     eventsSection,
-    '',
-    '## Event Intelligence',
-    eventContextSection,
-    '',
-    '## Similar Historical Cases',
-    similarityContextSection,
-    '',
-    '## Signal Class Track Record',
-    bundle.performanceSummary ?? '(no history yet)',
     '',
     '## Instruction',
     'Find ONE trade only if it is genuinely worth deploying capital into right now. Prefer symbols with no current book exposure. If you propose a symbol already in the book, you must name a specific new catalyst in thesisText that justifies adding to that position. Return null if no setup is sufficiently asymmetric, timely, and cleanly invalidated.',
@@ -247,146 +229,6 @@ function parseProposal(raw: string): TradeProposal | null {
   }
 }
 
-function normalizeComparableSymbol(symbol: string): string {
-  return String(symbol ?? '')
-    .trim()
-    .toUpperCase()
-    .replace(/\/USDT$/i, '')
-    .replace(/\/USD$/i, '')
-    .replace(/^XYZ:/i, '');
-}
-
-function findSnapshotPrice(proposal: TradeProposal, snapshots: TaSnapshot[]): number | null {
-  const proposalSymbol = normalizeComparableSymbol(proposal.symbol);
-  const match = snapshots.find((snapshot) => normalizeComparableSymbol(snapshot.symbol) === proposalSymbol);
-  return match && Number.isFinite(match.price) && match.price > 0 ? match.price : null;
-}
-
-function resolveTtlBoundsMinutes(
-  tradeType: TradeProposal['tradeType']
-): { min: number; max: number } {
-  switch (tradeType) {
-    case 'scalp':
-      return { min: 5, max: 90 };
-    case 'structural':
-      return { min: 60, max: 48 * 60 };
-    case 'tactical':
-    default:
-      return { min: 15, max: 6 * 60 };
-  }
-}
-
-function resolveMaxStopDistance(
-  tradeType: TradeProposal['tradeType']
-): number {
-  switch (tradeType) {
-    case 'scalp':
-      return 0.03;
-    case 'structural':
-      return 0.35;
-    case 'tactical':
-    default:
-      return 0.12;
-  }
-}
-
-function validateProposalAgainstMarketContext(
-  proposal: TradeProposal,
-  snapshots: TaSnapshot[]
-): TradeProposal | null {
-  if (!Number.isFinite(proposal.invalidationPrice) || proposal.invalidationPrice <= 0) {
-    logger.warn('LlmTradeOriginator: proposal rejected by invalidation_price_validation', {
-      symbol: proposal.symbol,
-      invalidationPrice: proposal.invalidationPrice,
-      reason: 'non_positive_or_non_finite',
-    });
-    return null;
-  }
-
-  if (!Number.isFinite(proposal.suggestedTtlMinutes) || proposal.suggestedTtlMinutes <= 0) {
-    logger.warn('LlmTradeOriginator: proposal rejected by ttl_validation', {
-      symbol: proposal.symbol,
-      suggestedTtlMinutes: proposal.suggestedTtlMinutes,
-      reason: 'non_positive_or_non_finite',
-    });
-    return null;
-  }
-
-  const ttlBounds = resolveTtlBoundsMinutes(proposal.tradeType);
-  if (
-    proposal.suggestedTtlMinutes < ttlBounds.min ||
-    proposal.suggestedTtlMinutes > ttlBounds.max
-  ) {
-    logger.warn('LlmTradeOriginator: proposal rejected by ttl_validation', {
-      symbol: proposal.symbol,
-      tradeType: proposal.tradeType,
-      suggestedTtlMinutes: proposal.suggestedTtlMinutes,
-      bounds: ttlBounds,
-    });
-    return null;
-  }
-
-  const snapshotPrice = findSnapshotPrice(proposal, snapshots);
-  if (snapshotPrice == null) {
-    return proposal;
-  }
-
-  const invalidationOnWrongSide =
-    proposal.side === 'long'
-      ? proposal.invalidationPrice >= snapshotPrice
-      : proposal.invalidationPrice <= snapshotPrice;
-  if (invalidationOnWrongSide) {
-    logger.warn('LlmTradeOriginator: proposal rejected by invalidation_side_validation', {
-      symbol: proposal.symbol,
-      side: proposal.side,
-      invalidationPrice: proposal.invalidationPrice,
-      snapshotPrice,
-    });
-    return null;
-  }
-
-  const stopDistance = Math.abs(snapshotPrice - proposal.invalidationPrice) / snapshotPrice;
-  if (!Number.isFinite(stopDistance) || stopDistance < 0.001) {
-    logger.warn('LlmTradeOriginator: proposal rejected by stop_distance_validation', {
-      symbol: proposal.symbol,
-      side: proposal.side,
-      invalidationPrice: proposal.invalidationPrice,
-      snapshotPrice,
-      stopDistance,
-      reason: 'too_tight_or_non_finite',
-    });
-    return null;
-  }
-
-  const maxStopDistance = resolveMaxStopDistance(proposal.tradeType);
-  if (stopDistance > maxStopDistance) {
-    logger.warn('LlmTradeOriginator: proposal rejected by stop_distance_validation', {
-      symbol: proposal.symbol,
-      side: proposal.side,
-      tradeType: proposal.tradeType,
-      invalidationPrice: proposal.invalidationPrice,
-      snapshotPrice,
-      stopDistance,
-      maxStopDistance,
-      reason: 'too_wide',
-    });
-    return null;
-  }
-
-  const leverageCeiling = 0.7 / stopDistance;
-  if (proposal.leverage > leverageCeiling) {
-    logger.warn('LlmTradeOriginator: proposal rejected by leverage_validation', {
-      symbol: proposal.symbol,
-      leverage: proposal.leverage,
-      leverageCeiling,
-      stopDistance,
-    });
-    return null;
-  }
-
-  return proposal;
-}
-
 export class LlmTradeOriginator {
   private contextCache: { key: string; value: string; expiresAt: number } | null = null;
 
@@ -397,15 +239,18 @@ export class LlmTradeOriginator {
     private toolContext?: ToolExecutorContext,
   ) {}
 
-  private async getMarketContext(bundle?: Pick<OriginationInputBundle, 'contextDomain' | 'taSnapshots'>): Promise<string> {
+  private async getMarketContext(signalSymbols: string[] = []): Promise<string> {
     const now = Date.now();
-    const domain = bundle?.contextDomain ?? 'crypto';
-    const normalizedSymbols = (bundle?.taSnapshots ?? [])
-      .map((snapshot) => String(snapshot.symbol ?? '').trim().toUpperCase())
+    const normalizedSymbols = signalSymbols
+      .map((symbol) => String(symbol ?? '').trim().toUpperCase())
       .filter(Boolean)
       .slice(0, 3);
-    const cacheKey = `${domain}:${normalizedSymbols.join(',') || 'default'}`;
-    if (this.contextCache && this.contextCache.key === cacheKey && this.contextCache.expiresAt > now) {
+    const cacheKey = normalizedSymbols.join(',') || 'default';
+    if (
+      this.contextCache &&
+      this.contextCache.key === cacheKey &&
+      this.contextCache.expiresAt > now
+    ) {
       return this.contextCache.value;
     }
     try {
@@ -419,10 +264,10 @@ export class LlmTradeOriginator {
         {
           message:
             normalizedSymbols.length > 0
-              ? `${domain} markets overview for ${normalizedSymbols.join(', ')}`
-              : `${domain} markets overview`,
-          domain,
-          marketLimit: domain === 'crypto' ? 20 : 50,
+              ? `crypto perpetual markets overview for ${normalizedSymbols.join(', ')}`
+              : 'crypto perpetual markets overview',
+          domain: 'crypto',
+          marketLimit: 20,
           signalSymbols: normalizedSymbols,
         },
         executeTool
@@ -450,7 +295,12 @@ export class LlmTradeOriginator {
     // Supplement marketContext from internal cache when bundle doesn't provide it
     const effectiveBundle: OriginationInputBundle = bundle.marketContext
       ? bundle
-      : { ...bundle, marketContext: await this.getMarketContext(bundle) };
+      : {
+          ...bundle,
+          marketContext: await this.getMarketContext(
+            bundle.taSnapshots.map((snapshot) => snapshot.symbol)
+          ),
+        };
 
     const userMessage = buildUserMessage(effectiveBundle);
     let proposal: TradeProposal | null = null;
@@ -503,10 +353,6 @@ export class LlmTradeOriginator {
         minConfidence,
       });
       proposal = null;
-    }
-
-    if (proposal !== null) {
-      proposal = validateProposalAgainstMarketContext(proposal, effectiveBundle.taSnapshots);
     }
 
     // Write to DB

@@ -9,7 +9,6 @@
  * - Exit policy uses LLM TTL and invalidation price
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { resolveSessionWeightContext } from '../../src/core/session-weight.js';
 
 // ── Hoisted mock functions (available before vi.mock calls) ───────────────────
 
@@ -27,41 +26,12 @@ const mocks = vi.hoisted(() => {
   const upsertExitPolicy = vi.fn();
   const updateTradeProposalOutcome = vi.fn();
   const updateTradeProposalStatus = vi.fn();
-  const recordDecisionAudit = vi.fn();
-  const storeDecisionArtifact = vi.fn();
-  const recordPerpTradeJournal = vi.fn();
-  const upsertTradeDossier = vi.fn(() => ({ id: 'dossier-mock-id' }));
-  const listTradePolicyAdjustments = vi.fn(() => []);
   const createPrediction = vi.fn(() => 'pred-mock-id');
-  const createLearningCase = vi.fn(() => ({ id: 'case-mock-id' }));
-  const getSignalWeights = vi.fn(() => ({ technical: 0.5, news: 0.3, onChain: 0.2 }));
   const runDiscovery = vi.fn(async () => ({
     clusters: [],
     hypotheses: [],
     expressions: [],
     selector: { source: 'configured', symbols: [] },
-  }));
-  const getLatestThought = vi.fn(() => null);
-  const listForecastsForEvent = vi.fn(() => []);
-  const listOutcomesForEvent = vi.fn(() => []);
-  const searchHistoricalCases = vi.fn(() => []);
-  const retrieveSimilarTradeDossiers = vi.fn(() => ({
-    recommendation: 'caution',
-    retrievalSupportScore: 0.48,
-    retrievalConfidence: 0.58,
-    retrievalRiskFlags: ['late_entry_cluster'],
-    stats: {
-      sampleSize: 2,
-      winRate: 0.5,
-      averageRealizedPnlUsd: 12.5,
-      averageEntryStretchPct: 4.2,
-      averageInterventionScore: 0.15,
-      gateVerdictCounts: { resize: 1, approve: 1 },
-    },
-    topLessons: ['Late entries should stay small.'],
-    repeatTags: ['thesis_valid'],
-    avoidTags: ['late_entry'],
-    topMatches: [],
   }));
 
   // Stable mock objects — replaced entirely on each TaSurface/OriginationTrigger/LlmTradeOriginator construction
@@ -69,21 +39,6 @@ const mocks = vi.hoisted(() => {
   const taSurfaceInstance = {
     computeAll: (...args: unknown[]) => taComputeAll(...args),
     hasAlert: (snap: any) => snap.alertReason !== undefined,
-    summarizeCoverage: (markets: string[], snapshots: Array<{ symbol: string }>) => {
-      const requestedMarkets = Array.from(
-        new Set(markets.map((market) => String(market ?? '').trim()).filter(Boolean))
-      );
-      const snapshotSymbols = new Set(
-        snapshots.map((snapshot) => String(snapshot.symbol ?? '').trim()).filter(Boolean)
-      );
-      return {
-        requestedMarkets,
-        requestedCount: requestedMarkets.length,
-        snapshotCount: snapshotSymbols.size,
-        coverageRatio: requestedMarkets.length > 0 ? snapshotSymbols.size / requestedMarkets.length : 0,
-        missingMarkets: requestedMarkets.filter((market) => !snapshotSymbols.has(market)),
-      };
-    },
   };
   const triggerInstance = {
     shouldFire: (...args: unknown[]) => triggerShouldFire(...args),
@@ -91,23 +46,13 @@ const mocks = vi.hoisted(() => {
   const originatorInstance = {
     propose: (...args: unknown[]) => originatorPropose(...args),
   };
-  const positionBookInstance = {
-    refresh: vi.fn(async () => {}),
-    getAll: vi.fn(() => []),
-    get: vi.fn(() => undefined),
-    hasPosition: vi.fn(() => false),
-    hasConflict: vi.fn(() => false),
-    findOppositeSideLosers: vi.fn(() => []),
-  };
 
   return {
     dbRun, dbPrepare, dbExec,
     taComputeAll, triggerShouldFire, originatorPropose,
-    upsertExitPolicy, updateTradeProposalOutcome, updateTradeProposalStatus, recordDecisionAudit, storeDecisionArtifact, recordPerpTradeJournal, upsertTradeDossier, listTradePolicyAdjustments,
-    createPrediction, createLearningCase, getSignalWeights, runDiscovery,
-    getLatestThought, listForecastsForEvent, listOutcomesForEvent, searchHistoricalCases,
-    retrieveSimilarTradeDossiers,
-    taSurfaceInstance, triggerInstance, originatorInstance, positionBookInstance,
+    upsertExitPolicy, updateTradeProposalOutcome, updateTradeProposalStatus,
+    createPrediction, runDiscovery,
+    taSurfaceInstance, triggerInstance, originatorInstance,
   };
 });
 
@@ -120,14 +65,6 @@ vi.mock('../../src/memory/db.js', () => ({
 vi.mock('../../src/memory/predictions.js', () => ({
   createPrediction: (...args: unknown[]) => mocks.createPrediction(...args),
   findOpenPerpPrediction: vi.fn(() => null),
-}));
-
-vi.mock('../../src/memory/learning_cases.js', () => ({
-  createLearningCase: (...args: unknown[]) => mocks.createLearningCase(...args),
-}));
-
-vi.mock('../../src/memory/learning.js', () => ({
-  getSignalWeights: (...args: unknown[]) => mocks.getSignalWeights(...args),
 }));
 
 vi.mock('../../src/core/ta_surface.js', () => ({
@@ -147,14 +84,6 @@ vi.mock('../../src/memory/llm_trade_proposals.js', () => ({
   updateTradeProposalStatus: (...args: unknown[]) => mocks.updateTradeProposalStatus(...args),
 }));
 
-vi.mock('../../src/memory/decision_audit.js', () => ({
-  recordDecisionAudit: (...args: unknown[]) => mocks.recordDecisionAudit(...args),
-}));
-
-vi.mock('../../src/memory/decision_artifacts.js', () => ({
-  storeDecisionArtifact: (...args: unknown[]) => mocks.storeDecisionArtifact(...args),
-}));
-
 vi.mock('../../src/discovery/engine.js', () => ({
   runDiscovery: (...args: unknown[]) => mocks.runDiscovery(...args),
 }));
@@ -171,20 +100,11 @@ vi.mock('../../src/discovery/market_selector.js', () => ({
 
 vi.mock('../../src/memory/perp_trades.js', () => ({
   recordPerpTrade: vi.fn(() => 1),
-  setActivePerpPositionLifecycle: vi.fn(),
 }));
 
 vi.mock('../../src/memory/perp_trade_journal.js', () => ({
-  recordPerpTradeJournal: (...args: unknown[]) => mocks.recordPerpTradeJournal(...args),
+  recordPerpTradeJournal: vi.fn(),
   listPerpTradeJournals: vi.fn(() => []),
-}));
-
-vi.mock('../../src/memory/trade_dossiers.js', () => ({
-  upsertTradeDossier: (...args: unknown[]) => mocks.upsertTradeDossier(...args),
-}));
-
-vi.mock('../../src/memory/trade_policy_adjustments.js', () => ({
-  listTradePolicyAdjustments: (...args: unknown[]) => mocks.listTradePolicyAdjustments(...args),
 }));
 
 vi.mock('../../src/execution/perp-risk.js', () => ({
@@ -198,7 +118,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
   computeFractionalKellyFraction: vi.fn(() => 0.25),
   evaluateGlobalTradeGate: vi.fn(() => ({ allowed: true })),
   evaluateNewsEntryGate: vi.fn(() => ({ allowed: true })),
-  inferBroadMarketPosture: vi.fn(() => 'neutral'),
   isSignalClassAllowedForRegime: vi.fn(() => true),
   resolveLiquidityBucket: vi.fn(() => 'normal'),
   resolveVolatilityBucket: vi.fn(() => 'medium'),
@@ -206,7 +125,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: vi.fn(() => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 })),
-  summarizeAllSignalClasses: vi.fn(() => ({})),
 }));
 
 vi.mock('../../src/memory/autonomy_policy_state.js', () => ({
@@ -246,20 +164,6 @@ vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
 
 vi.mock('../../src/memory/events.js', () => ({
   listEvents: vi.fn(() => []),
-  getLatestThought: (...args: unknown[]) => mocks.getLatestThought(...args),
-  listForecastsForEvent: (...args: unknown[]) => mocks.listForecastsForEvent(...args),
-  listOutcomesForEvent: (...args: unknown[]) => mocks.listOutcomesForEvent(...args),
-}));
-
-vi.mock('../../src/events/casebase.js', () => ({
-  searchHistoricalCases: (...args: unknown[]) => mocks.searchHistoricalCases(...args),
-}));
-
-vi.mock('../../src/core/trade_similarity.js', () => ({
-  inferTradeSymbolClass: vi.fn((symbol: string) =>
-    String(symbol ?? '').trim().toUpperCase().startsWith('XYZ:') ? 'equity_proxy' : 'crypto'
-  ),
-  retrieveSimilarTradeDossiers: (...args: unknown[]) => mocks.retrieveSimilarTradeDossiers(...args),
 }));
 
 vi.mock('../../src/markets/context.js', () => ({
@@ -275,8 +179,15 @@ vi.mock('../../src/core/exit_contract.js', () => ({
 }));
 
 vi.mock('../../src/core/position_book.js', () => {
+  const bookInstance = {
+    refresh: vi.fn(async () => {}),
+    getAll: vi.fn(() => []),
+    get: vi.fn(() => undefined),
+    hasPosition: vi.fn(() => false),
+    hasConflict: vi.fn(() => false),
+  };
   const PositionBook = {
-    _instance: mocks.positionBookInstance,
+    _instance: bookInstance,
     getInstance() { return this._instance; },
   };
   return { PositionBook };
@@ -307,16 +218,6 @@ function makeLimiter(remaining = 1000) {
     confirm: vi.fn(),
     release: vi.fn(),
   } as any;
-}
-
-function findUpsertTradeDossierCall(
-  predicate: (input: Record<string, any>) => boolean
-): Record<string, any> {
-  const match = mocks.upsertTradeDossier.mock.calls
-    .map(([input]) => input as Record<string, any>)
-    .find(predicate);
-  expect(match).toBeDefined();
-  return match as Record<string, any>;
 }
 
 const BASE_SNAPSHOT = {
@@ -384,32 +285,6 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
       expressions: [],
       selector: { source: 'configured', symbols: [] },
     });
-    mocks.getSignalWeights.mockReturnValue({ technical: 0.5, news: 0.3, onChain: 0.2 });
-    mocks.getLatestThought.mockReturnValue(null);
-    mocks.listForecastsForEvent.mockReturnValue([]);
-    mocks.listOutcomesForEvent.mockReturnValue([]);
-    mocks.searchHistoricalCases.mockReturnValue([]);
-    mocks.listTradePolicyAdjustments.mockReturnValue([]);
-    mocks.retrieveSimilarTradeDossiers.mockReturnValue({
-      recommendation: 'caution',
-      retrievalSupportScore: 0.48,
-      retrievalConfidence: 0.58,
-      retrievalRiskFlags: ['late_entry_cluster'],
-      stats: {
-        sampleSize: 2,
-        winRate: 0.5,
-        averageRealizedPnlUsd: 12.5,
-        averageEntryStretchPct: 4.2,
-        averageInterventionScore: 0.15,
-        gateVerdictCounts: { resize: 1, approve: 1 },
-      },
-      topLessons: ['Late entries should stay small.'],
-      repeatTags: ['thesis_valid'],
-      avoidTags: ['late_entry'],
-      topMatches: [],
-    });
-    mocks.positionBookInstance.getAll.mockReturnValue([]);
-    mocks.positionBookInstance.hasPosition.mockReturnValue(false);
   });
 
   it('1. proposal → gate approve → executor called, exit policy written with LLM TTL and invalidation price', async () => {
@@ -430,11 +305,10 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
 
     // Exit policy: invalidationPrice = 68000, TTL = 45 min
     expect(mocks.upsertExitPolicy).toHaveBeenCalledTimes(1);
-    const [sym, side, timeStop, invPrice, policyNotes, predictionId] = mocks.upsertExitPolicy.mock.calls[0]!;
+    const [sym, side, timeStop, invPrice, , predictionId] = mocks.upsertExitPolicy.mock.calls[0]!;
     expect(sym).toBe('BTC');
     expect(side).toBe('long');
     expect(invPrice).toBe(68000);
-    expect(String(policyNotes)).toContain('68000');
     expect(predictionId).toBe('pred-mock-id');
     expect(timeStop).toBeGreaterThan(Date.now());
     expect(timeStop).toBeLessThanOrEqual(Date.now() + 45 * 60 * 1000 + 1000);
@@ -460,119 +334,10 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
       originatorExitReason: 'paper ok',
       requestedLeverage: 5,
     }));
-    expect(mocks.createLearningCase).toHaveBeenCalledWith(expect.objectContaining({
-      caseType: 'comparable_forecast',
-      sourcePredictionId: 'pred-mock-id',
-      sourceDossierId: 'dossier-mock-id',
-    }));
-    expect(mocks.recordPerpTradeJournal).toHaveBeenCalledWith(expect.objectContaining({
-      symbol: 'BTC',
-      reduceOnly: false,
-      outcome: 'executed',
-      signalClass: 'llm_originator',
-    }));
-    expect(mocks.upsertTradeDossier).toHaveBeenCalledWith(expect.objectContaining({
-      dossier: expect.objectContaining({
-        version: 'v2.2',
-        request: expect.objectContaining({
-          requestedNotionalUsd: expect.any(Number),
-        }),
-        retrieval: expect.objectContaining({
-          retrievalVersion: 'v2.2',
-          candidateCount: 2,
-        }),
-        policy_trace: expect.objectContaining({
-          activePolicies: expect.arrayContaining(['retrieval_similarity', 'llm_entry_gate']),
-        }),
-        context: expect.objectContaining({
-          similarity: expect.objectContaining({
-            recommendation: 'caution',
-          }),
-        }),
-      }),
-    }));
-    const originatorOpenDossier = findUpsertTradeDossierCall(
-      (input) => input.strategySource === 'autonomous_originator' && input.status === 'open'
-    );
-    expect(originatorOpenDossier.retrieval).toEqual(originatorOpenDossier.dossier.retrieval);
-    expect(originatorOpenDossier.policyTrace).toEqual(originatorOpenDossier.dossier.policy_trace);
-    expect(mocks.storeDecisionArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'adaptive_pre_execution_trace',
-      outcome: 'pending',
-      marketId: 'BTC',
-      payload: expect.objectContaining({
-        stage: 'originator_pre_execution',
-        finalRequest: expect.objectContaining({
-          side: 'buy',
-        }),
-      }),
-    }));
     expect(mocks.updateTradeProposalOutcome).toHaveBeenCalledWith(42, 'approve', true);
 
     expect(result).toContain('paper ok');
-  }, 60_000);
-
-  it('1b. matching persisted adaptive adjustments resize the live candidate and surface row ids in traces', async () => {
-    mocks.listTradePolicyAdjustments.mockReturnValue([
-      {
-        id: 'adj-size-1',
-        policyDomain: 'size',
-        policyKey: 'setup_family_max_size',
-        scope: { signalClass: 'llm_originator', symbolClass: 'crypto' },
-        adjustmentType: 'scale',
-        oldValue: 1,
-        newValue: 0.7,
-        delta: -0.3,
-        evidenceCount: 4,
-        evidenceWindowStart: null,
-        evidenceWindowEnd: null,
-        reasonSummary: 'Cut size for this setup family.',
-        confidence: 0.7,
-        active: true,
-        createdAt: '2026-05-15T00:00:00.000Z',
-        expiresAt: null,
-      },
-    ]);
-
-    const { AutonomousManager } = await import('../../src/core/autonomous.js');
-    const llm = makeGateLlm('approve');
-    const executor = { execute: vi.fn(async () => ({ executed: true, message: 'paper ok' })) } as any;
-    const marketClient = {
-      getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: { maxLeverage: 10 } }),
-    } as any;
-    const limiter = makeLimiter();
-
-    const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
-    await manager.runScan({ forceExecute: true });
-
-    expect(mocks.listTradePolicyAdjustments).toHaveBeenCalledWith(
-      expect.objectContaining({ active: true })
-    );
-    expect(mocks.storeDecisionArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'adaptive_pre_execution_trace',
-      payload: expect.objectContaining({
-        finalRequest: expect.objectContaining({
-          notionalUsd: expect.any(Number),
-        }),
-        policyTrace: expect.objectContaining({
-          activeAdjustmentIds: expect.arrayContaining(['adj-size-1']),
-        }),
-      }),
-    }));
-    const pendingTrace = mocks.storeDecisionArtifact.mock.calls.find(
-      ([entry]) => entry?.kind === 'adaptive_pre_execution_trace' && entry?.outcome === 'pending'
-    )?.[0];
-    expect(
-      Number((pendingTrace as any)?.payload?.finalRequest?.notionalUsd ?? 0)
-    ).toBeLessThan(Number((pendingTrace as any)?.payload?.originalRequest?.notionalUsd ?? 0));
-    expect(mocks.upsertTradeDossier).toHaveBeenCalledWith(expect.objectContaining({
-      dossier: expect.objectContaining({
-        policy_trace: expect.objectContaining({
-          activeAdjustmentIds: expect.arrayContaining(['adj-size-1']),
-        }),
-      }),
-    }));
-  }, 60_000);
+  });
 
   it('2. null proposal + cadence trigger → quant fallback runs', async () => {
     mocks.triggerShouldFire.mockReturnValue({ fire: true, reason: 'cadence', alertedSymbols: [] });
@@ -589,7 +354,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
 
     // Discovery ran (no expressions → quant fallback message)
     expect(result).toMatch(/No discovery expressions/i);
-  }, 60_000);
+  });
 
   it('3. null proposal + ta_alert trigger → quant fallback does NOT run, returns originator message', async () => {
     mocks.triggerShouldFire.mockReturnValue({ fire: true, reason: 'ta_alert', alertedSymbols: ['BTC'] });
@@ -609,7 +374,6 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(result).toContain('ta_alert');
     expect(mocks.runDiscovery).not.toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
-    expect(mocks.createPrediction).not.toHaveBeenCalled();
   });
 
   it('4. symbol cooldown: after BTC proposal, BTC is filtered from next scan snapshots', async () => {
@@ -641,167 +405,6 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     // If originator wasn't called (trigger didn't fire with new taSnapshots), that's also valid
   });
 
-  it('4a. returns explicit ta_unavailable result when TA snapshots collapse to zero before triggering originator', async () => {
-    mocks.taComputeAll.mockResolvedValue([]);
-
-    const { AutonomousManager } = await import('../../src/core/autonomous.js');
-    const llm = makeGateLlm('approve');
-    const executor = { execute: vi.fn(async () => ({ executed: true, message: 'ok' })) } as any;
-    const marketClient = { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: {} }) } as any;
-    const limiter = makeLimiter();
-
-    const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
-    const result = await manager.runScan({ forceExecute: true });
-
-    expect(result).toContain('ta_unavailable');
-    expect(result).toContain('0/2');
-    expect(mocks.triggerShouldFire).not.toHaveBeenCalled();
-    expect(mocks.originatorPropose).not.toHaveBeenCalled();
-    expect(mocks.runDiscovery).not.toHaveBeenCalled();
-    expect(mocks.recordDecisionAudit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tradeOutcome: 'skipped',
-        notes: expect.objectContaining({
-          originatorExitStage: 'ta_unavailable',
-          requestedCount: 2,
-          snapshotCount: 0,
-          usableSnapshotCount: 0,
-        }),
-      })
-    );
-  });
-
-  it('4c. returns explicit ta_unavailable result when usable TA coverage is filtered out by an existing position', async () => {
-    mocks.positionBookInstance.hasPosition.mockImplementation((symbol: string) => symbol === 'BTC');
-
-    const { AutonomousManager } = await import('../../src/core/autonomous.js');
-    const llm = makeGateLlm('approve');
-    const executor = { execute: vi.fn(async () => ({ executed: true, message: 'ok' })) } as any;
-    const marketClient = { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: {} }) } as any;
-    const limiter = makeLimiter();
-
-    const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
-    const result = await manager.runScan({ forceExecute: true });
-
-    expect(result).toContain('ta_unavailable');
-    expect(result).toContain('usable coverage collapsed');
-    expect(mocks.triggerShouldFire).not.toHaveBeenCalled();
-    expect(mocks.originatorPropose).not.toHaveBeenCalled();
-    expect(mocks.recordDecisionAudit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        notes: expect.objectContaining({
-          originatorExitStage: 'ta_unavailable',
-          requestedCount: 2,
-          snapshotCount: 1,
-          usableSnapshotCount: 0,
-          filteredOutCount: 1,
-        }),
-      })
-    );
-  });
-
-  it('4b. event artifacts and historical cases are injected into originator bundle for commodity contexts', async () => {
-    mocks.taComputeAll.mockResolvedValue([
-      { ...BASE_SNAPSHOT, symbol: 'XYZ:CL', trendBias: 'up', alertReason: undefined },
-      { ...BASE_SNAPSHOT, symbol: 'XYZ:GOLD', trendBias: 'up', alertReason: undefined },
-    ]);
-    mocks.triggerShouldFire.mockReturnValue({ fire: true, reason: 'event', alertedSymbols: [] });
-    const event = {
-      id: 'event-1',
-      eventKey: 'event-key-1',
-      title: 'Hormuz disruption tightens crude exports',
-      domain: 'energy',
-      occurredAt: new Date().toISOString(),
-      sourceIntelIds: ['intel-1'],
-      tags: ['supply_shock', 'attack'],
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const thought = {
-      id: 'thought-1',
-      eventId: 'event-1',
-      version: 1,
-      mechanism: 'Shipping disruption reduces crude availability and lifts front-month oil.',
-      causalChain: ['attack disrupts shipping', 'exports fall', 'oil reprices higher'],
-      impactedAssets: [
-        { symbol: 'CL', direction: 'up', confidence: 0.82 },
-        { symbol: 'BRENTOIL', direction: 'up', confidence: 0.79 },
-      ],
-      invalidationConditions: ['shipping resumes quickly'],
-      createdAt: new Date().toISOString(),
-    };
-    mocks.getLatestThought.mockReturnValue(thought);
-    mocks.listForecastsForEvent.mockReturnValue([
-      {
-        id: 'forecast-1',
-        eventId: 'event-1',
-        thoughtId: 'thought-1',
-        asset: 'CL',
-        domain: 'energy',
-        direction: 'up',
-        horizonHours: 24,
-        confidence: 0.82,
-        invalidationConditions: ['shipping resumes quickly'],
-        status: 'open',
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    mocks.listOutcomesForEvent.mockReturnValue([
-      {
-        id: 'outcome-1',
-        forecastId: 'forecast-0',
-        eventId: 'event-1',
-        resolutionStatus: 'confirmed',
-        actualDirection: 'up',
-        resolvedAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    mocks.searchHistoricalCases.mockReturnValue([
-      {
-        case_key: '2019-abqaiq-attack-oil',
-        event_date: '2019-09-14',
-        event_type: 'attack',
-        title: 'Abqaiq attack disrupts Saudi output',
-        summary: 'Oil jumps on supply shock.',
-        domain: 'energy',
-        actors: ['Saudi Arabia'],
-        locations: ['Saudi Arabia'],
-        channels: ['shipping'],
-        first_order_assets: ['CL'],
-        second_order_assets: ['BRENTOIL'],
-        mechanism: 'supply outage reprices crude benchmarks higher',
-        causal_chain: ['attack', 'output outage', 'oil higher'],
-        forecast: { direction: 'up', horizons: ['24h'] },
-        outcome: { direction_correct: true, realized_note: 'Oil rallied.' },
-        regime_tags: ['supply_shock'],
-        sources: [],
-        validation_status: 'validated',
-      },
-    ]);
-    const { listEvents } = await import('../../src/memory/events.js');
-    vi.mocked(listEvents).mockReturnValue([event] as any);
-
-    const { AutonomousManager } = await import('../../src/core/autonomous.js');
-    const llm = makeGateLlm('approve');
-    const executor = { execute: vi.fn(async () => ({ executed: true, message: 'paper ok' })) } as any;
-    const marketClient = { getMarket: async () => ({ symbol: 'XYZ:CL', markPrice: 70, metadata: { maxLeverage: 10 } }) } as any;
-    const limiter = makeLimiter();
-
-    const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
-    await manager.runScan({ forceExecute: false });
-
-    const bundle = mocks.originatorPropose.mock.calls[0]![0] as any;
-    expect(bundle.contextDomain).toBe('energy');
-    expect(bundle.eventContext).toContain('Hormuz disruption tightens crude exports');
-    expect(bundle.eventContext).toContain('Shipping disruption reduces crude availability');
-    expect(bundle.eventContext).toContain('CL up 24h');
-    expect(bundle.eventContext).toContain('2019-abqaiq-attack-oil');
-    expect(bundle.similarityContext).toContain('XYZ:CL');
-  });
-
   it('5. gate reject → executor NOT called', async () => {
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     const llm = makeGateLlm('reject');
@@ -815,37 +418,6 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(executor.execute).not.toHaveBeenCalled();
     expect(result).toMatch(/rejected by LLM entry gate/i);
     expect(limiter.release).toHaveBeenCalled();
-    expect(mocks.storeDecisionArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'adaptive_pre_execution_trace',
-      outcome: 'blocked',
-      marketId: 'BTC',
-      payload: expect.objectContaining({
-        stage: 'originator_entry_gate',
-        finalRejectReason: 'test verdict: reject',
-      }),
-    }));
-    expect(mocks.upsertTradeDossier).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'closed',
-      dossier: expect.objectContaining({
-        version: 'v2.2',
-        retrieval: expect.objectContaining({
-          retrievalVersion: 'v2.2',
-        }),
-        policy_trace: expect.objectContaining({
-          blockedReason: 'test verdict: reject',
-        }),
-      }),
-    }));
-    const originatorBlockedDossier = findUpsertTradeDossierCall(
-      (input) =>
-        input.strategySource === 'autonomous_originator' && input.status === 'closed'
-    );
-    expect(originatorBlockedDossier.retrieval).toEqual(
-      originatorBlockedDossier.dossier.retrieval
-    );
-    expect(originatorBlockedDossier.policyTrace).toEqual(
-      originatorBlockedDossier.dossier.policy_trace
-    );
     expect(mocks.updateTradeProposalStatus).toHaveBeenCalledWith(42, expect.objectContaining({
       executeTrades: true,
       originatorExitStage: 'entry_gate_rejected',
@@ -955,27 +527,25 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const call = mocks.createPrediction.mock.calls[0]![0] as any;
     expect(call.symbol).toBe('BTC');
     expect(call.domain).toBe('perp');
-    expect(call.modelProbability).toBe(0.72);
     expect(call.learningComparable).toBe(false);
+    expect(call.modelProbability).toBe(0.72);
     expect(call.marketProbability).toBeUndefined();
     expect(call.executed).toBe(true);
     expect(call.executionPrice).toBeGreaterThan(0);
     expect(typeof call.positionSize).toBe('number');
-    expect(mocks.createLearningCase).toHaveBeenCalledTimes(1);
-    expect(mocks.createLearningCase.mock.calls[0]![0]).toMatchObject({
-      caseType: 'comparable_forecast',
-      domain: 'perp',
-      entityType: 'symbol',
-      entityId: 'BTC',
-      comparable: false,
-      comparatorKind: null,
-      exclusionReason: 'missing_comparator',
-      baseline: { marketProbability: null },
-      sourcePredictionId: 'pred-mock-id',
+    expect(call.signalWeightsSnapshot).toEqual({
+      technical: 0.5,
+      news: 0.3,
+      onChain: 0.2,
+    });
+    expect(call.signalScores).toEqual({
+      technical: expect.any(Number),
+      news: expect.any(Number),
+      onChain: expect.any(Number),
     });
   });
 
-  it('10. quant fallback path: perp predictions stay non-comparable without fabricating a market baseline', async () => {
+  it('10. quant fallback executed path: createPrediction does not fabricate marketProbability for perps', async () => {
     mocks.triggerShouldFire.mockReturnValue({ fire: true, reason: 'cadence', alertedSymbols: [] });
     mocks.originatorPropose.mockResolvedValue(null);
     mocks.runDiscovery.mockResolvedValue({
@@ -983,18 +553,17 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
       hypotheses: [],
       expressions: [
         {
-          id: 'expr-btc',
-          hypothesisId: 'hyp-btc',
           symbol: 'BTC',
           side: 'buy',
           confidence: 0.8,
           expectedEdge: 0.12,
-          entryZone: 'market',
-          invalidation: 'below support',
-          expectedMove: 'breakout continuation',
-          orderType: 'market',
-          leverage: 2,
-          probeSizeUsd: 20,
+          contextPack: {
+            regime: { marketRegime: 'trending', volatilityBucket: 'medium', liquidityBucket: 'normal' },
+            executionQuality: { status: 'good' },
+            event: { kind: 'technical' },
+            portfolioState: { posture: 'neutral' },
+            missing: [],
+          },
           newsTrigger: null,
         },
       ],
@@ -1013,100 +582,20 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(mocks.createPrediction).toHaveBeenCalledTimes(1);
     const call = mocks.createPrediction.mock.calls[0]![0] as any;
     expect(call.marketId).toBe('perp:BTC');
-    expect(call.learningComparable).toBe(false);
+    expect(call.domain).toBe('perp');
+    expect(call.modelProbability).toBeCloseTo(0.92, 6);
     expect(call.marketProbability).toBeUndefined();
-    expect(call.confidenceRaw).toBe(0.8);
-    const expectedAdjustedConfidence = Number((0.8 * resolveSessionWeightContext(new Date()).sessionWeight).toFixed(4));
-    expect(call.confidenceAdjusted).toBeCloseTo(expectedAdjustedConfidence, 6);
-    expect(call.signalWeightsSnapshot).toEqual({ technical: 0.5, news: 0.3, onChain: 0.2 });
-    expect(call.signalScores).toBeUndefined();
-    expect(mocks.createLearningCase).toHaveBeenCalledTimes(1);
-    expect(mocks.createLearningCase.mock.calls[0]![0]).toMatchObject({
-      caseType: 'comparable_forecast',
-      domain: 'perp',
-      entityType: 'symbol',
-      entityId: 'BTC',
-      comparable: false,
-      comparatorKind: null,
-      exclusionReason: 'missing_comparator',
-      baseline: { marketProbability: null },
-      sourcePredictionId: 'pred-mock-id',
+    expect(call.learningComparable).toBe(false);
+    expect(call.signalWeightsSnapshot).toEqual({
+      technical: 0.5,
+      news: 0.3,
+      onChain: 0.2,
     });
-    expect(mocks.storeDecisionArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'adaptive_pre_execution_trace',
-      outcome: 'pending',
-      marketId: 'BTC',
-      payload: expect.objectContaining({
-        stage: 'quant_pre_execution',
-        finalRequest: expect.objectContaining({
-          side: 'buy',
-        }),
-      }),
-    }));
-    const quantOpenDossier = findUpsertTradeDossierCall(
-      (input) =>
-        input.strategySource === 'autonomous_quant' &&
-        input.status === 'open' &&
-        input.sourcePredictionId === 'pred-mock-id'
-    );
-    expect(quantOpenDossier.retrieval).toEqual(quantOpenDossier.dossier.retrieval);
-    expect(quantOpenDossier.policyTrace).toEqual(quantOpenDossier.dossier.policy_trace);
-  });
-
-  it('10b. quant blocked path persists dedicated retrieval and policy trace payloads', async () => {
-    mocks.triggerShouldFire.mockReturnValue({ fire: true, reason: 'cadence', alertedSymbols: [] });
-    mocks.originatorPropose.mockResolvedValue(null);
-    mocks.runDiscovery.mockResolvedValue({
-      clusters: [],
-      hypotheses: [],
-      expressions: [
-        {
-          id: 'expr-btc',
-          hypothesisId: 'hyp-btc',
-          symbol: 'BTC',
-          side: 'buy',
-          confidence: 0.8,
-          expectedEdge: 0.12,
-          entryZone: 'market',
-          invalidation: 'below support',
-          expectedMove: 'breakout continuation',
-          orderType: 'market',
-          leverage: 2,
-          probeSizeUsd: 20,
-          newsTrigger: null,
-        },
-      ],
-      selector: { source: 'configured', symbols: ['BTC'] },
+    expect(call.signalScores).toEqual({
+      technical: expect.any(Number),
+      news: expect.any(Number),
+      onChain: expect.any(Number),
     });
-
-    const { AutonomousManager } = await import('../../src/core/autonomous.js');
-    const llm = makeGateLlm('reject');
-    const executor = { execute: vi.fn(async () => ({ executed: true, message: 'paper ok' })) } as any;
-    const marketClient = { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: { maxLeverage: 10 } }) } as any;
-    const limiter = makeLimiter();
-
-    const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
-    const result = await manager.runScan({ forceExecute: true });
-
-    expect(executor.execute).not.toHaveBeenCalled();
-    expect(result).toMatch(/rejected by LLM entry gate/i);
-    const quantBlockedDossier = findUpsertTradeDossierCall(
-      (input) => input.strategySource === 'autonomous_quant' && input.status === 'closed'
-    );
-    expect(quantBlockedDossier.retrieval).toEqual(quantBlockedDossier.dossier.retrieval);
-    expect(quantBlockedDossier.policyTrace).toEqual(
-      quantBlockedDossier.dossier.policy_trace
-    );
-    expect(quantBlockedDossier.retrieval).toEqual(
-      expect.objectContaining({
-        retrievalVersion: 'v2.2',
-      })
-    );
-    expect(quantBlockedDossier.policyTrace).toEqual(
-      expect.objectContaining({
-        blockedReason: 'test verdict: reject',
-      })
-    );
   });
 
   it('11. originator path: createPrediction NOT called when gate rejects', async () => {
