@@ -28,7 +28,7 @@ WHERE outcome_basis     = 'final'
 
 export const LEARNING_CASES_TABLE_SQL = `CREATE TABLE IF NOT EXISTS learning_cases (
     id TEXT PRIMARY KEY,
-    case_type TEXT NOT NULL CHECK(case_type IN ('comparable_forecast', 'execution_quality')),
+    case_type TEXT NOT NULL CHECK(case_type IN ('comparable_forecast', 'execution_quality', 'thesis_quality', 'intervention_quality', 'regret_case')),
     domain TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     entity_id TEXT NOT NULL,
@@ -36,6 +36,8 @@ export const LEARNING_CASES_TABLE_SQL = `CREATE TABLE IF NOT EXISTS learning_cas
     comparator_kind TEXT,
     source_prediction_id TEXT,
     source_trade_id INTEGER,
+    source_dossier_id TEXT,
+    source_hypothesis_id TEXT,
     source_artifact_id INTEGER,
     belief_payload TEXT,
     baseline_payload TEXT,
@@ -55,6 +57,8 @@ const LEARNING_CASES_INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_learning_cases_comparable ON learning_cases(comparable);',
   'CREATE INDEX IF NOT EXISTS idx_learning_cases_prediction ON learning_cases(source_prediction_id);',
   'CREATE INDEX IF NOT EXISTS idx_learning_cases_trade ON learning_cases(source_trade_id);',
+  'CREATE INDEX IF NOT EXISTS idx_learning_cases_dossier ON learning_cases(source_dossier_id);',
+  'CREATE INDEX IF NOT EXISTS idx_learning_cases_hypothesis ON learning_cases(source_hypothesis_id);',
   'CREATE INDEX IF NOT EXISTS idx_learning_cases_entity ON learning_cases(entity_type, entity_id);',
 ];
 
@@ -140,6 +144,11 @@ type ColumnSpec = {
   sql: string;
 };
 
+const LEARNING_CASE_COLUMNS: ColumnSpec[] = [
+  { name: 'source_dossier_id', sql: 'ALTER TABLE learning_cases ADD COLUMN source_dossier_id TEXT' },
+  { name: 'source_hypothesis_id', sql: 'ALTER TABLE learning_cases ADD COLUMN source_hypothesis_id TEXT' },
+];
+
 const TRADE_POLICY_ADJUSTMENT_COLUMNS: ColumnSpec[] = [
   { name: 'policy_key', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN policy_key TEXT NOT NULL DEFAULT 'size'" },
   { name: 'symbol', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN symbol TEXT' },
@@ -182,6 +191,7 @@ function hasPredictionColumns(db: Database.Database, columnNames: string[]): boo
 
 export function ensureLearningSchema(db: Database.Database): void {
   db.exec(LEARNING_CASES_TABLE_SQL);
+  ensureLearningCaseColumns(db);
   for (const statement of LEARNING_CASES_INDEX_SQL) {
     db.exec(statement);
   }
@@ -204,6 +214,16 @@ export function ensureLearningSchema(db: Database.Database): void {
   db.exec(COMPARABLE_LEARNING_CASES_VIEW_SQL);
   db.exec('DROP VIEW IF EXISTS execution_learning_cases;');
   db.exec(EXECUTION_LEARNING_CASES_VIEW_SQL);
+}
+
+function ensureLearningCaseColumns(db: Database.Database): void {
+  const columns = db.prepare("PRAGMA table_info('learning_cases')").all() as Array<{ name?: string }>;
+  const present = new Set(columns.map((column) => String(column.name ?? '')));
+  for (const column of LEARNING_CASE_COLUMNS) {
+    if (!present.has(column.name)) {
+      db.exec(column.sql);
+    }
+  }
 }
 
 function ensureTradePolicyAdjustmentColumns(db: Database.Database): void {
