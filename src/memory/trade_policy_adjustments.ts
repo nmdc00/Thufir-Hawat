@@ -10,6 +10,7 @@ export type TradePolicyAdjustmentAction =
   | 'cooldown';
 
 export type TradePolicyKey = 'size' | 'leverage' | 'confirmation' | 'cooldown';
+export type TradePolicyAdjustmentValue = number | string | boolean | null;
 
 export interface TradePolicyAdjustmentScope {
   symbol?: string | null;
@@ -54,6 +55,16 @@ export interface TradePolicyAdjustmentRecord extends Omit<TradePolicyAdjustmentI
   active: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TradePolicyAdjustment extends TradePolicyAdjustmentRecord {
+  policyDomain: 'size' | 'leverage' | 'confirmation' | 'cooldown' | 'confidence';
+  adjustmentType: 'set' | 'scale' | 'flag';
+  oldValue: TradePolicyAdjustmentValue;
+  newValue: TradePolicyAdjustmentValue;
+  delta: number | null;
+  reasonSummary: string;
+  scope: Record<string, unknown> | null;
 }
 
 type TradePolicyAdjustmentRow = {
@@ -145,12 +156,43 @@ function parseJsonObject(value: string | null): Record<string, unknown> | null {
   }
 }
 
-function toRecord(row: TradePolicyAdjustmentRow): TradePolicyAdjustmentRecord {
+function toRecord(row: TradePolicyAdjustmentRow): TradePolicyAdjustment {
+  const policyKey = normalizePolicyKey(row.policy_key, row.action);
+  const scope = {
+    symbol: row.symbol,
+    direction: row.direction,
+    strategySource: row.strategy_source,
+    triggerReason: row.trigger_reason,
+    signalClass: row.signal_class,
+    symbolClass: row.symbol_class,
+    session: row.session_tag,
+    marketRegime: row.market_regime,
+    volatilityBucket: row.volatility_bucket,
+    liquidityBucket: row.liquidity_bucket,
+  };
+  const newValue: TradePolicyAdjustmentValue =
+    policyKey === 'leverage'
+      ? row.leverage_cap
+      : policyKey === 'confirmation'
+        ? row.confirmation_required == null
+          ? null
+          : row.confirmation_required === 1
+        : policyKey === 'cooldown'
+          ? row.cooldown_minutes
+          : row.size_multiplier;
   return {
     id: row.id,
     domain: row.domain,
-    policyKey: normalizePolicyKey(row.policy_key, row.action),
+    policyKey,
+    policyDomain: policyKey,
+    adjustmentType:
+      policyKey === 'confirmation' || policyKey === 'cooldown'
+        ? 'flag'
+        : policyKey === 'size' && row.action === 'downweight'
+          ? 'scale'
+          : 'set',
     scopeKey: row.scope_key,
+    scope,
     symbol: row.symbol,
     direction: row.direction,
     strategySource: row.strategy_source,
@@ -175,6 +217,10 @@ function toRecord(row: TradePolicyAdjustmentRow): TradePolicyAdjustmentRecord {
     sourceLearningCaseId: row.source_learning_case_id,
     sourceTradeId: row.source_trade_id,
     rationale: row.rationale,
+    reasonSummary: row.rationale ?? row.scope_key,
+    oldValue: null,
+    newValue,
+    delta: policyKey === 'size' && typeof newValue === 'number' ? newValue - 1 : null,
     evidencePayload: parseJsonObject(row.evidence_payload),
     expiresAt: row.expires_at,
     active: row.active === 1,

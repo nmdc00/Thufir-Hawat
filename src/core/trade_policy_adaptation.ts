@@ -192,9 +192,9 @@ export function selectRuntimeTradePolicyAdjustments(
         reasonSummary: row.reasonSummary ?? '',
       } satisfies RuntimeTradePolicyAdjustment;
     })
-    .filter((row): row is RuntimeTradePolicyAdjustment => row != null);
+    .filter(Boolean) as RuntimeTradePolicyAdjustment[];
 
-  return filterActionableTradePolicyAdjustments(matched);
+  return matched;
 }
 
 export function deriveTradePolicyAdjustments(
