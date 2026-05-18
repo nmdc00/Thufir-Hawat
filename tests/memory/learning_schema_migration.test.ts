@@ -12,6 +12,7 @@ import {
   summarizeLearningSchema,
 } from '../../src/memory/learning_schema.js';
 import { recordLearningSignalAudit } from '../../src/memory/learning_observability.js';
+import { createTradePolicyAdjustment } from '../../src/memory/trade_policy_adjustments.js';
 
 function useTempDb(): string {
   const dir = mkdtempSync(join(tmpdir(), 'thufir-learning-schema-'));
@@ -386,6 +387,50 @@ describe('learning schema migration', () => {
     expect(row.scope_key).toBe(
       'symbol=BTC|direction=long|strategySource=autonomous|triggerReason=thesis_retry|signalClass=mean_reversion|symbolClass=majors|session=us_open|marketRegime=trending|volatilityBucket=high|liquidityBucket=deep'
     );
+
+    const created = createTradePolicyAdjustment({
+      domain: 'perp',
+      policyKey: 'size',
+      action: 'downweight',
+      symbol: 'ETH',
+      direction: 'short',
+      strategySource: 'autonomous',
+      triggerReason: 'thesis_retry',
+      signalClass: 'mean_reversion',
+      symbolClass: 'majors',
+      session: 'us_open',
+      marketRegime: 'trending',
+      volatilityBucket: 'high',
+      liquidityBucket: 'deep',
+      sizeMultiplier: 0.6,
+      confidence: 0.77,
+      evidenceCount: 2,
+      rationale: 'compat write',
+    });
+
+    const inserted = db
+      .prepare(
+        `SELECT policy_domain, adjustment_type, new_value, domain, action, size_multiplier, signal_class
+         FROM trade_policy_adjustments
+         WHERE id = ?`
+      )
+      .get(created.id) as {
+        policy_domain: string;
+        adjustment_type: string;
+        new_value: number;
+        domain: string;
+        action: string;
+        size_multiplier: number;
+        signal_class: string;
+      };
+
+    expect(inserted.policy_domain).toBe('perp');
+    expect(inserted.adjustment_type).toBe('scale');
+    expect(inserted.new_value).toBe(0.6);
+    expect(inserted.domain).toBe('perp');
+    expect(inserted.action).toBe('downweight');
+    expect(inserted.size_multiplier).toBe(0.6);
+    expect(inserted.signal_class).toBe('mean_reversion');
   });
 
   it('writes learning signal audits against the production legacy audit schema', () => {
