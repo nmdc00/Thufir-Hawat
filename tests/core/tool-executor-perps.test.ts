@@ -283,7 +283,22 @@ describe('tool-executor perps', () => {
     const ctx = {
       config: {
         execution: { provider: 'hyperliquid', mode: 'paper' },
-        autonomy: { tradePolicyAdjustments: { enabled: true, minSamples: 1 } },
+        autonomy: {
+          enabled: true,
+          fullAuto: true,
+          signalPerformance: { minSamples: 99 },
+          calibrationRisk: { enabled: false },
+          tradeQuality: { enabled: false },
+          tradePolicyAdjustments: {
+            enabled: true,
+            minSamples: 1,
+            blockOnThesisFailureRatio: 2,
+            blockBelowScore: 0.2,
+            downweightOnThesisFailureRatio: 0.5,
+            downweightBelowScore: 0.5,
+            downweightMultiplier: 0.4,
+          },
+        },
       } as any,
       marketClient,
       executor,
@@ -320,6 +335,20 @@ describe('tool-executor perps', () => {
     expect(adjustments).toHaveLength(1);
     expect(adjustments[0]!.active).toBe(true);
     expect(adjustments[0]!.signalClass).toBe('mean_reversion');
+
+    const laterRes = await executeToolCall(
+      'perp_place_order',
+      { symbol, side: 'buy', size: 0.01, mode: 'paper', signal_class: 'mean_reversion' },
+      ctx
+    );
+    expect(laterRes).toMatchObject({ success: true });
+    if (laterRes.success) {
+      expect(laterRes.data.policy.reason_code).toBe('policy:size:downweight');
+      expect(laterRes.data.policy.active_adjustment_ids.length).toBeGreaterThan(0);
+      expect(laterRes.data.policy.size_multiplier).toBeLessThan(1);
+      expect(laterRes.data.policy.adaptation_changed_outcome).toBe(true);
+      expect(laterRes.data.policy.effective_size).toBeLessThan(laterRes.data.policy.requested_size);
+    }
   });
 
   it('does not materialize a policy adjustment on a partial reduce-only close', async () => {
