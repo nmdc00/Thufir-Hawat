@@ -216,4 +216,57 @@ describe('learning schema migration', () => {
       .get() as { learningComparable: number };
     expect(row.learningComparable).toBe(0);
   });
+
+  it('adds and backfills trade policy scope_key for legacy adjustment tables', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-adjustments-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE trade_policy_adjustments (
+        id TEXT PRIMARY KEY,
+        domain TEXT NOT NULL,
+        signal_class TEXT,
+        market_regime TEXT,
+        volatility_bucket TEXT,
+        liquidity_bucket TEXT,
+        action TEXT NOT NULL,
+        size_multiplier REAL NOT NULL,
+        confidence REAL,
+        evidence_count INTEGER NOT NULL DEFAULT 0,
+        thesis_failure_rate REAL,
+        negative_pnl_rate REAL,
+        average_quality_score REAL,
+        source_learning_case_id TEXT,
+        source_trade_id INTEGER,
+        rationale TEXT,
+        evidence_payload TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO trade_policy_adjustments (
+        id, domain, signal_class, market_regime, volatility_bucket, liquidity_bucket,
+        action, size_multiplier, confidence, evidence_count, active
+      ) VALUES (
+        'legacy-adjustment', 'perp', 'mean_reversion', 'trending', 'high', 'deep',
+        'downweight', 0.4, 0.82, 3, 1
+      );
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+
+    const columns = db.prepare("PRAGMA table_info('trade_policy_adjustments')").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    expect(names.has('scope_key')).toBe(true);
+
+    const row = db
+      .prepare("SELECT scope_key, policy_key FROM trade_policy_adjustments WHERE id = 'legacy-adjustment'")
+      .get() as { scope_key: string; policy_key: string };
+
+    expect(row.policy_key).toBe('size');
+    expect(row.scope_key).toBe(
+      'symbol=any|direction=any|strategySource=any|triggerReason=any|signalClass=mean_reversion|symbolClass=any|session=any|marketRegime=trending|volatilityBucket=high|liquidityBucket=deep'
+    );
+  });
 });
