@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { ThufirConfig } from '../core/config.js';
 import { createLlmClient, createTrivialTaskClient, type ChatMessage, type LlmClient } from '../core/llm.js';
+import { withExecutionContextIfMissing } from '../core/llm_infra.js';
 import { findReusableArtifact, storeDecisionArtifact } from '../memory/decision_artifacts.js';
 import { listRecentIntel, type StoredIntel } from '../intel/store.js';
 
@@ -229,7 +230,17 @@ async function llmSnapshot(params: {
 
   let raw = '';
   try {
-    raw = (await client.complete(messages, { maxTokens: 512, temperature: 0.2 })).content ?? '';
+    raw = (
+      await withExecutionContextIfMissing(
+        {
+          mode: 'LIGHT_REASONING',
+          critical: false,
+          reason: 'narrative_snapshot',
+          source: 'reflexivity',
+        },
+        () => client.complete(messages, { maxTokens: 512, temperature: 0.2 })
+      )
+    ).content ?? '';
   } catch {
     return params.fallback;
   }
@@ -297,4 +308,3 @@ export async function getNarrativeSnapshot(params: {
 
   return snapshot;
 }
-
