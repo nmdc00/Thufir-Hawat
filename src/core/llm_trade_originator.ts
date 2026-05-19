@@ -6,6 +6,7 @@ import type { TaSnapshot } from './ta_surface.js';
 import { gatherMarketContext } from '../markets/context.js';
 import { recordTradeProposal } from '../memory/llm_trade_proposals.js';
 import { Logger } from './logger.js';
+import { withExecutionContextIfMissing } from './llm_infra.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 
 export interface TradeProposal {
@@ -308,12 +309,21 @@ export class LlmTradeOriginator {
 
     // Try main LLM
     try {
-      const response = await this.mainLlm.complete(
-        [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userMessage },
-        ],
-        { timeoutMs }
+      const response = await withExecutionContextIfMissing(
+        {
+          mode: 'LIGHT_REASONING',
+          critical: false,
+          reason: 'trade_originator_main',
+          source: 'autonomous',
+        },
+        () =>
+          this.mainLlm.complete(
+            [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: userMessage },
+            ],
+            { timeoutMs }
+          )
       );
       proposal = parseProposal(response.content);
     } catch (error) {
@@ -327,12 +337,21 @@ export class LlmTradeOriginator {
       // Try fallback LLM with shorter message, 5s timeout
       try {
         const fallbackMessage = buildFallbackUserMessage(effectiveBundle);
-        const fallbackResponse = await this.fallbackLlm.complete(
-          [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: fallbackMessage },
-          ],
-          { timeoutMs: 5_000 }
+        const fallbackResponse = await withExecutionContextIfMissing(
+          {
+            mode: 'LIGHT_REASONING',
+            critical: false,
+            reason: 'trade_originator_fallback',
+            source: 'autonomous',
+          },
+          () =>
+            this.fallbackLlm.complete(
+              [
+                { role: 'system', content: SYSTEM_PROMPT },
+                { role: 'user', content: fallbackMessage },
+              ],
+              { timeoutMs: 5_000 }
+            )
         );
         proposal = parseProposal(fallbackResponse.content);
       } catch (fallbackError) {
