@@ -17,6 +17,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { getExecutionContext, withExecutionContextIfMissing } from '../../src/core/llm_infra.js';
 
 // ---------------------------------------------------------------------------
 // Helpers — build the callback the same way gateway/index.ts does
@@ -54,13 +55,22 @@ function buildCallback(
     const infoLlm = primaryAgent.getInfoLlm() ?? primaryAgent.getLlm();
     let relevant = false;
     try {
-      const screen = await infoLlm.complete([
+      const screen = await withExecutionContextIfMissing(
         {
-          role: 'user',
-          content:
-            `Relevance filter for a trading system. Does this news have a direct, immediate impact on tradeable assets (crypto perps, oil, gold, FX)?\n\nNews: ${text.slice(0, 500)}\n\nReply YES or NO only.`,
+          mode: 'LIGHT_REASONING',
+          critical: false,
+          reason: 'telegram_monitor_relevance',
+          source: 'gateway',
         },
-      ], { temperature: 0 });
+        () =>
+          infoLlm.complete([
+            {
+              role: 'user',
+              content:
+                `Relevance filter for a trading system. Does this news have a direct, immediate impact on tradeable assets (crypto perps, oil, gold, FX)?\n\nNews: ${text.slice(0, 500)}\n\nReply YES or NO only.`,
+            },
+          ], { temperature: 0 })
+      );
       relevant = screen.content.trim().toUpperCase().startsWith('YES');
     } catch {
       return;
@@ -179,6 +189,28 @@ describe('channel monitor briefing — two-stage filter', () => {
     await cb(1, BREAKING_TEXT, SOURCE);
     expect(fallbackLlm.complete).toHaveBeenCalledOnce();
     expect(agent.handleMessage).toHaveBeenCalledOnce();
+  });
+
+  it('runs the relevance pre-screen under LIGHT_REASONING execution context', async () => {
+    const observedContexts: Array<ReturnType<typeof getExecutionContext>> = [];
+    const contextualInfoLlm: InfoLlm = {
+      complete: vi.fn().mockImplementation(async () => {
+        observedContexts.push(getExecutionContext());
+        return { content: 'YES' };
+      }),
+    };
+    agent = makePrimaryAgent(contextualInfoLlm);
+    const cb = buildCallback(agent, tg.bot, makeConfig());
+
+    await cb(1, BREAKING_TEXT, SOURCE);
+
+    expect(observedContexts).toHaveLength(1);
+    expect(observedContexts[0]).toMatchObject({
+      mode: 'LIGHT_REASONING',
+      critical: false,
+      reason: 'telegram_monitor_relevance',
+      source: 'gateway',
+    });
   });
 
   it('sends handleMessage response to all allowedChatIds', async () => {
