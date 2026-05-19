@@ -1,6 +1,7 @@
 import type { ThufirConfig } from './config.js';
 import type { TaSnapshot } from './ta_surface.js';
 import type { NormalizedEvent } from '../events/types.js';
+import type { RankedOpportunityContext } from './llm_trade_originator.js';
 
 export type TriggerReason = 'cadence' | 'ta_alert' | 'event';
 
@@ -21,12 +22,19 @@ export class OriginationTrigger {
   shouldFire(
     lastFiredMs: number,
     taSnapshots: TaSnapshot[],
-    pendingEvents: NormalizedEvent[]
+    pendingEvents: NormalizedEvent[],
+    rankedShortlist: RankedOpportunityContext[] = []
   ): TriggerResult {
-    // Priority 1: TA alert
-    const alertedSymbols = taSnapshots
-      .filter((s) => s.alertReason !== undefined)
-      .map((s) => s.symbol);
+    // Priority 1: ranked shortlist presence
+    const alertedSymbols =
+      rankedShortlist.length > 0
+        ? rankedShortlist.map((opportunity) => opportunity.symbol)
+        : taSnapshots
+            .filter(
+              (snapshot) =>
+                (snapshot.triggerReasons ?? []).length > 0 || snapshot.alertReason !== undefined
+            )
+            .map((snapshot) => snapshot.symbol);
 
     if (alertedSymbols.length > 0) {
       return { fire: true, reason: 'ta_alert', alertedSymbols };

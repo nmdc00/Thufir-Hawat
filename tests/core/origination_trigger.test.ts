@@ -31,6 +31,18 @@ function makeSnapshot(symbol: string, alertReason?: string): TaSnapshot {
     volumeVs24hAvgPct: 0,
     priceVsEma20_1h: 0,
     trendBias: 'flat',
+    triggerReasons: alertReason ? [alertReason] : [],
+    rawFeatures: {
+      priceVs24hHighPct: 0,
+      priceVs24hLowPct: 0,
+      oiUsd: 1_000_000,
+      oiDelta1hPct: 0,
+      oiDelta4hPct: 0,
+      fundingRateAnnualPct: 0,
+      volumeVs24hAvgPct: 0,
+      priceVsEma20_1hPct: 0,
+      trendBias: 'flat',
+    },
     alertReason,
   };
 }
