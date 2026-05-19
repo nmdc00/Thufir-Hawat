@@ -36,6 +36,7 @@ type HyperliquidPerpAssetCtx = {
 };
 
 const DEFAULT_SHARED_CACHE_TTL_MS = 3_000;
+const DEFAULT_SHARED_MIDS_CACHE_TTL_MS = 30_000;
 const DEFAULT_INFO_CONCURRENCY = 3;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 1_500;
 
@@ -52,8 +53,10 @@ type SharedRateLimitState = {
 
 const perpDexsCache = new Map<string, SharedCacheEntry<string[]>>();
 const mergedMetaCache = new Map<string, SharedCacheEntry<HyperliquidMergedMetaAndAssetCtxsResponse>>();
+const midsCache = new Map<string, SharedCacheEntry<Record<string, number>>>();
 const inFlightPerpDexs = new Map<string, Promise<string[]>>();
 const inFlightMergedMeta = new Map<string, Promise<HyperliquidMergedMetaAndAssetCtxsResponse>>();
+const inFlightMids = new Map<string, Promise<Record<string, number>>>();
 const sharedRateLimitStates = new Map<string, SharedRateLimitState>();
 
 function sleep(ms: number): Promise<void> {
@@ -211,6 +214,11 @@ export class HyperliquidClient {
     return Number.isFinite(ttl) && ttl > 0 ? ttl : DEFAULT_SHARED_CACHE_TTL_MS;
   }
 
+  private getSharedMidsCacheTtlMs(): number {
+    const ttl = Number((this.config.hyperliquid as { midsCacheTtlMs?: unknown } | undefined)?.midsCacheTtlMs);
+    return Number.isFinite(ttl) && ttl > 0 ? ttl : DEFAULT_SHARED_MIDS_CACHE_TTL_MS;
+  }
+
   private getSharedCacheKey(scope: string): string {
     return `${this.getBaseUrl()}:${scope}`;
   }
@@ -269,36 +277,68 @@ export class HyperliquidClient {
   }
 
   async getAllMids(): Promise<Record<string, number>> {
-    const [mids, dexs] = await Promise.all([
-      this.withInfoRequestLimit(() => this.info.allMids()),
-      this.listPerpDexs(),
-    ]);
-    const out: Record<string, number> = {};
-    for (const [symbol, value] of Object.entries(mids ?? {})) {
-      const num = Number(value);
-      if (Number.isFinite(num)) {
-        out[symbol] = num;
-      }
+    const cacheKey = this.getSharedCacheKey('allMids');
+    const now = Date.now();
+    const cached = midsCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.value;
     }
 
-    const dexContexts = await Promise.all(
-      dexs.map(async (dex) => ({
-        dex,
-        response: await this.withInfoRequestLimit(() => this.info.metaAndAssetCtxs({ dex })),
-      }))
-    );
-    for (const { response } of dexContexts) {
-      const [meta, assetCtxs] = response as MetaAndAssetCtxsResponse;
-      const universe = (meta as { universe?: HyperliquidMetaUniverse }).universe ?? [];
-      for (const [idx, market] of universe.entries()) {
-        const ctx = assetCtxs[idx] as HyperliquidPerpAssetCtx | undefined;
-        const num = Number(ctx?.markPx ?? NaN);
-        if (Number.isFinite(num)) {
-          out[market.name] = num;
-        }
-      }
+    const existing = inFlightMids.get(cacheKey);
+    if (existing) {
+      return existing;
     }
-    return out;
+
+    const request = (async () => {
+      try {
+        const [mids, dexs] = await Promise.all([
+          this.withInfoRequestLimit(() => this.info.allMids()),
+          this.listPerpDexs(),
+        ]);
+        const out: Record<string, number> = {};
+        for (const [symbol, value] of Object.entries(mids ?? {})) {
+          const num = Number(value);
+          if (Number.isFinite(num)) {
+            out[symbol] = num;
+          }
+        }
+
+        const dexContexts = await Promise.all(
+          dexs.map(async (dex) => ({
+            dex,
+            response: await this.withInfoRequestLimit(() => this.info.metaAndAssetCtxs({ dex })),
+          }))
+        );
+        for (const { response } of dexContexts) {
+          const [meta, assetCtxs] = response as MetaAndAssetCtxsResponse;
+          const universe = (meta as { universe?: HyperliquidMetaUniverse }).universe ?? [];
+          for (const [idx, market] of universe.entries()) {
+            const ctx = assetCtxs[idx] as HyperliquidPerpAssetCtx | undefined;
+            const num = Number(ctx?.markPx ?? NaN);
+            if (Number.isFinite(num)) {
+              out[market.name] = num;
+            }
+          }
+        }
+        midsCache.set(cacheKey, {
+          value: out,
+          expiresAt: Date.now() + this.getSharedMidsCacheTtlMs(),
+        });
+        return out;
+      } catch (error) {
+        if (cached && isTransientInfoError(error)) {
+          return cached.value;
+        }
+        throw error;
+      }
+    })();
+
+    inFlightMids.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      inFlightMids.delete(cacheKey);
+    }
   }
 
   async getMetaAndAssetCtxs(): Promise<MetaAndAssetCtxsResponse> {

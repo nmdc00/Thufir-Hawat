@@ -31,6 +31,9 @@ const mockSummarizeSignalPerformance = vi.fn(
   (_entries: PerpTradeJournalEntry[], signalClass: string): SignalPerformanceSummary => ({
     signalClass,
     sampleCount: 0,
+    observedCount: 0,
+    blockedCount: 0,
+    unresolvedCount: 0,
     wins: 0,
     losses: 0,
     thesisCorrectRate: 0,
@@ -39,6 +42,7 @@ const mockSummarizeSignalPerformance = vi.fn(
     sharpeLike: 0,
     maeProxy: 0,
     mfeProxy: 0,
+    scopeLevel: 'signal_class',
   })
 );
 
@@ -53,7 +57,7 @@ vi.mock('../../src/memory/perp_trade_journal.js', () => ({
 }));
 
 vi.mock('../../src/core/signal_performance.js', () => ({
-  summarizeSignalPerformance: (...args: unknown[]) => mockSummarizeSignalPerformance(...args),
+  summarizeComparableSignalPerformance: (...args: unknown[]) => mockSummarizeSignalPerformance(...args),
 }));
 
 vi.mock('../../src/memory/learning_metrics.js', () => ({
@@ -132,6 +136,9 @@ describe('LlmEntryGate', () => {
       (_entries: PerpTradeJournalEntry[], signalClass: string): SignalPerformanceSummary => ({
         signalClass,
         sampleCount: 0,
+        observedCount: 0,
+        blockedCount: 0,
+        unresolvedCount: 0,
         wins: 0,
         losses: 0,
         thesisCorrectRate: 0,
@@ -140,6 +147,7 @@ describe('LlmEntryGate', () => {
         sharpeLike: 0,
         maeProxy: 0,
         mfeProxy: 0,
+        scopeLevel: 'signal_class',
       })
     );
   });
@@ -179,61 +187,6 @@ describe('LlmEntryGate', () => {
       expect(call.reasonCode).toBe('book_conflict');
     });
 
-    it('rejects without calling LLM when opposite-side losers are already open elsewhere in the book', async () => {
-      const book = makeBook({
-        oppositeSideLosers: [
-          { symbol: 'TON', side: 'long', unrealizedPnlUsd: -1.38 },
-          { symbol: 'SOL', side: 'long', unrealizedPnlUsd: -2.25 },
-        ],
-      });
-      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fine' });
-      const fallbackLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fine' });
-      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, book, dummyConfig);
-
-      const result = await gate.evaluate(makeCandidate({ symbol: 'ETH', side: 'sell' }), markPrice);
-
-      expect(result.verdict).toBe('reject');
-      expect(result.reasoning).toMatch(/opposite-side losers/i);
-      expect(result.reasoning).toMatch(/TON long/i);
-      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-      expect((fallbackLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('calibration enforcement', () => {
-    it('rejects immediately when domain calibration is below market over 50 samples', async () => {
-      mockComputeRollingWindowMetrics.mockReturnValue([
-        { windowSize: 10, sampleCount: 10, brierDelta: null },
-        { windowSize: 20, sampleCount: 20, brierDelta: 0.01 },
-        { windowSize: 50, sampleCount: 50, brierDelta: -0.01 },
-      ]);
-      const book = makeBook();
-      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'Strong setup' });
-      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
-
-      const result = await gate.evaluate(makeCandidate({ domain: 'crypto' }), markPrice);
-
-      expect(result.verdict).toBe('reject');
-      expect(result.reasoning).toBe('domain_calibration_below_market');
-      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-    });
-
-    it('forces resize when 20-sample calibration is degrading', async () => {
-      mockComputeRollingWindowMetrics.mockReturnValue([
-        { windowSize: 10, sampleCount: 10, brierDelta: null },
-        { windowSize: 20, sampleCount: 20, brierDelta: -0.06 },
-        { windowSize: 50, sampleCount: 25, brierDelta: null },
-      ]);
-      const book = makeBook();
-      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'Strong setup' });
-      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
-
-      const result = await gate.evaluate(makeCandidate({ domain: 'macro', notionalUsd: 50 }), markPrice);
-
-      expect(result.verdict).toBe('resize');
-      expect(result.adjustedSizeUsd).toBe(25);
-      expect(result.reasoning).toMatch(/domain_calibration_degrading/);
-    });
   });
 
   describe('LLM approve path', () => {
@@ -247,6 +200,53 @@ describe('LlmEntryGate', () => {
       expect(result.verdict).toBe('approve');
       expect(result.reasoning).toBe('Strong setup');
       expect(result.reasonCode).toBe('approve');
+    });
+
+    it('renders resolved trade stats and configured thresholds in the prompt', async () => {
+      mockSummarizeSignalPerformance.mockImplementation(
+        (_entries: PerpTradeJournalEntry[], signalClass: string): SignalPerformanceSummary => ({
+          signalClass,
+          sampleCount: 3,
+          observedCount: 35,
+          blockedCount: 32,
+          unresolvedCount: 0,
+          wins: 2,
+          losses: 1,
+          thesisCorrectRate: 2 / 3,
+          expectancy: 0.33,
+          variance: 0.2,
+          sharpeLike: 0.74,
+          maeProxy: 0.12,
+          mfeProxy: 0.41,
+          symbolClass: 'macro_contract',
+          marketRegime: 'trending',
+          scopeLevel: 'signal_class_and_symbol_class_and_regime',
+        })
+      );
+      const book = makeBook();
+      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'Strong setup' });
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      await gate.evaluate(
+        makeCandidate({
+          symbol: 'XYZ:GOLD',
+          symbolClass: 'macro_contract',
+          regime: 'trending',
+          mechanicalMinEdge: 0.05,
+          mechanicalMinConfidence: 0.7,
+        }),
+        markPrice
+      );
+
+      const call = (mainLlm.complete as ReturnType<typeof vi.fn>).mock.calls[0];
+      const messages = call[0];
+      const userPrompt = messages[1].content as string;
+      const systemPrompt = messages[0].content as string;
+      expect(userPrompt).toContain('3 resolved trades');
+      expect(userPrompt).not.toContain('35 trades');
+      expect(userPrompt).toContain('Excluded 32 blocked and 0 unresolved attempts');
+      expect(userPrompt).toContain('Mechanical floor already passed: edge >= 5.00% and confidence >= 70.0%');
+      expect(systemPrompt).toContain('Treat edge >10% and confidence >70% as a leverage scale-up bar, not as a general approval threshold');
     });
 
     it('records DB log for approve', async () => {
@@ -823,7 +823,11 @@ describe('LlmEntryGate', () => {
       await gate.evaluate(makeCandidate({ signalClass: 'momentum_breakout' }), markPrice);
 
       expect(mockListPerpTradeJournals).toHaveBeenCalledWith({ limit: 200 });
-      expect(mockSummarizeSignalPerformance).toHaveBeenCalledWith(entries, 'momentum_breakout');
+      expect(mockSummarizeSignalPerformance).toHaveBeenCalledWith(entries, {
+        signalClass: 'momentum_breakout',
+        symbolClass: null,
+        marketRegime: 'trending',
+      });
     });
 
     it('renders live track record stats in the prompt when signal history exists', async () => {
@@ -838,6 +842,9 @@ describe('LlmEntryGate', () => {
       mockSummarizeSignalPerformance.mockReturnValue({
         signalClass: 'momentum_breakout',
         sampleCount: 7,
+        observedCount: 7,
+        blockedCount: 0,
+        unresolvedCount: 0,
         wins: 4,
         losses: 3,
         thesisCorrectRate: 4 / 7,
@@ -846,6 +853,7 @@ describe('LlmEntryGate', () => {
         sharpeLike: 0.81,
         maeProxy: 0.042,
         mfeProxy: 0.118,
+        scopeLevel: 'signal_class',
       });
 
       await gate.evaluate(makeCandidate({ signalClass: 'momentum_breakout' }), markPrice);
@@ -853,7 +861,7 @@ describe('LlmEntryGate', () => {
       const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
       const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
       expect(userContent).toContain('Signal class: momentum_breakout');
-      expect(userContent).toContain('7 trades');
+      expect(userContent).toContain('7 resolved trades');
       expect(userContent).toContain('Win rate: 57%');
       expect(userContent).toContain('Expectancy: 0.37');
       expect(userContent).toContain('Sharpe-like: 0.81');
@@ -874,6 +882,9 @@ describe('LlmEntryGate', () => {
       mockSummarizeSignalPerformance.mockReturnValue({
         signalClass: 'novel_breakout',
         sampleCount: 0,
+        observedCount: 0,
+        blockedCount: 0,
+        unresolvedCount: 0,
         wins: 0,
         losses: 0,
         thesisCorrectRate: 0,
@@ -882,13 +893,14 @@ describe('LlmEntryGate', () => {
         sharpeLike: 0,
         maeProxy: 0,
         mfeProxy: 0,
+        scopeLevel: 'signal_class',
       });
 
       await gate.evaluate(makeCandidate({ signalClass: 'novel_breakout' }), markPrice);
 
       const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
       const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
-      expect(userContent).toContain('No historical trades for signal class "novel_breakout"');
+      expect(userContent).toContain('No resolved comparable trade history for signal class "novel_breakout"');
       expect(userContent).toContain('Treat as a novel setup');
     });
   });

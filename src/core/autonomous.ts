@@ -38,7 +38,7 @@ import {
   resolveVolatilityBucket,
 } from './autonomy_policy.js';
 import { getAutonomyPolicyState } from '../memory/autonomy_policy_state.js';
-import { summarizeSignalPerformance } from './signal_performance.js';
+import { summarizeComparableSignalPerformance } from './signal_performance.js';
 import { SchedulerControlPlane } from './scheduler_control_plane.js';
 import { resolveSessionWeightContext } from './session-weight.js';
 import { AutonomousScanTelemetry } from './performance_metrics.js';
@@ -57,6 +57,7 @@ import { updateTradeProposalOutcome, updateTradeProposalStatus } from '../memory
 import { recordDecisionAudit } from '../memory/decision_audit.js';
 import { getSignalWeightsWithFallback, type SignalWeights } from '../memory/learning.js';
 import type { ToolExecutorContext } from './tool-executor.js';
+import { inferTradeSymbolClass } from './trade_similarity.js';
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -689,7 +690,10 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     const sessionContext = resolveSessionWeightContext(new Date());
     const recentJournals = listPerpTradeJournals({ limit: 200 });
-    const perf = summarizeSignalPerformance(recentJournals, 'llm_originator');
+    const perf = summarizeComparableSignalPerformance(recentJournals, {
+      signalClass: 'llm_originator',
+      symbolClass: inferTradeSymbolClass(symbol),
+    });
     const kellyFraction = computeFractionalKellyFraction({
       expectedEdge: 0.1,
       signalExpectancy: Math.max(0.01, perf.expectancy + 0.5),
@@ -768,10 +772,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       leverageMax: originatorLeverageMax,
       edge: 0.1,
       confidence: proposal.confidence,
+      symbolClass: inferTradeSymbolClass(symbol),
       signalClass: 'llm_originator',
       regime: 'unknown',
       session: sessionContext.session,
       entryReasoning: proposal.thesisText,
+      mechanicalMinEdge: this.config.minEdge,
+      mechanicalMinConfidence: this.config.requireHighConfidence ? 0.7 : 0,
       invalidationPrice: proposal.invalidationPrice,
       suggestedTtlMinutes: proposal.suggestedTtlMinutes,
       expectedRMultiple: proposal.expectedRMultiple,
@@ -806,6 +813,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             confidence: String(proposal.confidence),
             reasoning: `LLM entry gate rejected: ${gateDecision.reasoning}`,
             signalClass: 'llm_originator',
+            symbolClass: inferTradeSymbolClass(symbol),
             expectedEdge: 0.1,
             entryGateVerdict: originatorGateVerdict,
             entryGateReasonCode: originatorGateReasonCode,
@@ -1011,6 +1019,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           const cluster = cycleSnapshot.clusterBySymbol.get(expr.symbol);
           const regime = cluster ? classifyMarketRegime(cluster) : 'choppy';
           const signalClass = classifySignalClass(expr);
+          const symbolClass = inferTradeSymbolClass(symbol);
           const volatilityBucket = cluster ? resolveVolatilityBucket(cluster) : 'medium';
           const liquidityBucket = cluster ? resolveLiquidityBucket(cluster) : 'normal';
           const contextTrace = formatContextPackTrace({
@@ -1039,6 +1048,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
               confidence: expr.confidence != null ? String(expr.confidence) : null,
               reasoning: `Observation-only mode: would execute ${expr.side} ${symbol} (edge=${(expr.expectedEdge * 100).toFixed(2)}%) ${contextTrace}`,
               signalClass,
+              symbolClass,
               marketRegime: regime,
               volatilityBucket,
               liquidityBucket,
@@ -1100,13 +1110,14 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const sessionContext = resolveSessionWeightContext(new Date());
       const regime = cluster ? classifyMarketRegime(cluster) : 'choppy';
       const signalClass = classifySignalClass(expr);
+      const symbolClass = inferTradeSymbolClass(symbol);
       const globalGate = evaluateGlobalTradeGate(this.thufirConfig, {
         symbol,
         direction: expr.side,
         strategySource: expr.newsTrigger?.enabled ? 'discovery_news' : 'discovery_quant',
         triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
         signalClass,
-        symbolClass: symbol === 'BTC' ? 'major' : symbol === 'ETH' || symbol === 'SOL' ? 'liquid_alt' : 'alt',
+        symbolClass,
         session: sessionContext.session,
         marketRegime: regime,
         expectedEdge: expr.expectedEdge,
@@ -1179,6 +1190,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const snapshotAgeMs = Math.max(0, Date.now() - cycleSnapshot.capturedAtMs);
       const regime = cluster ? classifyMarketRegime(cluster) : 'choppy';
       const signalClass = classifySignalClass(expr);
+      const symbolClass = inferTradeSymbolClass(symbol);
       const volatilityBucket = cluster ? resolveVolatilityBucket(cluster) : 'medium';
       const liquidityBucket = cluster ? resolveLiquidityBucket(cluster) : 'normal';
       const globalGate = evaluateGlobalTradeGate(this.thufirConfig, {
@@ -1187,7 +1199,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         strategySource: expr.newsTrigger?.enabled ? 'discovery_news' : 'discovery_quant',
         triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
         signalClass,
-        symbolClass: symbol === 'BTC' ? 'major' : symbol === 'ETH' || symbol === 'SOL' ? 'liquid_alt' : 'alt',
+        symbolClass,
         session: sessionContext.session,
         marketRegime: regime,
         expectedEdge: expr.expectedEdge,
@@ -1239,7 +1251,11 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         policySizeMultiplier < 1
           ? `policy=${globalGate.reasonCode ?? 'policy.size_adjust'} size_multiplier=${policySizeMultiplier.toFixed(2)} reason=${globalGate.reason ?? 'size adjustment applied'}`
           : null;
-      const perf = summarizeSignalPerformance(listPerpTradeJournals({ limit: 200 }), signalClass);
+      const perf = summarizeComparableSignalPerformance(listPerpTradeJournals({ limit: 200 }), {
+        signalClass,
+        symbolClass,
+        marketRegime: regime,
+      });
       const kellyFraction = computeFractionalKellyFraction({
         expectedEdge: expr.expectedEdge,
         signalExpectancy: Math.max(0.01, perf.expectancy + 0.5),
@@ -1316,10 +1332,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         leverageMax,
         edge: expr.expectedEdge,
         confidence: confidenceWeighted,
+        symbolClass,
         signalClass,
         regime,
         session: sessionContext.session,
         entryReasoning: expr.expectedMove ?? '',
+        mechanicalMinEdge: adaptiveMinEdge,
+        mechanicalMinConfidence: this.config.requireHighConfidence ? 0.7 : 0,
       };
       let entryGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
       let entryGateReasonCode: string | null = null;
@@ -1344,6 +1363,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
               confidence: String(confidenceWeighted),
               reasoning: `LLM entry gate rejected: ${gateDecision.reasoning}${policyReasoning ? ` | ${policyReasoning}` : ''}`,
               signalClass,
+              symbolClass,
               marketRegime: regime,
               volatilityBucket,
               liquidityBucket,
@@ -1578,6 +1598,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           entryGateVerdict,
           entryGateReasonCode,
           signalClass,
+          symbolClass,
           marketRegime: regime,
           volatilityBucket,
           liquidityBucket,
