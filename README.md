@@ -79,6 +79,7 @@ The goal is to answer three hard questions with explicit wiring:
 This is documented in:
 - [release/v2.2-adaptive-decision-learning.prd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.2-adaptive-decision-learning.prd.md)
 - [release/v2.2-adaptive-decision-learning.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.2-adaptive-decision-learning.tdd.md)
+- [release/v2.3.3-production-sanity-fixes.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.3.3-production-sanity-fixes.tdd.md)
 
 ## Architecture
 

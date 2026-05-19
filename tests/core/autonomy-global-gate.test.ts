@@ -23,6 +23,12 @@ vi.mock('../../src/core/signal_performance.js', () => ({
     expectancy: 0.2,
     variance: 1,
   })),
+  summarizeComparableSignalPerformance: vi.fn(() => ({
+    sampleCount: 0,
+    sharpeLike: 10,
+    expectancy: 0.2,
+    variance: 1,
+  })),
 }));
 
 vi.mock('../../src/core/daily_pnl.js', () => ({

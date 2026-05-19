@@ -64,6 +64,9 @@ const mockListPerpTradeJournals = vi.fn(() => []);
 const mockSummarizeSignalPerformance = vi.fn(() => ({
   signalClass: 'momentum_breakout',
   sampleCount: 0,
+  observedCount: 0,
+  blockedCount: 0,
+  unresolvedCount: 0,
   wins: 0,
   losses: 0,
   thesisCorrectRate: 0,
@@ -85,6 +88,7 @@ vi.mock('../../src/memory/perp_trade_journal.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: (...args: unknown[]) => mockSummarizeSignalPerformance(...args),
+  summarizeComparableSignalPerformance: (...args: unknown[]) => mockSummarizeSignalPerformance(...args),
 }));
 
 vi.mock('../../src/memory/learning_metrics.js', () => ({
