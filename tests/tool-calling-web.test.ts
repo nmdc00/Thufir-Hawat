@@ -173,6 +173,51 @@ describe('web tools', () => {
     }
   });
 
+  it('suppresses jsdom css parse noise for malformed inline styles while still extracting content', async () => {
+    const html = `
+      <html>
+        <head>
+          <title>Malformed CSS</title>
+          <style>
+            /* Hide page title on Newsletter Confirmed page */
+            .page-id-192532 .entry-title,
+            .page-id-192532 .page-title {
+              display: none !important;
+            }
+            }
+          </style>
+        </head>
+        <body>
+          <article>Readable content survives malformed CSS.</article>
+        </body>
+      </html>
+    `;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (key: string) => (key === 'content-type' ? 'text/html' : null),
+      },
+      arrayBuffer: async () => new TextEncoder().encode(html).buffer,
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // @ts-expect-error test stub
+    globalThis.fetch = fetchMock;
+
+    const result = await executeToolCall(
+      'web_fetch',
+      { url: 'https://example.com/newsletter', max_chars: 200 },
+      { config: {} as any, marketClient: {} as any }
+    );
+
+    expect(result.success).toBe(true);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    if (result.success) {
+      const data = result.data as { content: string; title: string | null };
+      expect(data.title).toBeTruthy();
+      expect(data.content).toContain('Readable content survives malformed CSS.');
+    }
+  });
+
   it('returns raw text for non-HTML responses', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
