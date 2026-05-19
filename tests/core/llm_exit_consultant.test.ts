@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { LlmExitConsultant } from '../../src/core/llm_exit_consultant.js';
+import { getExecutionContext, withExecutionContext } from '../../src/core/llm_infra.js';
 import type { BookEntry } from '../../src/core/position_book.js';
 
 // ---------------------------------------------------------------------------
@@ -377,6 +378,80 @@ describe('LlmExitConsultant.consult', () => {
       expect.stringContaining('using fallback LLM')
     );
   }, 15000);
+
+  it('applies heartbeat execution context to the main consultant call', async () => {
+    const observedContexts: Array<ReturnType<typeof getExecutionContext>> = [];
+    const main = {
+      complete: vi.fn().mockImplementation(async () => {
+        observedContexts.push(getExecutionContext());
+        return { content: JSON.stringify({ action: 'hold', reasoning: 'ok' }), model: 'mock' };
+      }),
+    };
+    const fallback = makeLlm({ action: 'hold', reasoning: 'fb' });
+    const consultant = makeConsultant(main, fallback);
+
+    await consultant.consult(makeBookEntry(), 50000, 0.01, 'context');
+
+    expect(observedContexts).toHaveLength(1);
+    expect(observedContexts[0]).toMatchObject({
+      mode: 'LIGHT_REASONING',
+      critical: false,
+      reason: 'exit_consultant_main',
+      source: 'heartbeat',
+    });
+  });
+
+  it('applies heartbeat execution context to the fallback consultant call', async () => {
+    const observedContexts: Array<ReturnType<typeof getExecutionContext>> = [];
+    const main = makeErrorLlm();
+    const fallback = {
+      complete: vi.fn().mockImplementation(async () => {
+        observedContexts.push(getExecutionContext());
+        return { content: JSON.stringify({ action: 'hold', reasoning: 'fallback ok' }), model: 'mock' };
+      }),
+    };
+    const consultant = makeConsultant(main, fallback);
+
+    await consultant.consult(makeBookEntry(), 50000, 0.01, 'context');
+
+    expect(observedContexts).toHaveLength(1);
+    expect(observedContexts[0]).toMatchObject({
+      mode: 'LIGHT_REASONING',
+      critical: false,
+      reason: 'exit_consultant_fallback',
+      source: 'heartbeat',
+    });
+  });
+
+  it('preserves an existing execution context instead of overwriting it', async () => {
+    const observedContexts: Array<ReturnType<typeof getExecutionContext>> = [];
+    const main = {
+      complete: vi.fn().mockImplementation(async () => {
+        observedContexts.push(getExecutionContext());
+        return { content: JSON.stringify({ action: 'hold', reasoning: 'ok' }), model: 'mock' };
+      }),
+    };
+    const fallback = makeLlm({ action: 'hold', reasoning: 'fb' });
+    const consultant = makeConsultant(main, fallback);
+
+    await withExecutionContext(
+      {
+        mode: 'FULL_AGENT',
+        critical: true,
+        reason: 'preexisting_context',
+        source: 'test',
+      },
+      () => consultant.consult(makeBookEntry(), 50000, 0.01, 'context')
+    );
+
+    expect(observedContexts).toHaveLength(1);
+    expect(observedContexts[0]).toMatchObject({
+      mode: 'FULL_AGENT',
+      critical: true,
+      reason: 'preexisting_context',
+      source: 'test',
+    });
+  });
 
   it('returns hold and does not throw when both LLMs fail', async () => {
     const main = makeErrorLlm();
