@@ -178,7 +178,6 @@ const TRADE_POLICY_ADJUSTMENT_COLUMNS: ColumnSpec[] = [
   { name: 'expires_at', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN expires_at TEXT' },
   { name: 'updated_at', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN updated_at TEXT' },
 ];
-
 export const LEGACY_PERP_CONTAMINATION_WHERE_SQL = `domain = 'perp'
   AND outcome_basis = 'final'
   AND predicted_outcome IN ('YES', 'NO')
@@ -402,7 +401,6 @@ function backfillTradePolicyAdjustmentScopeKeys(db: Database.Database): void {
     WHERE scope_key IS NULL OR TRIM(scope_key) = ''
   `);
 }
-
 export function cleanupLegacyPerpComparableRows(db: Database.Database): number {
   if (
     !hasPredictionColumns(db, [

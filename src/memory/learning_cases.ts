@@ -95,7 +95,6 @@ export interface LearningCaseTrackSummary {
   interventionByDomain: Record<string, number>;
   regretByDomain: Record<string, number>;
 }
-
 type LearningCaseRow = {
   id: string;
   case_type: LearningCaseType;
@@ -258,7 +257,6 @@ export function createLearningCase(input: LearningCaseInput): LearningCase {
   });
   return transaction(input);
 }
-
 export function getLearningCaseById(id: string): LearningCase {
   const db = openDatabase();
   const row = db
@@ -287,6 +285,8 @@ export function updateLearningCaseOutcome(input: UpdateLearningCaseOutcomeInput)
   ).run({
     id: input.id,
     outcome: input.outcome === undefined ? null : serializeJson(input.outcome),
+    qualityScores:
+      input.qualityScores === undefined ? null : serializeJson(input.qualityScores),
     qualityScores:
       input.qualityScores === undefined ? null : serializeJson(input.qualityScores),
     policyInputs: input.policyInputs === undefined ? null : serializeJson(input.policyInputs),

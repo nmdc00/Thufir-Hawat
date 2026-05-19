@@ -1,8 +1,8 @@
 import type { ExecutionAdapter, TradeDecision, TradeResult, Order } from '../executor.js';
 import type { Market } from '../markets.js';
 import { logWalletOperation } from '../../memory/audit.js';
-import { createPrediction, recordExecution } from '../../memory/predictions.js';
 import { createLearningCase } from '../../memory/learning_cases.js';
+import { createPrediction, recordExecution } from '../../memory/predictions.js';
 import { recordTrade } from '../../memory/trades.js';
 import { recordPerpTrade } from '../../memory/perp_trades.js';
 import { cancelPaperPerpOrder, getPaperPerpBookSummary, listPaperPerpOpenOrders, placePaperPerpOrder } from '../../memory/paper_perps.js';
