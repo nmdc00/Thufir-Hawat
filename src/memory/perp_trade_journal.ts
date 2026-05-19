@@ -33,6 +33,7 @@ export type PerpTradeJournalEntry = {
   realizedFillTimeMs?: number | null;
   feeObservationError?: string | null;
   signalClass?: string | null;
+  symbolClass?: string | null;
   marketRegime?: 'trending' | 'choppy' | 'high_vol_expansion' | 'low_vol_compression' | null;
   volatilityBucket?: 'low' | 'medium' | 'high' | null;
   liquidityBucket?: 'thin' | 'normal' | 'deep' | null;

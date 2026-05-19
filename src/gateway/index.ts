@@ -53,6 +53,7 @@ import { formatProactiveSummary, runProactiveSearch } from '../core/proactive_se
 import { buildAgentPeerSessionKey, resolveThreadSessionKeys } from './session_keys.js';
 import { createAgentRegistry } from './agent_router.js';
 import { createLlmClient } from '../core/llm.js';
+import { withExecutionContextIfMissing } from '../core/llm_infra.js';
 import { installConsoleFileMirror } from '../core/unified-logging.js';
 import { PositionHeartbeatService } from '../core/position_heartbeat.js';
 import { resolveOutcomes } from '../core/resolver.js';
@@ -1179,13 +1180,22 @@ if (config.channels?.telegram?.monitor?.enabled) {
       const infoLlm = primaryAgent.getInfoLlm() ?? primaryAgent.getLlm();
       let relevant = false;
       try {
-        const screen = await infoLlm.complete([
+        const screen = await withExecutionContextIfMissing(
           {
-            role: 'user',
-            content:
-              `Relevance filter for a trading system. Does this news have a direct, immediate impact on tradeable assets (crypto perps, oil, gold, FX)?\n\nNews: ${text.slice(0, 500)}\n\nReply YES or NO only.`,
+            mode: 'LIGHT_REASONING',
+            critical: false,
+            reason: 'telegram_monitor_relevance',
+            source: 'gateway',
           },
-        ], { temperature: 0 });
+          () =>
+            infoLlm.complete([
+              {
+                role: 'user',
+                content:
+                  `Relevance filter for a trading system. Does this news have a direct, immediate impact on tradeable assets (crypto perps, oil, gold, FX)?\n\nNews: ${text.slice(0, 500)}\n\nReply YES or NO only.`,
+              },
+            ], { temperature: 0 })
+        );
         relevant = screen.content.trim().toUpperCase().startsWith('YES');
       } catch {
         return;

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   mockPerpDexs,
   mockMetaAndAssetCtxs,
+  mockAllMids,
   mockRecentTrades,
   mockCandleSnapshot,
   mockInfoClientCtor,
@@ -15,6 +16,7 @@ const {
       ? [{ universe: [{ name: `${dex}:ALT` }] }, [{ markPx: '2', openInterest: '20' }]]
       : [{ universe: [{ name: 'BTC' }] }, [{ markPx: '1', openInterest: '10' }]]
   ),
+  mockAllMids: vi.fn(async () => ({ BTC: '1' })),
   mockRecentTrades: vi.fn(async () => []),
   mockCandleSnapshot: vi.fn(async () => []),
   mockInfoClientCtor: vi.fn(),
@@ -31,6 +33,7 @@ vi.mock('@nktkas/hyperliquid', () => ({
   InfoClient: class {
     perpDexs = mockPerpDexs;
     metaAndAssetCtxs = mockMetaAndAssetCtxs;
+    allMids = mockAllMids;
     recentTrades = mockRecentTrades;
     candleSnapshot = mockCandleSnapshot;
 
@@ -50,6 +53,7 @@ describe('HyperliquidClient shared request cache', () => {
     vi.resetModules();
     mockPerpDexs.mockClear();
     mockMetaAndAssetCtxs.mockClear();
+    mockAllMids.mockClear();
     mockRecentTrades.mockClear();
     mockCandleSnapshot.mockClear();
     mockInfoClientCtor.mockClear();
@@ -92,6 +96,22 @@ describe('HyperliquidClient shared request cache', () => {
     expect(first).toEqual(['dexA']);
     expect(second).toEqual(['dexA']);
     expect(mockPerpDexs).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces getAllMids requests across separate client instances', async () => {
+    const { HyperliquidClient } = await import('../../src/execution/hyperliquid/client.js');
+    const config = { hyperliquid: { enabled: true } } as any;
+
+    const clientA = new HyperliquidClient(config);
+    const clientB = new HyperliquidClient(config);
+
+    const [first, second] = await Promise.all([clientA.getAllMids(), clientB.getAllMids()]);
+
+    expect(first).toEqual({ BTC: 1, 'dexA:ALT': 2 });
+    expect(second).toEqual({ BTC: 1, 'dexA:ALT': 2 });
+    expect(mockAllMids).toHaveBeenCalledTimes(1);
+    expect(mockPerpDexs).toHaveBeenCalledTimes(1);
+    expect(mockMetaAndAssetCtxs).toHaveBeenCalledTimes(1);
   });
 
   it('limits concurrent info requests per base URL', async () => {
@@ -146,6 +166,32 @@ describe('HyperliquidClient shared request cache', () => {
       await vi.advanceTimersByTimeAsync(1);
       await pending;
       expect(mockRecentTrades).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns stale mids when a refresh hits a transient failure after cache warmup', async () => {
+    vi.useFakeTimers();
+    try {
+      const { HyperliquidClient } = await import('../../src/execution/hyperliquid/client.js');
+      const config = {
+        hyperliquid: { enabled: true, midsCacheTtlMs: 10 },
+      } as any;
+      const client = new HyperliquidClient(config);
+
+      mockAllMids.mockResolvedValueOnce({ BTC: '101' });
+      const first = await client.getAllMids();
+      expect(first).toEqual({ BTC: 101, 'dexA:ALT': 2 });
+
+      await vi.advanceTimersByTimeAsync(11);
+      mockAllMids.mockRejectedValueOnce(
+        Object.assign(new Error('429 Too Many Requests - null'), { response: { status: 429 } })
+      );
+
+      const second = await client.getAllMids();
+      expect(second).toEqual(first);
+      expect(mockAllMids).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
