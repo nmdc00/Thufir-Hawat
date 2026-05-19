@@ -530,19 +530,27 @@ CREATE TABLE IF NOT EXISTS opportunity_rank_logs (
     source TEXT,
     fingerprint TEXT,
     generated_at TEXT,
-    expires_at TEXT,
-    mode TEXT,
-    provider TEXT,
-    model TEXT,
-    markets_scanned INTEGER NOT NULL DEFAULT 0,
-    news_items_analyzed INTEGER NOT NULL DEFAULT 0,
-    opportunities_found INTEGER NOT NULL DEFAULT 0,
-    top_market_id TEXT,
-    top_rank INTEGER,
-    top_score REAL,
+    trigger_reason TEXT,
+    symbol TEXT,
+    symbol_class TEXT,
+    rank INTEGER,
+    opportunity_score REAL,
+    component_scores TEXT,
+    trigger_reasons TEXT,
+    failed_floors TEXT,
+    selected_for_shortlist INTEGER NOT NULL DEFAULT 0,
+    total_candidates INTEGER NOT NULL DEFAULT 0,
+    eligible_candidates INTEGER NOT NULL DEFAULT 0,
+    selected_symbol TEXT,
+    selection_reason TEXT,
     artifact TEXT,
+    payload TEXT,
     notes TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_opportunity_rank_logs_scan_id ON opportunity_rank_logs(scan_id);
+CREATE INDEX IF NOT EXISTS idx_opportunity_rank_logs_created_at ON opportunity_rank_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_opportunity_rank_logs_rank ON opportunity_rank_logs(scan_id, rank);
 
 -- ============================================================================
 -- Execution State (Execution Mode Gating)

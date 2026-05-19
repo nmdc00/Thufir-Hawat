@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => {
   const upsertExitPolicy = vi.fn();
   const updateTradeProposalOutcome = vi.fn();
   const createPrediction = vi.fn(() => 'pred-mock-id');
+  const recordOpportunityRankScan = vi.fn();
 
   // Stable mock objects — replaced entirely on each TaSurface/OriginationTrigger/LlmTradeOriginator construction
   // by capturing via the constructor mock
@@ -44,7 +45,7 @@ const mocks = vi.hoisted(() => {
     dbRun, dbPrepare, dbExec,
     taComputeAll, triggerShouldFire, originatorPropose,
     upsertExitPolicy, updateTradeProposalOutcome,
-    createPrediction,
+    createPrediction, recordOpportunityRankScan,
     taSurfaceInstance, triggerInstance, originatorInstance,
   };
 });
@@ -74,6 +75,10 @@ vi.mock('../../src/core/llm_trade_originator.js', () => ({
 
 vi.mock('../../src/memory/llm_trade_proposals.js', () => ({
   updateTradeProposalOutcome: (...args: unknown[]) => mocks.updateTradeProposalOutcome(...args),
+}));
+
+vi.mock('../../src/memory/opportunity_rank_logs.js', () => ({
+  recordOpportunityRankScan: (...args: unknown[]) => mocks.recordOpportunityRankScan(...args),
 }));
 
 vi.mock('../../src/discovery/engine.js', () => ({
@@ -336,16 +341,25 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(shortlist[0]).toMatchObject({
       symbol: 'BTC',
       rank: 1,
-      assetClass: 'crypto',
+      symbolClass: 'crypto',
     });
 
     const bundle = mocks.originatorPropose.mock.calls[0]![0] as Record<string, any>;
     expect(bundle.rankedOpportunities[0]).toMatchObject({
       symbol: 'BTC',
       rank: 1,
-      triggerReasons: ['oi_spike_1h:12.0%', 'volume_spike:200.0%'],
     });
-    expect(bundle.rankedOpportunities[0].componentScores.preselection).toBe(1);
+    expect(bundle.rankedOpportunities[0].triggerReasons).toEqual(
+      expect.arrayContaining(['oi_spike_1h:12.0%', 'volume_spike:200.0%'])
+    );
+    expect(bundle.rankedOpportunities[0].componentScores.structuralEdgeScore).toBeGreaterThan(0);
+    expect(mocks.recordOpportunityRankScan).toHaveBeenCalledTimes(1);
+    expect(mocks.recordOpportunityRankScan.mock.calls[0]![0]).toMatchObject({
+      source: 'autonomous_originator_scan',
+      totalCandidates: 1,
+      eligibleCandidates: 1,
+      selectedSymbol: 'BTC',
+    });
   });
 
   it('2. null proposal + cadence trigger → quant fallback runs', async () => {

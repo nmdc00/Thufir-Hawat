@@ -55,6 +55,14 @@ import { LlmTradeOriginator, type RankedOpportunityContext } from './llm_trade_o
 import { listEvents } from '../memory/events.js';
 import { updateTradeProposalOutcome } from '../memory/llm_trade_proposals.js';
 import { recordDecisionAudit } from '../memory/decision_audit.js';
+import { recordOpportunityRankScan } from '../memory/opportunity_rank_logs.js';
+import { scoreAndRankOpportunityCandidates } from './opportunity_ranker.js';
+import type {
+  OpportunityCandidate,
+  OpportunityCandidateInput,
+  OpportunityMarketRegime,
+  OpportunitySignalClass,
+} from './opportunity_types.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 
 function clamp01(value: number): number {
@@ -65,118 +73,235 @@ function normalizeOpportunitySymbol(symbol: string): string {
   return String(symbol ?? '').trim().toUpperCase();
 }
 
-function buildShortlistReason(triggerReasons: string[], trendBias: 'up' | 'down' | 'flat'): string {
-  if (triggerReasons.length > 0) {
-    return triggerReasons.join('; ');
-  }
-  if (trendBias !== 'flat') {
-    return `trend_bias:${trendBias}`;
-  }
-  return 'ranked_momentum_setup';
+function inferOpportunitySignalClass(snapshot: TaSnapshot): OpportunitySignalClass {
+  const realizedMovePct = Math.max(
+    Math.abs(snapshot.priceVs24hHigh),
+    Math.abs(snapshot.priceVs24hLow)
+  );
+  if (Math.abs(snapshot.fundingRatePct) >= 35) return 'funding_revert';
+  if (realizedMovePct >= 6 && Math.abs(snapshot.oiDelta1hPct) >= 10) return 'liquidation_cascade';
+  if (snapshot.trendBias === 'flat') return 'mean_reversion';
+  return 'momentum_breakout';
 }
 
-function buildRankedOpportunities(
+function inferOpportunityRegime(snapshot: TaSnapshot): OpportunityMarketRegime {
+  const realizedMovePct = Math.max(
+    Math.abs(snapshot.priceVs24hHigh),
+    Math.abs(snapshot.priceVs24hLow)
+  );
+  if (snapshot.trendBias === 'flat' && realizedMovePct <= 2) return 'quiet';
+  if (snapshot.trendBias === 'flat') return 'reversion';
+  if (realizedMovePct >= 6) return 'volatile';
+  if (Math.abs(snapshot.priceVsEma20_1h) >= 1.5) return 'breakout';
+  return 'trend';
+}
+
+function inferOpportunitySide(snapshot: TaSnapshot): 'long' | 'short' {
+  if (snapshot.trendBias === 'down') return 'short';
+  if (snapshot.trendBias === 'up') return 'long';
+  return snapshot.priceVs24hHigh < snapshot.priceVs24hLow ? 'long' : 'short';
+}
+
+function countSymbolEvents(symbol: string, pendingEvents: Array<{ title: string; tags?: string[] }>): number {
+  const normalizedSymbol = normalizeOpportunitySymbol(symbol);
+  return pendingEvents.filter((event) => {
+    const haystacks = [event.title, ...(event.tags ?? [])].map((value) =>
+      String(value ?? '').toUpperCase()
+    );
+    return haystacks.some((value) => value.includes(normalizedSymbol));
+  }).length;
+}
+
+function buildOpportunityCandidateInputs(
   candidates: DiscoveryCandidate[],
   snapshots: TaSnapshot[],
-  shortlistLimit: number
-): RankedOpportunityContext[] {
+  book: PositionBook,
+  pendingEvents: Array<{ title: string; tags?: string[] }>
+): OpportunityCandidateInput[] {
   const candidateBySymbol = new Map(
     candidates.map((candidate) => [normalizeOpportunitySymbol(candidate.symbol), candidate])
   );
+  return snapshots.map((snapshot) => {
+    const candidate = candidateBySymbol.get(normalizeOpportunitySymbol(snapshot.symbol));
+    const eventMatches = countSymbolEvents(snapshot.symbol, pendingEvents);
+    const realizedMovePct = Math.max(
+      Math.abs(snapshot.priceVs24hHigh),
+      Math.abs(snapshot.priceVs24hLow)
+    );
+    const trendStrength = clamp01(Math.abs(snapshot.priceVsEma20_1h) / 3.5);
+    const breakoutQuality =
+      snapshot.trendBias === 'up'
+        ? clamp01(1 - Math.abs(Math.min(0, snapshot.priceVs24hHigh)) / 5)
+        : snapshot.trendBias === 'down'
+          ? clamp01(1 - Math.abs(Math.max(0, snapshot.priceVs24hLow)) / 5)
+          : clamp01(1 - Math.abs(snapshot.priceVsEma20_1h) / 4);
+    const regime = inferOpportunityRegime(snapshot);
+    const signalClass = inferOpportunitySignalClass(snapshot);
+    const inferredSide = inferOpportunitySide(snapshot);
+    const liquidityUsd = Math.max(
+      candidate?.dayVolumeUsd ?? 0,
+      candidate?.openInterestUsd ?? 0,
+      snapshot.oiUsd
+    );
+    const stopDistancePct = Math.max(
+      0.5,
+      Math.min(8, Math.abs(snapshot.priceVsEma20_1h) * 0.9 + realizedMovePct * 0.35)
+    );
+    const invalidationClarity = clamp01(
+      0.45 +
+        (candidate?.executionScore ?? 0.5) * 0.25 +
+        breakoutQuality * 0.2 +
+        Math.max(0, 1 - stopDistancePct / 8) * 0.1
+    );
+    const expectedR = 1.1 + breakoutQuality * 1.4 + trendStrength * 1.1;
+    const priceExtension = clamp01(
+      Math.max(0, realizedMovePct - 1.5) / 8 + Math.abs(snapshot.priceVsEma20_1h) / 8
+    );
+    return {
+      symbol: snapshot.symbol,
+      symbolClass: candidate?.assetClass === 'cross_asset' ? 'xyz' : 'crypto',
+      signalClass,
+      triggerReasons: snapshot.triggerReasons,
+      attentionFeatures: {
+        volumeAbnormalityPct: snapshot.volumeVs24hAvgPct,
+        oiAbnormalityPct: Math.max(Math.abs(snapshot.oiDelta1hPct), Math.abs(snapshot.oiDelta4hPct)),
+        fundingRatePct: candidate?.assetClass === 'cross_asset' ? null : snapshot.fundingRatePct,
+        realizedMovePct,
+        eventIntensity: clamp01(eventMatches / 2),
+        cadenceWeight: 1,
+      },
+      structuralFeatures: {
+        expectedEdge: clamp01((candidate?.score ?? 0.4) * 0.45 + breakoutQuality * 0.3 + trendStrength * 0.25),
+        setupQuality: breakoutQuality,
+        relativeStrength: trendStrength,
+        signalAgreement: clamp01(
+          (snapshot.trendBias === 'flat' ? 0.45 : 0.75) +
+            Math.max(0, snapshot.oiDelta1hPct) / 40
+        ),
+        catalystFreshness: clamp01((snapshot.triggerReasons.length > 0 ? 0.6 : 0.3) + eventMatches * 0.2),
+        invalidationClarity,
+        expectedR,
+      },
+      crowdingFeatures: {
+        priceExtension,
+        oiConfirmation: clamp01(Math.abs(snapshot.oiDelta4hPct) / 12),
+        fundingSkew: clamp01(Math.abs(snapshot.fundingRatePct) / 80),
+        participationQuality: clamp01(
+          Math.abs(snapshot.oiDelta1hPct) / 16 + Math.min(snapshot.volumeVs24hAvgPct, 220) / 440
+        ),
+        exhaustionRisk: clamp01(
+          Math.max(0, snapshot.volumeVs24hAvgPct - 170) / 220 +
+            Math.max(0, Math.abs(snapshot.fundingRatePct) - 35) / 120
+        ),
+      },
+      regimeFeatures: {
+        marketRegime: regime,
+        regimeCompatibility: clamp01(
+          (signalClass === 'mean_reversion'
+            ? regime === 'reversion' || regime === 'quiet'
+              ? 0.85
+              : 0.35
+            : regime === 'trend' || regime === 'breakout' || regime === 'volatile'
+              ? 0.82
+              : 0.4)
+        ),
+        volatilityState: clamp01(realizedMovePct / 6),
+        expansionBias: clamp01(Math.abs(snapshot.priceVsEma20_1h) / 3),
+        trendPersistence: snapshot.trendBias === 'flat' ? 0.35 : clamp01(0.55 + Math.abs(snapshot.oiDelta4hPct) / 25),
+      },
+      executionFeatures: {
+        liquidityUsd,
+        spreadBps: candidate?.spreadProxyBps ?? 25,
+        stopDistancePct,
+        invalidationClarity,
+        expectedR,
+        portfolioConflict: book.hasConflict(snapshot.symbol, inferredSide),
+        sameSymbolConflict: book.hasPosition(snapshot.symbol, inferredSide),
+        stackingOverride: false,
+      },
+    } satisfies OpportunityCandidateInput;
+  });
+}
 
-  const ranked = snapshots
-    .map((snapshot) => {
-      const candidate = candidateBySymbol.get(normalizeOpportunitySymbol(snapshot.symbol));
-      if (!candidate) {
-        return null;
-      }
+function buildShortlistReason(candidate: OpportunityCandidate): string {
+  if (candidate.triggerReasons.length > 0) {
+    return candidate.triggerReasons.join('; ');
+  }
+  if (candidate.hardFloorVerdict.failedFloors.length > 0) {
+    return `ineligible:${candidate.hardFloorVerdict.failedFloors.join(',')}`;
+  }
+  return `edge=${candidate.componentScores.structuralEdgeScore.toFixed(2)} regime=${candidate.componentScores.regimeFitScore.toFixed(2)}`;
+}
 
-      const triggerReasons = snapshot.triggerReasons ?? [];
-      const triggerScore = clamp01(triggerReasons.length / 3);
-      const participationScore = clamp01(
-        Math.max(
-          Math.abs(snapshot.oiDelta1hPct) / 20,
-          Math.abs(snapshot.oiDelta4hPct) / 30,
-          snapshot.volumeVs24hAvgPct / 250
-        )
-      );
-      const trendScore = clamp01(
-        (snapshot.trendBias === 'flat' ? 0.25 : 0.65) + Math.abs(snapshot.priceVsEma20_1h) / 4
-      );
-      const totalScore = clamp01(
-        candidate.score * 0.35 +
-          candidate.liquidityScore * 0.1 +
-          candidate.executionScore * 0.1 +
-          candidate.fundingScore * 0.05 +
-          triggerScore * 0.2 +
-          participationScore * 0.12 +
-          trendScore * 0.08
-      );
+function buildRankedOpportunityContexts(
+  rankedCandidates: OpportunityCandidate[],
+  selectedCandidates: DiscoveryCandidate[],
+  snapshots: TaSnapshot[],
+  records: Array<{ symbol: string; rank: number; selectedForShortlist: boolean }>
+): RankedOpportunityContext[] {
+  const selectedBySymbol = new Map(
+    selectedCandidates.map((candidate) => [normalizeOpportunitySymbol(candidate.symbol), candidate])
+  );
+  const snapshotsBySymbol = new Map(
+    snapshots.map((snapshot) => [normalizeOpportunitySymbol(snapshot.symbol), snapshot])
+  );
+  const ranksBySymbol = new Map(
+    records.map((record) => [normalizeOpportunitySymbol(record.symbol), record])
+  );
 
-      const hasActionableSignal =
-        triggerReasons.length > 0 ||
-        participationScore >= 0.4 ||
-        (snapshot.trendBias !== 'flat' && Math.abs(snapshot.priceVsEma20_1h) >= 0.75);
-      if (!hasActionableSignal || totalScore < 0.45) {
-        return null;
-      }
-
+  return rankedCandidates
+    .filter((candidate) => ranksBySymbol.get(normalizeOpportunitySymbol(candidate.symbol))?.selectedForShortlist)
+    .map((candidate) => {
+      const discovery = selectedBySymbol.get(normalizeOpportunitySymbol(candidate.symbol));
+      const snapshot = snapshotsBySymbol.get(normalizeOpportunitySymbol(candidate.symbol));
+      const rankRecord = ranksBySymbol.get(normalizeOpportunitySymbol(candidate.symbol));
       return {
-        symbol: snapshot.symbol,
-        rank: 0,
-        totalScore,
-        assetClass: candidate.assetClass,
-        shortlistReason: buildShortlistReason(triggerReasons, snapshot.trendBias),
-        triggerReasons: [...triggerReasons],
-        componentScores: {
-          preselection: candidate.score,
-          liquidity: candidate.liquidityScore,
-          execution: candidate.executionScore,
-          funding: candidate.fundingScore,
-          trigger: triggerScore,
-          participation: participationScore,
-          trend: trendScore,
-        },
+        symbol: candidate.symbol,
+        rank: rankRecord?.rank ?? 0,
+        opportunityScore: candidate.opportunityScore,
+        symbolClass: candidate.symbolClass,
+        signalClass: candidate.signalClass,
+        shortlistReason: buildShortlistReason(candidate),
+        triggerReasons: [...candidate.triggerReasons],
+        componentScores: candidate.componentScores,
+        hardFloorVerdict: candidate.hardFloorVerdict,
         discovery: {
-          score: candidate.score,
-          liquidityScore: candidate.liquidityScore,
-          executionScore: candidate.executionScore,
-          fundingScore: candidate.fundingScore,
-          openInterestUsd: candidate.openInterestUsd,
-          dayVolumeUsd: candidate.dayVolumeUsd,
-          fundingRate: candidate.fundingRate,
-          spreadProxyBps: candidate.spreadProxyBps,
-          markPx: candidate.markPx,
-          oraclePx: candidate.oraclePx,
+          score: discovery?.score ?? 0,
+          liquidityScore: discovery?.liquidityScore ?? 0,
+          executionScore: discovery?.executionScore ?? 0,
+          fundingScore: discovery?.fundingScore ?? 0,
+          openInterestUsd: discovery?.openInterestUsd ?? 0,
+          dayVolumeUsd: discovery?.dayVolumeUsd ?? 0,
+          fundingRate: discovery?.fundingRate ?? 0,
+          spreadProxyBps: discovery?.spreadProxyBps ?? 0,
+          markPx: discovery?.markPx ?? 0,
+          oraclePx: discovery?.oraclePx ?? 0,
         },
         ta: {
-          price: snapshot.price,
-          priceVs24hHigh: snapshot.priceVs24hHigh,
-          priceVs24hLow: snapshot.priceVs24hLow,
-          oiUsd: snapshot.oiUsd,
-          oiDelta1hPct: snapshot.oiDelta1hPct,
-          oiDelta4hPct: snapshot.oiDelta4hPct,
-          fundingRatePct: snapshot.fundingRatePct,
-          volumeVs24hAvgPct: snapshot.volumeVs24hAvgPct,
-          priceVsEma20_1h: snapshot.priceVsEma20_1h,
-          trendBias: snapshot.trendBias,
-          rawFeatures: snapshot.rawFeatures,
+          price: snapshot?.price ?? 0,
+          priceVs24hHigh: snapshot?.priceVs24hHigh ?? 0,
+          priceVs24hLow: snapshot?.priceVs24hLow ?? 0,
+          oiUsd: snapshot?.oiUsd ?? 0,
+          oiDelta1hPct: snapshot?.oiDelta1hPct ?? 0,
+          oiDelta4hPct: snapshot?.oiDelta4hPct ?? 0,
+          fundingRatePct: snapshot?.fundingRatePct ?? 0,
+          volumeVs24hAvgPct: snapshot?.volumeVs24hAvgPct ?? 0,
+          priceVsEma20_1h: snapshot?.priceVsEma20_1h ?? 0,
+          trendBias: snapshot?.trendBias ?? 'flat',
+          rawFeatures: snapshot?.rawFeatures ?? {
+            priceVs24hHighPct: 0,
+            priceVs24hLowPct: 0,
+            oiUsd: 0,
+            oiDelta1hPct: 0,
+            oiDelta4hPct: 0,
+            fundingRateAnnualPct: 0,
+            volumeVs24hAvgPct: 0,
+            priceVsEma20_1hPct: 0,
+            trendBias: 'flat',
+          },
         },
       };
-    })
-    .filter((opportunity): opportunity is RankedOpportunityContext => opportunity !== null)
-    .sort((a, b) => {
-      if (b.totalScore !== a.totalScore) {
-        return b.totalScore - a.totalScore;
-      }
-      return a.symbol.localeCompare(b.symbol);
-    })
-    .slice(0, Math.max(1, shortlistLimit));
-
-  return ranked.map((opportunity, index) => ({
-    ...opportunity,
-    rank: index + 1,
-  }));
+    });
 }
 
 interface ScanCycleSnapshot {
@@ -552,8 +677,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         {
           message:
             normalizedSymbols.length > 0
-              ? `crypto perpetual markets overview for ${normalizedSymbols.join(', ')}`
-              : 'crypto perpetual markets overview',
+              ? `mixed perpetual markets overview for ${normalizedSymbols.join(', ')}`
+              : 'mixed perpetual markets overview',
           domain: 'crypto',
           marketLimit: 20,
           signalSymbols: normalizedSymbols,
@@ -612,12 +737,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     // Compute TA surface for all top markets
     const allSnapshots = await this.taSurface.computeAll(topMarkets);
 
-    // Filter out symbols already in the book or on cooldown
+    // Preserve permissive candidate generation, but continue honoring cooldown.
     const now = Date.now();
     const taSnapshots = allSnapshots.filter((snap) => {
-      if (book.hasPosition(snap.symbol, 'long') || book.hasPosition(snap.symbol, 'short')) {
-        return false;
-      }
       const lastCooldown = this.symbolCooldownMap.get(snap.symbol);
       if (lastCooldown !== undefined && now - lastCooldown < cooldownMs) {
         return false;
@@ -625,14 +747,23 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return true;
     });
 
-    const rankedOpportunities = buildRankedOpportunities(
-      selectedCandidates,
-      taSnapshots,
-      shortlistLimit
-    );
-
     // Get pending events for trigger
     const pendingEvents = listEvents({ limit: 10 });
+    const scanId = `originator_scan_${now}`;
+    const ranking = scoreAndRankOpportunityCandidates(
+      buildOpportunityCandidateInputs(selectedCandidates, taSnapshots, book, pendingEvents),
+      {
+        shortlistSize: shortlistLimit,
+        scanId,
+        createdAt: new Date(now),
+      }
+    );
+    const rankedOpportunities = buildRankedOpportunityContexts(
+      ranking.rankedCandidates,
+      selectedCandidates,
+      taSnapshots,
+      ranking.records
+    );
 
     // Check if trigger fires
     const triggerResult = this.originationTrigger.shouldFire(
@@ -641,8 +772,32 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       pendingEvents,
       rankedOpportunities
     );
+    const persistRankScan = (selectionReason: string, selectedSymbol?: string | null): void => {
+      recordOpportunityRankScan({
+        scanId,
+        source: 'autonomous_originator_scan',
+        generatedAt: new Date(now).toISOString(),
+        triggerReason: triggerResult.reason,
+        totalCandidates: ranking.rankedCandidates.length,
+        eligibleCandidates: ranking.rankedCandidates.filter(
+          (candidate) => candidate.hardFloorVerdict.eligible
+        ).length,
+        selectedSymbol: selectedSymbol ?? null,
+        selectionReason,
+        rankedCandidates: ranking.records,
+        payload: {
+          topMarkets,
+          shortlistSymbols: rankedOpportunities.map((opportunity) => opportunity.symbol),
+        },
+        notes: {
+          topMarketsCount,
+          shortlistLimit,
+        },
+      });
+    };
 
     if (!triggerResult.fire) {
+      persistRankScan('no_trigger');
       return null; // no-op — return null to fall through to quant path if desired
     }
 
@@ -687,6 +842,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     this.lastFiredMs = now;
 
     if (proposal === null) {
+      persistRankScan(`proposal_null:${triggerResult.reason}`);
       // Quant fallback only on cadence trigger
       if (triggerResult.reason === 'cadence' && quantFallbackEnabled) {
         return null; // signal caller to run quant path
@@ -696,6 +852,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     // Proposal is non-null — run through entry gate and execute
     if (!input.executeTrades) {
+      persistRankScan('proposal_generated_execute_false', proposal.symbol);
       return `Originator proposed ${proposal.symbol} ${proposal.side} (confidence=${proposal.confidence.toFixed(2)}) but execute=false.`;
     }
 
@@ -743,6 +900,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     let probeUsd = Math.min(Math.max(minOrderUsd, signalAdjustedUsd), remainingDaily);
 
     if (probeUsd <= 0 || probeUsd < minOrderUsd) {
+      persistRankScan('insufficient_daily_budget', symbol);
       return `${symbol}: Skipped originator proposal (insufficient daily budget $${remainingDaily.toFixed(2)})`;
     }
 
@@ -764,11 +922,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     });
 
     if (!riskCheck.allowed) {
+      persistRankScan(`risk_block:${riskCheck.reason ?? 'perp risk limits exceeded'}`, symbol);
       return `${symbol}: Originator proposal blocked (${riskCheck.reason ?? 'perp risk limits exceeded'})`;
     }
 
     const limitCheck = await this.limiter.checkAndReserve(probeUsd);
     if (!limitCheck.allowed) {
+      persistRankScan(`budget_block:${limitCheck.reason}`, symbol);
       return `${symbol}: Originator proposal blocked (${limitCheck.reason})`;
     }
 
@@ -802,6 +962,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         if (proposal.proposalRecordId != null) {
           updateTradeProposalOutcome(proposal.proposalRecordId, gateDecision.verdict, false);
         }
+        persistRankScan(`entry_gate_reject:${gateDecision.reasoning}`, symbol);
         return `${symbol}: Originator proposal rejected by LLM entry gate — ${gateDecision.reasoning}`;
       }
       if (gateDecision.verdict === 'resize' && gateDecision.adjustedSizeUsd) {
@@ -829,6 +990,10 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     if (proposal.proposalRecordId != null) {
       updateTradeProposalOutcome(proposal.proposalRecordId, 'approve', tradeResult.executed);
     }
+    persistRankScan(
+      tradeResult.executed ? 'executed' : `not_executed:${tradeResult.message ?? 'unknown'}`,
+      symbol
+    );
     if (tradeResult.executed) {
       this.limiter.confirm(probeUsd);
 

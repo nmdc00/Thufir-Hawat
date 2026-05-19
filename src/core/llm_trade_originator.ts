@@ -4,6 +4,12 @@ import type { ThufirConfig } from './config.js';
 import type { BookEntry } from './position_book.js';
 import type { TaSnapshot } from './ta_surface.js';
 import type { DiscoveryCandidate } from '../discovery/market_selector.js';
+import type {
+  OpportunityComponentScores,
+  OpportunityHardFloorVerdict,
+  OpportunitySignalClass,
+  OpportunitySymbolClass,
+} from './opportunity_types.js';
 import { gatherMarketContext } from '../markets/context.js';
 import { recordTradeProposal } from '../memory/llm_trade_proposals.js';
 import { Logger } from './logger.js';
@@ -36,19 +42,13 @@ export interface OriginationInputBundle {
 export interface RankedOpportunityContext {
   symbol: string;
   rank: number;
-  totalScore: number;
-  assetClass: DiscoveryCandidate['assetClass'];
+  opportunityScore: number;
+  symbolClass: OpportunitySymbolClass;
+  signalClass: OpportunitySignalClass;
   shortlistReason: string;
   triggerReasons: string[];
-  componentScores: {
-    preselection: number;
-    liquidity: number;
-    execution: number;
-    funding: number;
-    trigger: number;
-    participation: number;
-    trend: number;
-  };
+  componentScores: OpportunityComponentScores;
+  hardFloorVerdict: OpportunityHardFloorVerdict;
   discovery: Pick<
     DiscoveryCandidate,
     | 'score'
@@ -145,8 +145,8 @@ function formatTriggerReasons(snapshot: TaSnapshot): string {
   return snapshot.alertReason ?? 'none';
 }
 
-function formatAssetLabel(assetClass: RankedOpportunityContext['assetClass']): string {
-  return assetClass === 'cross_asset' ? 'cross-asset perp' : 'crypto perp';
+function formatAssetLabel(symbolClass: RankedOpportunityContext['symbolClass']): string {
+  return symbolClass === 'xyz' ? 'cross-asset perp' : 'crypto perp';
 }
 
 function formatBookLines(book: BookEntry[]): string {
@@ -180,19 +180,23 @@ function formatTaLine(snap: TaSnapshot, alerted: boolean): string {
 
 function formatRankedOpportunityLine(opportunity: RankedOpportunityContext): string {
   const componentSummary = [
-    `pre=${opportunity.componentScores.preselection.toFixed(2)}`,
-    `liq=${opportunity.componentScores.liquidity.toFixed(2)}`,
-    `exec=${opportunity.componentScores.execution.toFixed(2)}`,
-    `fund=${opportunity.componentScores.funding.toFixed(2)}`,
-    `trig=${opportunity.componentScores.trigger.toFixed(2)}`,
-    `part=${opportunity.componentScores.participation.toFixed(2)}`,
-    `trend=${opportunity.componentScores.trend.toFixed(2)}`,
+    `attn=${opportunity.componentScores.attentionScore.toFixed(2)}`,
+    `edge=${opportunity.componentScores.structuralEdgeScore.toFixed(2)}`,
+    `crowd=${opportunity.componentScores.crowdingQualityScore.toFixed(2)}`,
+    `regime=${opportunity.componentScores.regimeFitScore.toFixed(2)}`,
+    `exec=${opportunity.componentScores.executionQualityScore.toFixed(2)}`,
   ].join(' ');
+  const floorSummary =
+    opportunity.hardFloorVerdict.failedFloors.length > 0
+      ? ` floors=${opportunity.hardFloorVerdict.failedFloors.join(',')}`
+      : '';
   return (
-    `#${opportunity.rank} ${opportunity.symbol} (${formatAssetLabel(opportunity.assetClass)})` +
-    ` score=${opportunity.totalScore.toFixed(2)} ${componentSummary}` +
+    `#${opportunity.rank} ${opportunity.symbol} (${formatAssetLabel(opportunity.symbolClass)})` +
+    ` score=${opportunity.opportunityScore.toFixed(2)} ${componentSummary}` +
     ` triggers=${opportunity.triggerReasons.join(', ') || 'none'}` +
-    ` reason=${opportunity.shortlistReason}`
+    ` signal=${opportunity.signalClass}` +
+    ` reason=${opportunity.shortlistReason}` +
+    floorSummary
   );
 }
 
@@ -309,7 +313,7 @@ export class LlmTradeOriginator {
     }
     try {
       const snapshot = await gatherMarketContext(
-        { message: 'crypto perpetual markets overview', domain: 'crypto', marketLimit: 20 },
+        { message: 'mixed perpetual markets overview', domain: 'crypto', marketLimit: 20 },
         async () => ({ success: false as const, error: 'no tool executor' })
       );
       const successful = snapshot.results.filter((r) => r.success);
