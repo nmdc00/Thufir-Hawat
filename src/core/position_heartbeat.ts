@@ -37,6 +37,7 @@ type PositionSnapshot = {
   symbol: string;
   side: 'long' | 'short';
   size: number;
+  positionValue: number | null;
   unrealizedPnl: number | null;
   roePct: number | null;
   liquidationPrice: number | null;
@@ -147,12 +148,15 @@ export class PositionHeartbeatService {
     try {
       mids = await retryWithBackoff(() => this.client.getAllMids(), 3);
     } catch (err) {
-      this.logger.warn(`PositionHeartbeat: failed to load mids: ${stringifyError(err)}`);
+      const allPositionsHaveFallbackMid = positions.every((pos) => resolveFallbackMidFromPosition(pos) != null);
+      if (!allPositionsHaveFallbackMid) {
+        this.logger.warn(`PositionHeartbeat: failed to load mids: ${stringifyError(err)}`);
+      }
     }
 
     const cfg = normalizeTriggerConfig(this.config);
     for (const pos of positions) {
-      const mid = resolveMid(mids, pos.symbol);
+      const mid = resolveMid(mids, pos.symbol) ?? resolveFallbackMidFromPosition(pos);
       const liqDistPct = computeLiqDistancePct({
         side: pos.side,
         mid,
@@ -647,6 +651,7 @@ export class PositionHeartbeatService {
           symbol,
           side,
           size,
+          positionValue: toFinite(p?.position_value),
           unrealizedPnl: toFinite(p?.unrealized_pnl),
           roePct: toFinite(p?.return_on_equity),
           liquidationPrice: toFinite(p?.liquidation_price),
@@ -723,6 +728,14 @@ function resolveMid(mids: Record<string, number>, symbol: string): number | null
     if (typeof normalized === 'number' && Number.isFinite(normalized)) return normalized;
   }
   return null;
+}
+
+function resolveFallbackMidFromPosition(position: PositionSnapshot): number | null {
+  if (position.size <= 0 || position.positionValue == null) {
+    return null;
+  }
+  const mid = position.positionValue / position.size;
+  return Number.isFinite(mid) && mid > 0 ? mid : null;
 }
 
 function computeLiqDistancePct(params: {

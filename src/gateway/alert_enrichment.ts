@@ -1,4 +1,5 @@
 import type { LlmClient } from '../core/llm.js';
+import { withExecutionContextIfMissing } from '../core/llm_infra.js';
 import type { EscalationReason, EscalationSeverity } from './escalation.js';
 
 type FaultInjectionMode = 'none' | 'throw' | 'timeout';
@@ -90,28 +91,37 @@ export async function enrichEscalationMessage(
       return '';
     }
 
-    const response = await input.llm.complete(
-      [
-        {
-          role: 'system',
-          content:
-            'You write concise alert enrichment text. Return plain text only with no markdown headings.',
-        },
-        {
-          role: 'user',
-          content:
-            `Source: ${input.source}\n` +
-            `Severity: ${input.severity}\n` +
-            `Reason: ${input.reason}\n` +
-            `Summary: ${input.summary}\n\n` +
-            'Write one short operator narrative with immediate context and one suggested next check.',
-        },
-      ],
+    const response = await withExecutionContextIfMissing(
       {
-        temperature: cfg.temperature,
-        maxTokens: cfg.maxTokens,
-        timeoutMs: cfg.timeoutMs,
-      }
+        mode: 'LIGHT_REASONING',
+        critical: false,
+        reason: 'alert_enrichment',
+        source: 'gateway',
+      },
+      () =>
+        input.llm.complete(
+          [
+            {
+              role: 'system',
+              content:
+                'You write concise alert enrichment text. Return plain text only with no markdown headings.',
+            },
+            {
+              role: 'user',
+              content:
+                `Source: ${input.source}\n` +
+                `Severity: ${input.severity}\n` +
+                `Reason: ${input.reason}\n` +
+                `Summary: ${input.summary}\n\n` +
+                'Write one short operator narrative with immediate context and one suggested next check.',
+            },
+          ],
+          {
+            temperature: cfg.temperature,
+            maxTokens: cfg.maxTokens,
+            timeoutMs: cfg.timeoutMs,
+          }
+        )
     );
     return compactNarrative(response.content, cfg.maxChars);
   };
