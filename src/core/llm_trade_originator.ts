@@ -6,6 +6,7 @@ import type { TaSnapshot } from './ta_surface.js';
 import { gatherMarketContext } from '../markets/context.js';
 import { recordTradeProposal } from '../memory/llm_trade_proposals.js';
 import { Logger } from './logger.js';
+import type { ToolExecutorContext } from './tool-executor.js';
 
 export interface TradeProposal {
   proposalRecordId?: number;
@@ -212,6 +213,7 @@ export class LlmTradeOriginator {
     private mainLlm: LlmClient,
     private fallbackLlm: LlmClient,
     private config: ThufirConfig,
+    _toolContext?: ToolExecutorContext,
   ) {}
 
   private async getMarketContext(): Promise<string> {
