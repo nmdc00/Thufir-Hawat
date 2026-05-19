@@ -425,12 +425,21 @@ export async function runMentatScan(options: MentatScanOptions): Promise<MentatS
             role.focus
           );
 
-          const response = await options.llm.complete(
-            [
-              { role: 'system', content: `You are the ${role.role} in a mentat team. Provide structured JSON only.` },
-              { role: 'user', content: prompt },
-            ],
-            { temperature: 0.2 }
+          const response = await withExecutionContextIfMissing(
+            {
+              mode: 'LIGHT_REASONING',
+              critical: false,
+              reason: 'mentat_role_scan',
+              source: 'mentat',
+            },
+            () =>
+              options.llm.complete(
+                [
+                  { role: 'system', content: `You are the ${role.role} in a mentat team. Provide structured JSON only.` },
+                  { role: 'user', content: prompt },
+                ],
+                { temperature: 0.2 }
+              )
           );
 
           const parsed = parseJsonBlock(response.content) ?? {};
@@ -640,16 +649,25 @@ export async function runQuickFragilityScan(
   };
 
   try {
-    const response = await options.llm.complete(
-      [
-        {
-          role: 'system',
-          content:
-            'You are a mentat analyzing fragility before a trade. Provide structured JSON only. Be concise.',
-        },
-        { role: 'user', content: prompt },
-      ],
-      { temperature: 0.2 }
+    const response = await withExecutionContextIfMissing(
+      {
+        mode: 'LIGHT_REASONING',
+        critical: false,
+        reason: 'mentat_quick_fragility',
+        source: 'mentat',
+      },
+      () =>
+        options.llm.complete(
+          [
+            {
+              role: 'system',
+              content:
+                'You are a mentat analyzing fragility before a trade. Provide structured JSON only. Be concise.',
+            },
+            { role: 'user', content: prompt },
+          ],
+          { temperature: 0.2 }
+        )
     );
 
     const parsed = parseQuickFragilityResponse(response.content, now);
