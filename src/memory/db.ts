@@ -24,10 +24,94 @@ function applySchema(db: Database.Database): void {
   migratePredictionsForPlil(db);  // must run before schema.sql so the view can reference outcome_basis
   const schemaSql = getSchemaSql();
   db.exec(schemaSql);
+  migrateIntelReferentialIntegrity(db);
+  migratePerpPositionLifecycleReferentialIntegrity(db);
   ensureLearningSchema(db);
   migratePredictionsForDelphiResolution(db);
   migrateAlertPersistenceLifecycle(db);
   migrateCausalEventReasoning(db);
+}
+
+function getTableSql(db: Database.Database, tableName: string): string | null {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
+    .get(tableName) as { sql?: string | null } | undefined;
+  return typeof row?.sql === 'string' ? row.sql : null;
+}
+
+function migrateIntelReferentialIntegrity(db: Database.Database): void {
+  const intelHashesSql = getTableSql(db, 'intel_hashes');
+  if (
+    intelHashesSql &&
+    !/REFERENCES\s+intel_items\s*\(\s*id\s*\)\s+ON\s+DELETE\s+CASCADE/i.test(intelHashesSql)
+  ) {
+    db.exec(`
+      ALTER TABLE intel_hashes RENAME TO intel_hashes_legacy;
+      CREATE TABLE intel_hashes (
+        hash TEXT PRIMARY KEY,
+        intel_id TEXT REFERENCES intel_items(id) ON DELETE CASCADE,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO intel_hashes (hash, intel_id, created_at)
+      SELECT h.hash, h.intel_id, h.created_at
+      FROM intel_hashes_legacy h
+      LEFT JOIN intel_items i ON i.id = h.intel_id
+      WHERE h.intel_id IS NULL OR i.id IS NOT NULL;
+      DROP TABLE intel_hashes_legacy;
+    `);
+  }
+
+  const intelEmbeddingsSql = getTableSql(db, 'intel_embeddings');
+  if (
+    intelEmbeddingsSql &&
+    !/intel_id\s+TEXT\s+PRIMARY\s+KEY\s+REFERENCES\s+intel_items\s*\(\s*id\s*\)\s+ON\s+DELETE\s+CASCADE/i.test(intelEmbeddingsSql)
+  ) {
+    db.exec(`
+      ALTER TABLE intel_embeddings RENAME TO intel_embeddings_legacy;
+      CREATE TABLE intel_embeddings (
+        intel_id TEXT PRIMARY KEY REFERENCES intel_items(id) ON DELETE CASCADE,
+        embedding TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO intel_embeddings (intel_id, embedding, created_at)
+      SELECT e.intel_id, e.embedding, e.created_at
+      FROM intel_embeddings_legacy e
+      INNER JOIN intel_items i ON i.id = e.intel_id;
+      DROP TABLE intel_embeddings_legacy;
+      CREATE INDEX IF NOT EXISTS idx_intel_embeddings_created ON intel_embeddings(created_at);
+    `);
+  }
+}
+
+function migratePerpPositionLifecycleReferentialIntegrity(db: Database.Database): void {
+  const lifecycleSql = getTableSql(db, 'perp_position_lifecycles');
+  if (!lifecycleSql) {
+    return;
+  }
+  if (/REFERENCES\s+perp_trades\s*\(\s*id\s*\)\s+ON\s+DELETE\s+CASCADE/i.test(lifecycleSql)) {
+    db.exec(`
+      DELETE FROM perp_position_lifecycles
+      WHERE trade_id NOT IN (SELECT id FROM perp_trades)
+    `);
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE perp_position_lifecycles RENAME TO perp_position_lifecycles_legacy;
+    CREATE TABLE perp_position_lifecycles (
+      symbol TEXT PRIMARY KEY,
+      trade_id INTEGER NOT NULL,
+      side TEXT NOT NULL CHECK (side IN ('long', 'short')),
+      opened_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (trade_id) REFERENCES perp_trades(id) ON DELETE CASCADE
+    );
+    INSERT INTO perp_position_lifecycles (symbol, trade_id, side, opened_at, updated_at)
+    SELECT l.symbol, l.trade_id, l.side, l.opened_at, l.updated_at
+    FROM perp_position_lifecycles_legacy l
+    INNER JOIN perp_trades pt ON pt.id = l.trade_id;
+    DROP TABLE perp_position_lifecycles_legacy;
+  `);
 }
 
 function migratePredictionsForPlil(db: Database.Database): void {

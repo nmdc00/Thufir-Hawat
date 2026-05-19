@@ -179,7 +179,7 @@ CREATE INDEX IF NOT EXISTS idx_intel_timestamp ON intel_items(timestamp);
 -- Deduplication tracking
 CREATE TABLE IF NOT EXISTS intel_hashes (
     hash TEXT PRIMARY KEY,
-    intel_id TEXT REFERENCES intel_items(id),
+    intel_id TEXT REFERENCES intel_items(id) ON DELETE CASCADE,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -536,7 +536,7 @@ CREATE TABLE IF NOT EXISTS execution_state (
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS intel_embeddings (
-    intel_id TEXT PRIMARY KEY,
+    intel_id TEXT PRIMARY KEY REFERENCES intel_items(id) ON DELETE CASCADE,
     embedding TEXT NOT NULL,  -- JSON array
     created_at TEXT DEFAULT (datetime('now'))
 );
