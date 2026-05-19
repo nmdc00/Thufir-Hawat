@@ -520,6 +520,31 @@ CREATE INDEX IF NOT EXISTS idx_decision_artifacts_fingerprint ON decision_artifa
 CREATE INDEX IF NOT EXISTS idx_decision_artifacts_expires ON decision_artifacts(expires_at);
 
 -- ============================================================================
+-- Opportunity Rank Logs (Opportunity Ranking Observability)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS opportunity_rank_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now')),
+    scan_id TEXT,
+    source TEXT,
+    fingerprint TEXT,
+    generated_at TEXT,
+    expires_at TEXT,
+    mode TEXT,
+    provider TEXT,
+    model TEXT,
+    markets_scanned INTEGER NOT NULL DEFAULT 0,
+    news_items_analyzed INTEGER NOT NULL DEFAULT 0,
+    opportunities_found INTEGER NOT NULL DEFAULT 0,
+    top_market_id TEXT,
+    top_rank INTEGER,
+    top_score REAL,
+    artifact TEXT,
+    notes TEXT
+);
+
+-- ============================================================================
 -- Execution State (Execution Mode Gating)
 -- ============================================================================
 
