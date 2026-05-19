@@ -35,7 +35,7 @@ function ensurePerpPositionLifecycleSchema(): void {
       side TEXT NOT NULL CHECK (side IN ('long', 'short')),
       opened_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (trade_id) REFERENCES perp_trades(id)
+      FOREIGN KEY (trade_id) REFERENCES perp_trades(id) ON DELETE CASCADE
     );
   `);
 }
@@ -89,15 +89,46 @@ export function getActivePerpPositionTradeId(symbol: string): number | null {
   const row = db
     .prepare(
       `
-        SELECT trade_id
-        FROM perp_position_lifecycles
-        WHERE symbol = ?
+        SELECT ppl.trade_id
+        FROM perp_position_lifecycles ppl
+        INNER JOIN perp_trades pt ON pt.id = ppl.trade_id
+        WHERE ppl.symbol = ?
         LIMIT 1
       `
     )
     .get(normalized) as { trade_id?: number } | undefined;
-  const tradeId = Number(row?.trade_id ?? NaN);
+  if (!row) {
+    const orphaned = db
+      .prepare(
+        `
+          SELECT trade_id
+          FROM perp_position_lifecycles
+          WHERE symbol = ?
+          LIMIT 1
+        `
+      )
+      .get(normalized) as { trade_id?: number } | undefined;
+    if (orphaned) {
+      clearActivePerpPositionLifecycle(normalized);
+    }
+    return null;
+  }
+  const tradeId = Number(row.trade_id ?? NaN);
   return Number.isFinite(tradeId) && tradeId > 0 ? tradeId : null;
+}
+
+export function clearOrphanedPerpPositionLifecycles(): number {
+  ensurePerpPositionLifecycleSchema();
+  const db = openDatabase();
+  const result = db.prepare(
+    `
+      DELETE FROM perp_position_lifecycles
+      WHERE trade_id NOT IN (
+        SELECT id FROM perp_trades
+      )
+    `
+  ).run();
+  return result.changes ?? 0;
 }
 
 export function setActivePerpPositionLifecycle(input: {

@@ -213,13 +213,17 @@ export function pruneIntel(retentionDays: number): number {
   }
 
   const ids = toDelete.map((row) => row.id);
-  const placeholders = ids.map(() => '?').join(',');
-  db.prepare(
-    `DELETE FROM intel_embeddings WHERE intel_id IN (${placeholders})`
-  ).run(...ids);
-  const result = db
-    .prepare(`DELETE FROM intel_items WHERE id IN (${placeholders})`)
-    .run(...ids);
-
-  return result.changes ?? 0;
+  return db.transaction((deleteIds: string[]) => {
+    const placeholders = deleteIds.map(() => '?').join(',');
+    db.prepare(
+      `DELETE FROM intel_hashes WHERE intel_id IN (${placeholders})`
+    ).run(...deleteIds);
+    db.prepare(
+      `DELETE FROM intel_embeddings WHERE intel_id IN (${placeholders})`
+    ).run(...deleteIds);
+    const result = db
+      .prepare(`DELETE FROM intel_items WHERE id IN (${placeholders})`)
+      .run(...deleteIds);
+    return result.changes ?? 0;
+  })(ids);
 }
