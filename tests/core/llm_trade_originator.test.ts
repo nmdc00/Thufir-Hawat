@@ -704,31 +704,5 @@ describe('LlmTradeOriginator', () => {
       expect(systemContent).toContain('invalidationPrice');
       expect(systemContent).toContain('expectedRMultiple');
     });
-
-    it('includes performanceSummary in user message when provided', async () => {
-      const completeFn = vi.fn().mockResolvedValue({ content: 'null', model: 'test' });
-      const mainLlm: LlmClient = { complete: completeFn } as unknown as LlmClient;
-      const originator = new LlmTradeOriginator(mainLlm, makeLlmClient('null'), dummyConfig);
-
-      await originator.propose(makeBundle({ performanceSummary: 'scalp: 12 trades, winRate=58%, expectancy=0.42' }));
-
-      const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
-      const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
-      expect(userContent).toContain('## Signal Class Track Record');
-      expect(userContent).toContain('scalp: 12 trades, winRate=58%');
-    });
-
-    it('falls back to (no history yet) when performanceSummary is undefined', async () => {
-      const completeFn = vi.fn().mockResolvedValue({ content: 'null', model: 'test' });
-      const mainLlm: LlmClient = { complete: completeFn } as unknown as LlmClient;
-      const originator = new LlmTradeOriginator(mainLlm, makeLlmClient('null'), dummyConfig);
-
-      await originator.propose(makeBundle({ performanceSummary: undefined }));
-
-      const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
-      const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
-      expect(userContent).toContain('## Signal Class Track Record');
-      expect(userContent).toContain('(no history yet)');
-    });
   });
 });

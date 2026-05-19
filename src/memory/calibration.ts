@@ -232,6 +232,17 @@ export function recordOutcome(params: {
     adjustCashBalance(payout);
   }
 
+  syncComparableLearningCaseOutcome({
+    predictionId: params.id,
+    outcome: params.outcome,
+    outcomeBasis,
+    outcomeTimestamp,
+    resolutionStatus,
+    brier,
+    pnl,
+    resolutionMetadata: params.resolutionMetadata ?? null,
+  });
+
   if (prediction?.marketId) {
     const parsedSignalScores =
       typeof prediction.signalScores === 'string'
@@ -286,17 +297,6 @@ export function recordOutcome(params: {
       },
     });
   }
-
-  syncComparableLearningCaseOutcome({
-    predictionId: params.id,
-    outcome: params.outcome,
-    outcomeBasis,
-    outcomeTimestamp,
-    resolutionStatus,
-    brier,
-    pnl,
-    resolutionMetadata: params.resolutionMetadata ?? null,
-  });
 }
 
 export function countFinalPredictions(): number {

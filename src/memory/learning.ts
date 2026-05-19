@@ -52,7 +52,6 @@ function getSignalWeightState(domain: string): { weights: SignalWeights; samples
     samples: Number.isFinite(Number(row.samples)) ? Number(row.samples) : 0,
   };
 }
-
 function serialize(value: unknown): string | null {
   if (value == null) return null;
   try {
