@@ -78,7 +78,7 @@ import { getWalletBalances } from '../execution/wallet/balances.js';
 import { loadWallet } from '../execution/wallet/manager.js';
 import { loadKeystore } from '../execution/wallet/keystore.js';
 import { Readability } from '@mozilla/readability';
-import { JSDOM } from 'jsdom';
+import { JSDOM, VirtualConsole } from 'jsdom';
 import { isIP } from 'node:net';
 import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -4961,7 +4961,15 @@ async function fetchAndExtract(url: string, maxChars: number): Promise<ToolResul
       };
     }
 
-    const dom = new JSDOM(body, { url });
+    const virtualConsole = new VirtualConsole();
+    virtualConsole.on('jsdomError', (error: Error & { type?: string }) => {
+      if (error.type === 'css parsing') {
+        return;
+      }
+      console.error(error.stack ?? error.message);
+    });
+
+    const dom = new JSDOM(body, { url, virtualConsole });
     const reader = new Readability(dom.window.document);
     const article = reader.parse();
 
