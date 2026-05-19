@@ -81,6 +81,7 @@ This is documented in:
 - [release/v2.2-adaptive-decision-learning.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.2-adaptive-decision-learning.tdd.md)
 - [release/v2.3.3-production-sanity-fixes.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.3.3-production-sanity-fixes.tdd.md)
 - [release/v2.3.4-production-runtime-followup.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.3.4-production-runtime-followup.tdd.md)
+- [release/v2.3.5-exit-consult-context-hotfix.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.3.5-exit-consult-context-hotfix.tdd.md)
 
 ## Architecture
 
