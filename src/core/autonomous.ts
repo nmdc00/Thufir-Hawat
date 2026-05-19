@@ -15,7 +15,7 @@ import type { MarketClient } from '../execution/market-client.js';
 import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
 import { runDiscovery } from '../discovery/engine.js';
-import { selectDiscoveryMarkets } from '../discovery/market_selector.js';
+import { selectDiscoveryMarkets, type DiscoveryCandidate } from '../discovery/market_selector.js';
 import { countFinalPredictions } from '../memory/calibration.js';
 import { createLearningCase } from '../memory/learning_cases.js';
 import { createPrediction } from '../memory/predictions.js';
@@ -49,9 +49,9 @@ import { getCashBalance } from '../memory/portfolio.js';
 import { PositionBook } from './position_book.js';
 import { LlmEntryGate } from './llm_entry_gate.js';
 import { buildLegacyExitContract, serializeExitContract } from './exit_contract.js';
-import { TaSurface } from './ta_surface.js';
+import { TaSurface, type TaSnapshot } from './ta_surface.js';
 import { OriginationTrigger } from './origination_trigger.js';
-import { LlmTradeOriginator } from './llm_trade_originator.js';
+import { LlmTradeOriginator, type RankedOpportunityContext } from './llm_trade_originator.js';
 import { listEvents } from '../memory/events.js';
 import { updateTradeProposalOutcome } from '../memory/llm_trade_proposals.js';
 import { recordDecisionAudit } from '../memory/decision_audit.js';
@@ -59,6 +59,124 @@ import type { ToolExecutorContext } from './tool-executor.js';
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function normalizeOpportunitySymbol(symbol: string): string {
+  return String(symbol ?? '').trim().toUpperCase();
+}
+
+function buildShortlistReason(triggerReasons: string[], trendBias: 'up' | 'down' | 'flat'): string {
+  if (triggerReasons.length > 0) {
+    return triggerReasons.join('; ');
+  }
+  if (trendBias !== 'flat') {
+    return `trend_bias:${trendBias}`;
+  }
+  return 'ranked_momentum_setup';
+}
+
+function buildRankedOpportunities(
+  candidates: DiscoveryCandidate[],
+  snapshots: TaSnapshot[],
+  shortlistLimit: number
+): RankedOpportunityContext[] {
+  const candidateBySymbol = new Map(
+    candidates.map((candidate) => [normalizeOpportunitySymbol(candidate.symbol), candidate])
+  );
+
+  const ranked = snapshots
+    .map((snapshot) => {
+      const candidate = candidateBySymbol.get(normalizeOpportunitySymbol(snapshot.symbol));
+      if (!candidate) {
+        return null;
+      }
+
+      const triggerReasons = snapshot.triggerReasons ?? [];
+      const triggerScore = clamp01(triggerReasons.length / 3);
+      const participationScore = clamp01(
+        Math.max(
+          Math.abs(snapshot.oiDelta1hPct) / 20,
+          Math.abs(snapshot.oiDelta4hPct) / 30,
+          snapshot.volumeVs24hAvgPct / 250
+        )
+      );
+      const trendScore = clamp01(
+        (snapshot.trendBias === 'flat' ? 0.25 : 0.65) + Math.abs(snapshot.priceVsEma20_1h) / 4
+      );
+      const totalScore = clamp01(
+        candidate.score * 0.35 +
+          candidate.liquidityScore * 0.1 +
+          candidate.executionScore * 0.1 +
+          candidate.fundingScore * 0.05 +
+          triggerScore * 0.2 +
+          participationScore * 0.12 +
+          trendScore * 0.08
+      );
+
+      const hasActionableSignal =
+        triggerReasons.length > 0 ||
+        participationScore >= 0.4 ||
+        (snapshot.trendBias !== 'flat' && Math.abs(snapshot.priceVsEma20_1h) >= 0.75);
+      if (!hasActionableSignal || totalScore < 0.45) {
+        return null;
+      }
+
+      return {
+        symbol: snapshot.symbol,
+        rank: 0,
+        totalScore,
+        assetClass: candidate.assetClass,
+        shortlistReason: buildShortlistReason(triggerReasons, snapshot.trendBias),
+        triggerReasons: [...triggerReasons],
+        componentScores: {
+          preselection: candidate.score,
+          liquidity: candidate.liquidityScore,
+          execution: candidate.executionScore,
+          funding: candidate.fundingScore,
+          trigger: triggerScore,
+          participation: participationScore,
+          trend: trendScore,
+        },
+        discovery: {
+          score: candidate.score,
+          liquidityScore: candidate.liquidityScore,
+          executionScore: candidate.executionScore,
+          fundingScore: candidate.fundingScore,
+          openInterestUsd: candidate.openInterestUsd,
+          dayVolumeUsd: candidate.dayVolumeUsd,
+          fundingRate: candidate.fundingRate,
+          spreadProxyBps: candidate.spreadProxyBps,
+          markPx: candidate.markPx,
+          oraclePx: candidate.oraclePx,
+        },
+        ta: {
+          price: snapshot.price,
+          priceVs24hHigh: snapshot.priceVs24hHigh,
+          priceVs24hLow: snapshot.priceVs24hLow,
+          oiUsd: snapshot.oiUsd,
+          oiDelta1hPct: snapshot.oiDelta1hPct,
+          oiDelta4hPct: snapshot.oiDelta4hPct,
+          fundingRatePct: snapshot.fundingRatePct,
+          volumeVs24hAvgPct: snapshot.volumeVs24hAvgPct,
+          priceVsEma20_1h: snapshot.priceVsEma20_1h,
+          trendBias: snapshot.trendBias,
+          rawFeatures: snapshot.rawFeatures,
+        },
+      };
+    })
+    .filter((opportunity): opportunity is RankedOpportunityContext => opportunity !== null)
+    .sort((a, b) => {
+      if (b.totalScore !== a.totalScore) {
+        return b.totalScore - a.totalScore;
+      }
+      return a.symbol.localeCompare(b.symbol);
+    })
+    .slice(0, Math.max(1, shortlistLimit));
+
+  return ranked.map((opportunity, index) => ({
+    ...opportunity,
+    rank: index + 1,
+  }));
 }
 
 interface ScanCycleSnapshot {
@@ -473,15 +591,19 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     const book = PositionBook.getInstance();
     const topMarketsCount = this.thufirConfig.autonomy?.origination?.topMarketsCount ?? 20;
+    const shortlistLimit = Math.min(5, topMarketsCount);
     const cooldownMs = (this.thufirConfig.autonomy?.origination?.cooldownMinutes ?? 30) * 60 * 1000;
     const quantFallbackEnabled = this.thufirConfig.autonomy?.origination?.quantFallbackEnabled !== false;
 
     // Get top markets
+    let selectedCandidates: DiscoveryCandidate[];
     let topMarkets: string[];
     try {
       const selected = await selectDiscoveryMarkets(this.thufirConfig, { limit: topMarketsCount });
+      selectedCandidates = selected.candidates;
       topMarkets = selected.candidates.map((c) => c.symbol);
     } catch {
+      selectedCandidates = [];
       topMarkets = this.thufirConfig.hyperliquid?.symbols?.length
         ? (this.thufirConfig.hyperliquid.symbols as string[])
         : ['BTC', 'ETH'];
@@ -503,6 +625,12 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return true;
     });
 
+    const rankedOpportunities = buildRankedOpportunities(
+      selectedCandidates,
+      taSnapshots,
+      shortlistLimit
+    );
+
     // Get pending events for trigger
     const pendingEvents = listEvents({ limit: 10 });
 
@@ -510,7 +638,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     const triggerResult = this.originationTrigger.shouldFire(
       this.lastFiredMs,
       taSnapshots,
-      pendingEvents
+      pendingEvents,
+      rankedOpportunities
     );
 
     if (!triggerResult.fire) {
@@ -530,12 +659,17 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             .slice(0, 500);
 
     // Fetch market context (10-min cached)
-    const marketContext = await this.getMarketContextCached(topMarkets);
+    const contextSymbols =
+      rankedOpportunities.length > 0
+        ? rankedOpportunities.map((opportunity) => opportunity.symbol)
+        : topMarkets;
+    const marketContext = await this.getMarketContextCached(contextSymbols);
 
     // Assemble bundle and propose
     const bundle = {
       book: book.getAll(),
       taSnapshots,
+      rankedOpportunities,
       marketContext,
       recentEvents,
       alertedSymbols: triggerResult.alertedSymbols,

@@ -124,6 +124,12 @@ describe('TaSurface', () => {
       expect(snap.trendBias).toBe('flat');
       // oiUsd = 500 * 100 = 50000
       expect(snap.oiUsd).toBe(50000);
+      expect(snap.triggerReasons).toEqual([]);
+      expect(snap.rawFeatures).toMatchObject({
+        oiUsd: 50000,
+        fundingRateAnnualPct: snap.fundingRatePct,
+        trendBias: 'flat',
+      });
     });
   });
 
@@ -157,6 +163,7 @@ describe('TaSurface', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]!.oiDelta1hPct).toBeCloseTo(20, 0);
+      expect(result[0]!.triggerReasons).toContain('oi_spike_1h:20.0%');
       expect(result[0]!.alertReason).toContain('oi_spike_1h');
     });
   });
@@ -173,6 +180,7 @@ describe('TaSurface', () => {
       );
 
       const result = await surface.computeAll([symbol]);
+      expect(result[0]!.triggerReasons).toContain('funding_extreme:219.0%_ann');
       expect(result[0]!.alertReason).toContain('funding_extreme');
     });
 
@@ -187,6 +195,7 @@ describe('TaSurface', () => {
       );
 
       const result = await surface.computeAll([symbol]);
+      expect(result[0]!.triggerReasons).toEqual([]);
       expect(result[0]!.alertReason).toBeUndefined();
     });
   });
@@ -212,6 +221,7 @@ describe('TaSurface', () => {
 
       const result = await surface.computeAll([symbol]);
       expect(result).toHaveLength(1);
+      expect(result[0]!.triggerReasons).toContain('volume_spike:255.6%');
       expect(result[0]!.alertReason).toContain('volume_spike');
     });
   });
@@ -275,7 +285,7 @@ describe('TaSurface', () => {
       expect(surface.hasAlert(result[0]!)).toBe(false);
     });
 
-    it('returns true when alertReason is set', () => {
+    it('returns true when triggerReasons are present', () => {
       const snap: TaSnapshot = {
         symbol: 'BTC',
         price: 100,
@@ -288,6 +298,18 @@ describe('TaSurface', () => {
         volumeVs24hAvgPct: 50,
         priceVsEma20_1h: 1,
         trendBias: 'up',
+        triggerReasons: ['oi_spike_1h:20.0%'],
+        rawFeatures: {
+          priceVs24hHighPct: -5,
+          priceVs24hLowPct: 5,
+          oiUsd: 50000,
+          oiDelta1hPct: 20,
+          oiDelta4hPct: 0,
+          fundingRateAnnualPct: 10,
+          volumeVs24hAvgPct: 50,
+          priceVsEma20_1hPct: 1,
+          trendBias: 'up',
+        },
         alertReason: 'oi_spike_1h:20.0%',
       };
       expect(surface.hasAlert(snap)).toBe(true);

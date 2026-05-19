@@ -3,6 +3,7 @@ import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
 import type { BookEntry } from './position_book.js';
 import type { TaSnapshot } from './ta_surface.js';
+import type { DiscoveryCandidate } from '../discovery/market_selector.js';
 import { gatherMarketContext } from '../markets/context.js';
 import { recordTradeProposal } from '../memory/llm_trade_proposals.js';
 import { Logger } from './logger.js';
@@ -24,11 +25,57 @@ export interface TradeProposal {
 export interface OriginationInputBundle {
   book: BookEntry[];
   taSnapshots: TaSnapshot[];
+  rankedOpportunities?: RankedOpportunityContext[];
   marketContext: string;
   recentEvents: string;
   alertedSymbols: string[];
   performanceSummary?: string;
   triggerReason?: 'cadence' | 'ta_alert' | 'event';
+}
+
+export interface RankedOpportunityContext {
+  symbol: string;
+  rank: number;
+  totalScore: number;
+  assetClass: DiscoveryCandidate['assetClass'];
+  shortlistReason: string;
+  triggerReasons: string[];
+  componentScores: {
+    preselection: number;
+    liquidity: number;
+    execution: number;
+    funding: number;
+    trigger: number;
+    participation: number;
+    trend: number;
+  };
+  discovery: Pick<
+    DiscoveryCandidate,
+    | 'score'
+    | 'liquidityScore'
+    | 'executionScore'
+    | 'fundingScore'
+    | 'openInterestUsd'
+    | 'dayVolumeUsd'
+    | 'fundingRate'
+    | 'spreadProxyBps'
+    | 'markPx'
+    | 'oraclePx'
+  >;
+  ta: Pick<
+    TaSnapshot,
+    | 'price'
+    | 'priceVs24hHigh'
+    | 'priceVs24hLow'
+    | 'oiUsd'
+    | 'oiDelta1hPct'
+    | 'oiDelta4hPct'
+    | 'fundingRatePct'
+    | 'volumeVs24hAvgPct'
+    | 'priceVsEma20_1h'
+    | 'trendBias'
+    | 'rawFeatures'
+  >;
 }
 
 const ProposalSchema = z.object({
@@ -53,6 +100,8 @@ Missing a real opportunity is a failure. Sitting on your hands when the market i
 ## Scanning discipline
 
 Scan ALL symbols in the market data. BTC and ETH are rarely the best opportunity — the edge is usually in an alt with an unusual funding spike, OI divergence, or volume anomaly. Start from the data, not from habit.
+
+Some instruments are mixed cross-asset perps rather than pure crypto pairs. Use asset-aware wording. If the underlying reads like \`XYZ:TSLA\`, discuss the equity-linked or cross-asset driver directly instead of forcing a crypto-native narrative.
 
 ## Book concentration rule
 
@@ -88,6 +137,18 @@ Respond with ONLY valid JSON matching this schema OR the literal string "null":
 
 const logger = new Logger('info');
 
+function formatTriggerReasons(snapshot: TaSnapshot): string {
+  const triggerReasons = snapshot.triggerReasons ?? [];
+  if (triggerReasons.length > 0) {
+    return triggerReasons.join('; ');
+  }
+  return snapshot.alertReason ?? 'none';
+}
+
+function formatAssetLabel(assetClass: RankedOpportunityContext['assetClass']): string {
+  return assetClass === 'cross_asset' ? 'cross-asset perp' : 'crypto perp';
+}
+
 function formatBookLines(book: BookEntry[]): string {
   if (book.length === 0) return '(none)';
   return book
@@ -104,7 +165,8 @@ function formatTaLine(snap: TaSnapshot, alerted: boolean): string {
   const oiSign = snap.oiDelta1hPct >= 0 ? '+' : '';
   const emaSign = snap.priceVsEma20_1h >= 0 ? '+' : '';
   const volPct = snap.volumeVs24hAvgPct.toFixed(0);
-  const alertSuffix = alerted && snap.alertReason ? `  [ALERT: ${snap.alertReason}]` : '';
+  const alertSummary = formatTriggerReasons(snap);
+  const alertSuffix = alerted && alertSummary !== 'none' ? `  [ALERT: ${alertSummary}]` : '';
   return (
     `${snap.symbol.padEnd(6)}: price=$${snap.price.toFixed(2)}` +
     `  OI_delta_1h=${oiSign}${snap.oiDelta1hPct.toFixed(1)}%` +
@@ -116,8 +178,30 @@ function formatTaLine(snap: TaSnapshot, alerted: boolean): string {
   );
 }
 
+function formatRankedOpportunityLine(opportunity: RankedOpportunityContext): string {
+  const componentSummary = [
+    `pre=${opportunity.componentScores.preselection.toFixed(2)}`,
+    `liq=${opportunity.componentScores.liquidity.toFixed(2)}`,
+    `exec=${opportunity.componentScores.execution.toFixed(2)}`,
+    `fund=${opportunity.componentScores.funding.toFixed(2)}`,
+    `trig=${opportunity.componentScores.trigger.toFixed(2)}`,
+    `part=${opportunity.componentScores.participation.toFixed(2)}`,
+    `trend=${opportunity.componentScores.trend.toFixed(2)}`,
+  ].join(' ');
+  return (
+    `#${opportunity.rank} ${opportunity.symbol} (${formatAssetLabel(opportunity.assetClass)})` +
+    ` score=${opportunity.totalScore.toFixed(2)} ${componentSummary}` +
+    ` triggers=${opportunity.triggerReasons.join(', ') || 'none'}` +
+    ` reason=${opportunity.shortlistReason}`
+  );
+}
+
 function buildUserMessage(bundle: OriginationInputBundle): string {
   const bookSection = formatBookLines(bundle.book);
+  const shortlistSection =
+    bundle.rankedOpportunities && bundle.rankedOpportunities.length > 0
+      ? bundle.rankedOpportunities.map((opportunity) => formatRankedOpportunityLine(opportunity)).join('\n')
+      : '(none)';
 
   const alertedSet = new Set(bundle.alertedSymbols);
   const alertedSnaps = bundle.taSnapshots.filter((s) => alertedSet.has(s.symbol));
@@ -137,6 +221,9 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     '## Open Positions',
     bookSection,
     '',
+    '## Ranked Opportunity Shortlist',
+    shortlistSection,
+    '',
     '## Market Scan',
     scanSection,
     '',
@@ -147,7 +234,7 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     eventsSection,
     '',
     '## Instruction',
-    'Find ONE compelling trade setup across ALL symbols above. Prefer symbols with no current book exposure. If you propose a symbol already in the book, you must name a specific new catalyst in thesisText that justifies adding to that position. Return null if nothing clears the bar.',
+    'Find ONE compelling trade setup across ALL symbols above. Use the ranked shortlist as the strongest starting point, but validate it against the full scan. Prefer symbols with no current book exposure. If you propose a symbol already in the book, you must name a specific new catalyst in thesisText that justifies adding to that position. Use cross-asset wording when the instrument is not a pure crypto underlying. Return null if nothing clears the bar.',
   ].join('\n');
 }
 
@@ -212,6 +299,7 @@ export class LlmTradeOriginator {
     private mainLlm: LlmClient,
     private fallbackLlm: LlmClient,
     private config: ThufirConfig,
+    private _toolContext?: unknown,
   ) {}
 
   private async getMarketContext(): Promise<string> {
