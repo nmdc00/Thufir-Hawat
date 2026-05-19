@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
 import type { BookEntry } from './position_book.js';
+import { withExecutionContextIfMissing } from './llm_infra.js';
 import { Logger } from './logger.js';
 
 // ---------------------------------------------------------------------------
@@ -227,10 +228,19 @@ export class LlmExitConsultant {
 
     // Try main LLM — no maxTokens cap, matching AgenticOpenAiClient behaviour
     try {
-      const decision = await callWithTimeout(
-        this.mainLlm,
-        messages,
-        resolveTimeoutMs(this.config),
+      const decision = await withExecutionContextIfMissing(
+        {
+          mode: 'LIGHT_REASONING',
+          critical: false,
+          reason: 'exit_consultant_main',
+          source: 'heartbeat',
+        },
+        () =>
+          callWithTimeout(
+            this.mainLlm,
+            messages,
+            resolveTimeoutMs(this.config),
+          )
       );
       await this.logDecision({ position, roe, nowMs, decision, usedFallback: false });
       return decision;
@@ -254,11 +264,20 @@ export class LlmExitConsultant {
       // best-effort
     }
     try {
-      const decision = await callWithTimeout(
-        this.fallbackLlm,
-        messages,
-        resolveTimeoutMs(this.config),
-        maxTokens
+      const decision = await withExecutionContextIfMissing(
+        {
+          mode: 'LIGHT_REASONING',
+          critical: false,
+          reason: 'exit_consultant_fallback',
+          source: 'heartbeat',
+        },
+        () =>
+          callWithTimeout(
+            this.fallbackLlm,
+            messages,
+            resolveTimeoutMs(this.config),
+            maxTokens
+          )
       );
       await this.logDecision({ position, roe, nowMs, decision, usedFallback: true });
       return decision;
