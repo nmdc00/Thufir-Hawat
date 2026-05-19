@@ -14,6 +14,8 @@ export interface TaSnapshot {
   volumeVs24hAvgPct: number;
   priceVsEma20_1h: number;
   trendBias: 'up' | 'down' | 'flat';
+  triggerReasons: string[];
+  rawFeatures: TaRawFeatures;
   alertReason?: string;
 }
 
@@ -23,6 +25,18 @@ export interface TaCoverageSummary {
   snapshotCount: number;
   coverageRatio: number;
   missingMarkets: string[];
+}
+
+export interface TaRawFeatures {
+  priceVs24hHighPct: number;
+  priceVs24hLowPct: number;
+  oiUsd: number;
+  oiDelta1hPct: number;
+  oiDelta4hPct: number;
+  fundingRateAnnualPct: number;
+  volumeVs24hAvgPct: number;
+  priceVsEma20_1hPct: number;
+  trendBias: 'up' | 'down' | 'flat';
 }
 
 const EMA_PERIOD = 20;
@@ -193,15 +207,15 @@ export class TaSurface {
     const fundingExtremeAnnual = this.config.autonomy?.ta?.fundingExtremeAnnual ?? 50;
     const volumeSpikePct = this.config.autonomy?.ta?.volumeSpikePct ?? 150;
 
-    const alertReasons: string[] = [];
+    const triggerReasons: string[] = [];
     if (Math.abs(oiDelta1hPct) > oiSpikePct) {
-      alertReasons.push(`oi_spike_1h:${oiDelta1hPct.toFixed(1)}%`);
+      triggerReasons.push(`oi_spike_1h:${oiDelta1hPct.toFixed(1)}%`);
     }
     if (Math.abs(fundingRatePct) > fundingExtremeAnnual) {
-      alertReasons.push(`funding_extreme:${fundingRatePct.toFixed(1)}%_ann`);
+      triggerReasons.push(`funding_extreme:${fundingRatePct.toFixed(1)}%_ann`);
     }
     if (volumeVs24hAvgPct > volumeSpikePct) {
-      alertReasons.push(`volume_spike:${volumeVs24hAvgPct.toFixed(1)}%`);
+      triggerReasons.push(`volume_spike:${volumeVs24hAvgPct.toFixed(1)}%`);
     }
 
     const snapshot: TaSnapshot = {
@@ -216,16 +230,29 @@ export class TaSurface {
       volumeVs24hAvgPct,
       priceVsEma20_1h,
       trendBias,
+      triggerReasons,
+      rawFeatures: {
+        priceVs24hHighPct: priceVs24hHigh,
+        priceVs24hLowPct: priceVs24hLow,
+        oiUsd,
+        oiDelta1hPct,
+        oiDelta4hPct,
+        fundingRateAnnualPct: fundingRatePct,
+        volumeVs24hAvgPct,
+        priceVsEma20_1hPct: priceVsEma20_1h,
+        trendBias,
+      },
     };
 
-    if (alertReasons.length > 0) {
-      snapshot.alertReason = alertReasons.join('; ');
+    if (triggerReasons.length > 0) {
+      // Compatibility shim for modules still reading the old single-string field.
+      snapshot.alertReason = triggerReasons.join('; ');
     }
 
     return snapshot;
   }
 
   hasAlert(snapshot: TaSnapshot): boolean {
-    return snapshot.alertReason !== undefined;
+    return (snapshot.triggerReasons ?? []).length > 0;
   }
 }

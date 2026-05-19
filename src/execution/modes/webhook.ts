@@ -2,8 +2,8 @@ import fetch from 'node-fetch';
 
 import type { ExecutionAdapter, TradeDecision, TradeResult, Order } from '../executor.js';
 import type { Market } from '../markets.js';
-import { createPrediction, recordExecution } from '../../memory/predictions.js';
 import { createLearningCase } from '../../memory/learning_cases.js';
+import { createPrediction, recordExecution } from '../../memory/predictions.js';
 import { recordTrade } from '../../memory/trades.js';
 import { logWalletOperation } from '../../memory/audit.js';
 

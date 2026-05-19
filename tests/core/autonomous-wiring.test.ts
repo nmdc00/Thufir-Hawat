@@ -33,12 +33,13 @@ const mocks = vi.hoisted(() => {
     expressions: [],
     selector: { source: 'configured', symbols: [] },
   }));
+  const recordOpportunityRankScan = vi.fn();
 
   // Stable mock objects — replaced entirely on each TaSurface/OriginationTrigger/LlmTradeOriginator construction
   // by capturing via the constructor mock
   const taSurfaceInstance = {
     computeAll: (...args: unknown[]) => taComputeAll(...args),
-    hasAlert: (snap: any) => snap.alertReason !== undefined,
+    hasAlert: (snap: any) => Array.isArray(snap.triggerReasons) && snap.triggerReasons.length > 0,
   };
   const triggerInstance = {
     shouldFire: (...args: unknown[]) => triggerShouldFire(...args),
@@ -51,7 +52,7 @@ const mocks = vi.hoisted(() => {
     dbRun, dbPrepare, dbExec,
     taComputeAll, triggerShouldFire, originatorPropose,
     upsertExitPolicy, updateTradeProposalOutcome, updateTradeProposalStatus,
-    createPrediction, runDiscovery,
+    updateTradeProposalStatus, createPrediction, runDiscovery, recordOpportunityRankScan,
     taSurfaceInstance, triggerInstance, originatorInstance,
   };
 });
@@ -84,6 +85,10 @@ vi.mock('../../src/memory/llm_trade_proposals.js', () => ({
   updateTradeProposalStatus: (...args: unknown[]) => mocks.updateTradeProposalStatus(...args),
 }));
 
+vi.mock('../../src/memory/opportunity_rank_logs.js', () => ({
+  recordOpportunityRankScan: (...args: unknown[]) => mocks.recordOpportunityRankScan(...args),
+}));
+
 vi.mock('../../src/discovery/engine.js', () => ({
   runDiscovery: (...args: unknown[]) => mocks.runDiscovery(...args),
 }));
@@ -92,8 +97,8 @@ vi.mock('../../src/discovery/market_selector.js', () => ({
   selectDiscoveryMarkets: vi.fn(async () => ({
     source: 'full_universe' as const,
     candidates: [
-      { symbol: 'BTC', score: 1, liquidityScore: 1, executionScore: 1, fundingScore: 1, openInterestUsd: 1e9, dayVolumeUsd: 1e8, fundingRate: 0, spreadProxyBps: 0 },
-      { symbol: 'ETH', score: 0.9, liquidityScore: 1, executionScore: 1, fundingScore: 1, openInterestUsd: 5e8, dayVolumeUsd: 5e7, fundingRate: 0, spreadProxyBps: 0 },
+      { symbol: 'BTC', assetClass: 'crypto', marketDisplay: 'BTC', score: 1, liquidityScore: 1, executionScore: 1, fundingScore: 1, openInterestUsd: 1e9, dayVolumeUsd: 1e8, fundingRate: 0, spreadProxyBps: 0, markPx: 70000, oraclePx: 70000 },
+      { symbol: 'ETH', assetClass: 'crypto', marketDisplay: 'ETH', score: 0.9, liquidityScore: 1, executionScore: 1, fundingScore: 1, openInterestUsd: 5e8, dayVolumeUsd: 5e7, fundingRate: 0, spreadProxyBps: 0, markPx: 3500, oraclePx: 3500 },
     ],
   })),
 }));
@@ -233,6 +238,18 @@ const BASE_SNAPSHOT = {
   volumeVs24hAvgPct: 200,
   priceVsEma20_1h: 1.5,
   trendBias: 'up' as const,
+  triggerReasons: ['oi_spike_1h:12.0%', 'volume_spike:200.0%'],
+  rawFeatures: {
+    priceVs24hHighPct: -1,
+    priceVs24hLowPct: 5,
+    oiUsd: 1_000_000,
+    oiDelta1hPct: 12,
+    oiDelta4hPct: 5,
+    fundingRateAnnualPct: 10,
+    volumeVs24hAvgPct: 200,
+    priceVsEma20_1hPct: 1.5,
+    trendBias: 'up' as const,
+  },
   alertReason: 'oi_spike_1h:12.0%',
 };
 
@@ -338,6 +355,43 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(mocks.updateTradeProposalOutcome).toHaveBeenCalledWith(42, 'approve', true);
 
     expect(result).toContain('paper ok');
+  });
+
+  it('1b. builds a ranked shortlist before origination and passes it to trigger + originator', async () => {
+    const { AutonomousManager } = await import('../../src/core/autonomous.js');
+    const llm = makeGateLlm('approve');
+    const executor = { execute: vi.fn(async () => ({ executed: false, message: 'paper skipped' })) } as any;
+    const marketClient = { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: { maxLeverage: 10 } }) } as any;
+    const limiter = makeLimiter();
+
+    const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
+    await manager.runScan({ forceExecute: true });
+
+    expect(mocks.triggerShouldFire).toHaveBeenCalledTimes(1);
+    const shortlist = mocks.triggerShouldFire.mock.calls[0]![3] as Array<Record<string, unknown>>;
+    expect(Array.isArray(shortlist)).toBe(true);
+    expect(shortlist[0]).toMatchObject({
+      symbol: 'BTC',
+      rank: 1,
+      symbolClass: 'crypto',
+    });
+
+    const bundle = mocks.originatorPropose.mock.calls[0]![0] as Record<string, any>;
+    expect(bundle.rankedOpportunities[0]).toMatchObject({
+      symbol: 'BTC',
+      rank: 1,
+    });
+    expect(bundle.rankedOpportunities[0].triggerReasons).toEqual(
+      expect.arrayContaining(['oi_spike_1h:12.0%', 'volume_spike:200.0%'])
+    );
+    expect(bundle.rankedOpportunities[0].componentScores.structuralEdgeScore).toBeGreaterThan(0);
+    expect(mocks.recordOpportunityRankScan).toHaveBeenCalledTimes(1);
+    expect(mocks.recordOpportunityRankScan.mock.calls[0]![0]).toMatchObject({
+      source: 'autonomous_originator_scan',
+      totalCandidates: 1,
+      eligibleCandidates: 1,
+      selectedSymbol: 'BTC',
+    });
   });
 
   it('2. null proposal + cadence trigger → quant fallback runs', async () => {
@@ -584,7 +638,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const call = mocks.createPrediction.mock.calls[0]![0] as any;
     expect(call.marketId).toBe('perp:BTC');
     expect(call.domain).toBe('perp');
-    expect(call.modelProbability).toBeCloseTo(0.92, 6);
+    expect(call.modelProbability).toBeCloseTo(0.84, 6);
     expect(call.marketProbability).toBeUndefined();
     expect(call.learningComparable).toBe(false);
     expect(call.signalWeightsSnapshot).toEqual({
