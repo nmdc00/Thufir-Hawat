@@ -317,6 +317,54 @@ describe('position heartbeat — autonomous actions', () => {
     expect(notified[0]).toMatch(/FAILED/);
   });
 
+  it('uses position_value as a fallback mid when mids loading fails', async () => {
+    const config = makeConfig({
+      liquidationProximityPct: 10,
+      timeCeilingMinutes: 9999,
+      pnlShiftPct: 99,
+      volatilitySpikePct: 99,
+    });
+    const notified: string[] = [];
+    const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
+    const toolExec = async (toolName: string, toolInput: Record<string, unknown>) => {
+      calls.push({ tool: toolName, input: toolInput });
+      if (toolName === 'get_positions') {
+        return {
+          success: true as const,
+          data: {
+            positions: [makePosition({ liquidation_price: 94, position_value: 100 })],
+          },
+        };
+      }
+      if (toolName === 'perp_place_order') {
+        return { success: true as const, data: { ok: true } };
+      }
+      return { success: false as const, error: `unexpected: ${toolName}` };
+    };
+    const client = {
+      getAllMids: async () => {
+        throw Object.assign(new Error('429 Too Many Requests - null'), { response: { status: 429 } });
+      },
+    } as any;
+
+    const service = new PositionHeartbeatService(
+      config,
+      { config } as any,
+      new Logger('error'),
+      { client, toolExec: toolExec as any, notify: async (m) => { notified.push(m); } }
+    );
+
+    service.start();
+    await service.tickOnce();
+    service.stop();
+
+    const orders = calls.filter((c) => c.tool === 'perp_place_order');
+    expect(orders.length).toBe(1);
+    expect(orders[0]!.input.size).toBe(1);
+    expect(notified.length).toBe(1);
+    expect(notified[0]).toContain('liquidation_proximity');
+  });
+
   it('runs in paper mode and still executes close', async () => {
     const config = {
       execution: { mode: 'paper', provider: 'hyperliquid' },
