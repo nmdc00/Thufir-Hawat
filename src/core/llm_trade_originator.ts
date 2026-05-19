@@ -10,7 +10,7 @@ import type {
   OpportunitySignalClass,
   OpportunitySymbolClass,
 } from './opportunity_types.js';
-import { gatherMarketContext } from '../markets/context.js';
+import { gatherMarketContext, type MarketContextDomain } from '../markets/context.js';
 import { recordTradeProposal } from '../memory/llm_trade_proposals.js';
 import { Logger } from './logger.js';
 import { withExecutionContextIfMissing } from './llm_infra.js';
@@ -176,9 +176,21 @@ function formatAssetLabel(symbolClass: RankedOpportunityContext['symbolClass']):
   return symbolClass === 'xyz' ? 'cross-asset perp' : 'crypto perp';
 }
 
-function normalizeContextDomain(domain?: string | null): string {
+function normalizeContextDomain(domain?: string | null): MarketContextDomain {
   const normalized = String(domain ?? '').trim().toLowerCase();
-  return normalized.length > 0 ? normalized : 'crypto';
+  switch (normalized) {
+    case 'crypto':
+    case 'energy':
+    case 'agri':
+    case 'metals':
+    case 'rates':
+    case 'fx':
+    case 'equity':
+    case 'macro':
+      return normalized;
+    default:
+      return 'crypto';
+  }
 }
 
 function formatBookLines(book: BookEntry[]): string {

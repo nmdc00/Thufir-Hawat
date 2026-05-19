@@ -287,8 +287,6 @@ export function updateLearningCaseOutcome(input: UpdateLearningCaseOutcomeInput)
     outcome: input.outcome === undefined ? null : serializeJson(input.outcome),
     qualityScores:
       input.qualityScores === undefined ? null : serializeJson(input.qualityScores),
-    qualityScores:
-      input.qualityScores === undefined ? null : serializeJson(input.qualityScores),
     policyInputs: input.policyInputs === undefined ? null : serializeJson(input.policyInputs),
     comparable: input.comparable === undefined ? null : input.comparable ? 1 : 0,
     comparatorKind: input.comparatorKind === undefined ? null : input.comparatorKind,
