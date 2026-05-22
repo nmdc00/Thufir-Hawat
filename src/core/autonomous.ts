@@ -81,6 +81,10 @@ function clampSignedScore(value: number): number {
   return Math.max(-1, Math.min(1, value));
 }
 
+function toPolicyDirection(side: 'buy' | 'sell'): 'long' | 'short' {
+  return side === 'buy' ? 'long' : 'short';
+}
+
 function resolvePredictionSignalWeights(config: ThufirConfig): SignalWeights {
   const learned = getSignalWeightsWithFallback(['perp', 'global']);
   if (learned) return learned;
@@ -1412,7 +1416,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const symbolClass = inferTradeSymbolClass(symbol);
       const globalGate = evaluateGlobalTradeGate(this.thufirConfig, {
         symbol,
-        direction: expr.side,
+        direction: toPolicyDirection(expr.side),
         strategySource: expr.newsTrigger?.enabled ? 'discovery_news' : 'discovery_quant',
         triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
         signalClass,
@@ -1494,7 +1498,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const liquidityBucket = cluster ? resolveLiquidityBucket(cluster) : 'normal';
       const globalGate = evaluateGlobalTradeGate(this.thufirConfig, {
         symbol,
-        direction: expr.side,
+        direction: toPolicyDirection(expr.side),
         strategySource: expr.newsTrigger?.enabled ? 'discovery_news' : 'discovery_quant',
         triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
         signalClass,
