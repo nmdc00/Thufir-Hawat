@@ -304,7 +304,7 @@ describe('tool-executor perps', () => {
       executor,
       limiter,
     };
-    const symbol = 'BTCADJ';
+    const symbol = 'XYZ:SILVER';
 
     expect(
       await executeToolCall(
@@ -334,6 +334,7 @@ describe('tool-executor perps', () => {
     const adjustments = listTradePolicyAdjustments('perp');
     expect(adjustments).toHaveLength(1);
     expect(adjustments[0]!.active).toBe(true);
+    expect(adjustments[0]!.symbolClass).toBe('macro_contract');
     expect(adjustments[0]!.signalClass).toBe('mean_reversion');
 
     const laterRes = await executeToolCall(
