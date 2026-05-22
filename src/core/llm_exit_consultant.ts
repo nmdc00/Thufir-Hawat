@@ -10,7 +10,7 @@ import { Logger } from './logger.js';
 // ---------------------------------------------------------------------------
 
 export interface ExitConsultDecision {
-  action: 'hold' | 'reduce' | 'close' | 'extend_ttl' | 'update_invalidation';
+  action: 'hold' | 'reduce' | 'extend_ttl' | 'update_invalidation';
   reasoning: string;
   newTimeStopAtMs?: number;
   newInvalidationPrice?: number;
@@ -22,7 +22,7 @@ export interface ExitConsultDecision {
 // ---------------------------------------------------------------------------
 
 const ExitConsultResponseSchema = z.object({
-  action: z.enum(['hold', 'reduce', 'close', 'extend_ttl', 'update_invalidation']),
+  action: z.enum(['hold', 'reduce', 'extend_ttl', 'update_invalidation']),
   reasoning: z.string(),
   newTimeStopAtMs: z.number().optional(),
   newInvalidationPrice: z.number().optional(),
@@ -350,16 +350,14 @@ function buildMessages(
   const system =
     `You are Thufir, an LLM-primary trading agent reviewing an open position. ` +
     `Your default is HOLD. ` +
-    `Close or reduce only when one of these is true: ` +
-    `(1) the original thesis narrative is explicitly invalidated by new information, ` +
-    `(2) the invalidation price is hit, ` +
-    `(3) the TTL is expiring and there is no case to extend it, or ` +
-    `(4) a hard risk rule fires. ` +
-    `Profit alone is NOT a reason to close. Slow momentum is NOT invalidation. ` +
+    `You are not a primary full-close authority. ` +
+    `You may hold, reduce, extend_ttl, or update_invalidation. ` +
+    `Do not emit close. ` +
+    `Profit alone is NOT a reason to reduce. Slow momentum is NOT invalidation. ` +
     `A structural macro trade should be held until the thesis resolves or breaks — ` +
     `not harvested early because it has not yet repriced fully. ` +
     `Prefer extend_ttl over close when the thesis is intact but underdeveloped. ` +
-    `Prefer update_invalidation over close when structure shifted but direction is valid.`;
+    `Prefer update_invalidation when structure shifted but direction is valid.`;
 
   const roePct = (roe * 100).toFixed(2);
   const tradeType = position.exitContract?.tradeType ?? 'tactical';
@@ -379,7 +377,7 @@ function buildMessages(
     `## Current market context\n${freshContext || '(none)'}\n\n` +
     `## Instruction\n` +
     `Respond ONLY with valid JSON matching this schema:\n` +
-    `{"action":"hold"|"reduce"|"close"|"extend_ttl"|"update_invalidation","reasoning":"...","newTimeStopAtMs":number|undefined,"newInvalidationPrice":number|undefined,"reduceToFraction":number|undefined}`;
+    `{"action":"hold"|"reduce"|"extend_ttl"|"update_invalidation","reasoning":"...","newTimeStopAtMs":number|undefined,"newInvalidationPrice":number|undefined,"reduceToFraction":number|undefined}`;
 
   return [
     { role: 'system', content: system },
