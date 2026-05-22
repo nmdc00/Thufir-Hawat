@@ -947,6 +947,18 @@ const ConfigSchema = z.object({
           timeoutMs: z.number().default(8000),
         })
         .default({}),
+      dynamicProfitProtection: z
+        .object({
+          enabled: z.boolean().default(true),
+          minRMultiple: z.number().default(4),
+          minRoePct: z.number().default(12),
+          partialReduceRMultiple: z.number().default(5.5),
+          tightenAndReduceRMultiple: z.number().default(7),
+          terminalCloseRMultiple: z.number().default(9),
+          adverseMovePct: z.number().default(1.5),
+          terminalAdverseMovePct: z.number().default(2.5),
+        })
+        .default({}),
     })
     .default({}),
   tradeManagement: z

@@ -163,6 +163,7 @@ const TRADE_POLICY_SCOPE_KEY_FROM_COLUMNS_SQL = `'symbol=' || COALESCE(NULLIF(TR
   '|marketRegime=' || COALESCE(NULLIF(TRIM(market_regime), ''), 'any') ||
   '|volatilityBucket=' || COALESCE(NULLIF(TRIM(volatility_bucket), ''), 'any') ||
   '|liquidityBucket=' || COALESCE(NULLIF(TRIM(liquidity_bucket), ''), 'any')`;
+
 type ColumnSpec = {
   name: string;
   sql: string;

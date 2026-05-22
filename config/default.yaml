@@ -305,6 +305,15 @@ heartbeat:
     roeThresholds: [3, 7, 15]
     approachTtlMinutes: 15
     timeoutMs: 8000
+  dynamicProfitProtection:
+    enabled: true
+    minRMultiple: 4
+    minRoePct: 12
+    partialReduceRMultiple: 5.5
+    tightenAndReduceRMultiple: 7
+    terminalCloseRMultiple: 9
+    adverseMovePct: 1.5
+    terminalAdverseMovePct: 2.5
 
 # Trade management (exchange-native risk controls)
 tradeManagement:

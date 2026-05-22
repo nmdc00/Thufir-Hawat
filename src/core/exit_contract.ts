@@ -152,7 +152,7 @@ export function buildLegacyExitContract(params: {
     hardRules,
     reviewGuidance: [
       'Hold as long as the original thesis narrative remains intact — slow momentum is not invalidation.',
-      'Close only when the thesis is specifically contradicted by new information or price action.',
+      'Full close belongs to hard invalidation or emergency risk; otherwise prefer holding or measured de-risking.',
       'Use extend_ttl if the thesis is valid but needs more time. Use update_invalidation if structure shifted but direction holds.',
     ],
   };

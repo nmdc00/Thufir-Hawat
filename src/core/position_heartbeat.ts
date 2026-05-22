@@ -26,6 +26,10 @@ import {
   parseExitContract,
   serializeExitContract,
 } from './exit_contract.js';
+import {
+  evaluateDynamicProfitProtection,
+  type DynamicProfitProtectionConfig,
+} from './dynamic_profit_protection.js';
 
 type ToolExecutorFn = (
   toolName: string,
@@ -195,52 +199,45 @@ export class PositionHeartbeatService {
             bookEntry.lastConsultAtMs = nowMs;
             bookEntry.lastConsultDecision = JSON.stringify({ ...decision, roeAtConsult: roe, trigger: 'ttl_expired' });
 
-            if (decision.action === 'close') {
-              await this.executePolicyClose(pos, 'thesis_time_stop → llm_exit_consultant: close', liqDistPct, nowIso);
-              try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
+            if (decision.action === 'reduce' && decision.reduceToFraction != null) {
+              await this.executeContractReduce(
+                pos,
+                decision.reduceToFraction,
+                `ttl_review (${decision.reasoning})`,
+                liqDistPct,
+                nowIso
+              );
+              upsertPositionExitPolicy(
+                pos.symbol,
+                pos.side,
+                resolveExtendedTtl(nowMs + 4 * 60 * 60 * 1000, nowMs),
+                policy.invalidationPrice ?? null,
+                policy.notes ?? null
+              );
             } else if (decision.action === 'extend_ttl' && decision.newTimeStopAtMs != null) {
-              const boundedTtl = resolveBoundedTtlExtension(bookEntry, decision.newTimeStopAtMs, nowMs);
-              if (boundedTtl.action === 'close') {
-                await this.executePolicyClose(pos, boundedTtl.reason, liqDistPct, nowIso);
-                try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
-              } else {
-                upsertPositionExitPolicy(
-                  pos.symbol,
-                  pos.side,
-                  boundedTtl.timeStopAtMs,
-                  policy.invalidationPrice ?? null,
-                  policy.notes ?? null
-                );
-              }
+              upsertPositionExitPolicy(
+                pos.symbol,
+                pos.side,
+                resolveExtendedTtl(decision.newTimeStopAtMs, nowMs),
+                policy.invalidationPrice ?? null,
+                policy.notes ?? null
+              );
             } else if (decision.action === 'update_invalidation' && decision.newInvalidationPrice != null) {
-              const boundedTtl = resolveBoundedTtlExtension(bookEntry, nowMs + 4 * 60 * 60 * 1000, nowMs);
-              if (boundedTtl.action === 'close') {
-                await this.executePolicyClose(pos, boundedTtl.reason, liqDistPct, nowIso);
-                try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
-              } else {
-                upsertPositionExitPolicy(
-                  pos.symbol,
-                  pos.side,
-                  boundedTtl.timeStopAtMs,
-                  decision.newInvalidationPrice,
-                  buildUpdatedExitPolicyNotes(bookEntry, pos.side, decision.newInvalidationPrice)
-                );
-              }
+              upsertPositionExitPolicy(
+                pos.symbol,
+                pos.side,
+                resolveExtendedTtl(nowMs + 4 * 60 * 60 * 1000, nowMs),
+                decision.newInvalidationPrice,
+                buildUpdatedExitPolicyNotes(bookEntry, pos.side, decision.newInvalidationPrice)
+              );
             } else {
-              // hold or reduce — extend TTL by 4 h so the next tick doesn't re-fire immediately
-              const boundedTtl = resolveBoundedTtlExtension(bookEntry, nowMs + 4 * 60 * 60 * 1000, nowMs);
-              if (boundedTtl.action === 'close') {
-                await this.executePolicyClose(pos, boundedTtl.reason, liqDistPct, nowIso);
-                try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
-              } else {
-                upsertPositionExitPolicy(
-                  pos.symbol,
-                  pos.side,
-                  boundedTtl.timeStopAtMs,
-                  policy.invalidationPrice ?? null,
-                  policy.notes ?? null
-                );
-              }
+              upsertPositionExitPolicy(
+                pos.symbol,
+                pos.side,
+                resolveExtendedTtl(nowMs + 4 * 60 * 60 * 1000, nowMs),
+                policy.invalidationPrice ?? null,
+                policy.notes ?? null
+              );
             }
             handled = true;
           } catch (err) {
@@ -249,24 +246,18 @@ export class PositionHeartbeatService {
         }
         if (!handled) {
           // No consultant or LLM unavailable — extend TTL rather than closing.
-          const boundedTtl = resolveBoundedTtlExtension(bookEntry, nowMs + 4 * 60 * 60 * 1000, nowMs);
-          if (boundedTtl.action === 'close') {
-            await this.executePolicyClose(pos, boundedTtl.reason, liqDistPct, nowIso);
-            try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
-          } else {
-            try {
-              upsertPositionExitPolicy(
-                pos.symbol,
-                pos.side,
-                boundedTtl.timeStopAtMs,
-                policy.invalidationPrice ?? null,
-                policy.notes ?? null
-              );
-            } catch { /* best-effort */ }
-            this.logger.info(
-              `PositionHeartbeat: TTL expired for ${pos.symbol} — no consultant available, extended TTL within cap`
+          try {
+            upsertPositionExitPolicy(
+              pos.symbol,
+              pos.side,
+              resolveExtendedTtl(nowMs + 4 * 60 * 60 * 1000, nowMs),
+              policy.invalidationPrice ?? null,
+              policy.notes ?? null
             );
-          }
+          } catch { /* best-effort */ }
+          this.logger.info(
+            `PositionHeartbeat: TTL expired for ${pos.symbol} — no consultant available, extended TTL`
+          );
         }
         continue;
       }
@@ -319,11 +310,7 @@ export class PositionHeartbeatService {
             bookEntry.lastConsultAtMs = nowMs;
             bookEntry.lastConsultDecision = JSON.stringify({ ...decision, roeAtConsult: roe });
 
-            if (decision.action === 'close') {
-              await this.executePolicyClose(pos, 'llm_exit_consultant', liqDistPct, nowIso);
-              try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
-              continue;
-            } else if (decision.action === 'reduce' && decision.reduceToFraction != null) {
+            if (decision.action === 'reduce' && decision.reduceToFraction != null) {
               const side = pos.side === 'long' ? 'sell' : 'buy';
               const reduceSize = pos.size * (1 - decision.reduceToFraction);
               if (reduceSize > 0) {
@@ -337,34 +324,18 @@ export class PositionHeartbeatService {
                 );
               }
             } else if (decision.action === 'extend_ttl' && decision.newTimeStopAtMs != null) {
-              const boundedTtl = resolveBoundedTtlExtension(bookEntry, decision.newTimeStopAtMs, nowMs);
-              if (boundedTtl.action === 'close') {
-                await this.executePolicyClose(pos, boundedTtl.reason, liqDistPct, nowIso);
-                try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
-                continue;
-              }
               upsertPositionExitPolicy(
                 pos.symbol,
                 pos.side,
-                boundedTtl.timeStopAtMs,
+                resolveExtendedTtl(decision.newTimeStopAtMs, nowMs),
                 policy?.invalidationPrice ?? null,
                 policy?.notes ?? null
               );
             } else if (decision.action === 'update_invalidation' && decision.newInvalidationPrice != null) {
-              const boundedTtl = resolveBoundedTtlExtension(
-                bookEntry,
-                bookEntry.thesisExpiresAtMs,
-                nowMs
-              );
-              if (boundedTtl.action === 'close') {
-                await this.executePolicyClose(pos, boundedTtl.reason, liqDistPct, nowIso);
-                try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
-                continue;
-              }
               upsertPositionExitPolicy(
                 pos.symbol,
                 pos.side,
-                boundedTtl.timeStopAtMs,
+                resolveExtendedTtl(bookEntry.thesisExpiresAtMs, nowMs),
                 decision.newInvalidationPrice,
                 buildUpdatedExitPolicyNotes(bookEntry, pos.side, decision.newInvalidationPrice)
               );
@@ -435,11 +406,67 @@ export class PositionHeartbeatService {
         continue;
       }
 
-      // Hard circuit breaker — bypass trigger logic, close immediately.
+      // Hard circuit breaker — bypass review/profit-protection logic, close immediately.
       const emergency = liqDistPct != null && liqDistPct < 2;
       if (!emergency) {
-        if (fired.length > 0) {
-          await this.executeOnTriggers(pos, fired, liqDistPct, nowIso);
+        const bookEntry = this.getBookEntry(pos.symbol);
+        const dynamicDecision =
+          bookEntry && policy?.invalidationPrice != null
+            ? evaluateDynamicProfitProtection({
+                side: pos.side,
+                entryPrice: bookEntry.entryPrice,
+                currentPrice: mid,
+                invalidationPrice: policy.invalidationPrice,
+                roePct: pos.roePct,
+                points: buffer,
+                triggerSignals: fired,
+                cfg: normalizeDynamicProfitProtectionConfig(this.config),
+              })
+            : null;
+        if (dynamicDecision?.action === 'tighten_invalidation' && bookEntry) {
+          upsertPositionExitPolicy(
+            pos.symbol,
+            pos.side,
+            policy?.timeStopAtMs ?? null,
+            dynamicDecision.newInvalidationPrice,
+            buildUpdatedExitPolicyNotes(bookEntry, pos.side, dynamicDecision.newInvalidationPrice)
+          );
+          this.recordInfo(pos.symbol, nowIso, fired, dynamicDecision.reason);
+        } else if (dynamicDecision?.action === 'reduce') {
+          if (dynamicDecision.newInvalidationPrice != null && bookEntry) {
+            upsertPositionExitPolicy(
+              pos.symbol,
+              pos.side,
+              policy?.timeStopAtMs ?? null,
+              dynamicDecision.newInvalidationPrice,
+              buildUpdatedExitPolicyNotes(bookEntry, pos.side, dynamicDecision.newInvalidationPrice)
+            );
+          }
+          await this.executeContractReduce(
+            pos,
+            dynamicDecision.reduceToFraction,
+            dynamicDecision.reason,
+            liqDistPct,
+            nowIso
+          );
+        } else if (dynamicDecision?.action === 'tighten_and_reduce' && bookEntry) {
+          upsertPositionExitPolicy(
+            pos.symbol,
+            pos.side,
+            policy?.timeStopAtMs ?? null,
+            dynamicDecision.newInvalidationPrice,
+            buildUpdatedExitPolicyNotes(bookEntry, pos.side, dynamicDecision.newInvalidationPrice)
+          );
+          await this.executeContractReduce(
+            pos,
+            dynamicDecision.reduceToFraction,
+            dynamicDecision.reason,
+            liqDistPct,
+            nowIso
+          );
+        } else if (dynamicDecision?.action === 'close') {
+          await this.executePolicyClose(pos, dynamicDecision.reason, liqDistPct, nowIso);
+          try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
         } else {
           this.recordInfo(pos.symbol, nowIso, fired, null);
         }
@@ -480,78 +507,6 @@ export class PositionHeartbeatService {
     }
 
     this.scheduleNext(this.computeActiveIntervalMs());
-  }
-
-  private async executeOnTriggers(
-    pos: PositionSnapshot,
-    fired: HeartbeatTriggerName[],
-    liqDistPct: number | null,
-    timestamp: string
-  ): Promise<void> {
-    this.recordInfo(pos.symbol, timestamp, fired, null);
-
-    const action = resolveAction(fired, pos.roePct);
-    const side = pos.side === 'long' ? 'sell' : 'buy';
-
-    let orderSize: number;
-    let decisionAction: 'close_entirely' | 'take_partial_profit';
-    let successMsg: string;
-    let failMsg: string;
-
-    if (action === 'close') {
-      orderSize = pos.size;
-      decisionAction = 'close_entirely';
-      const roe = pos.roePct != null ? `${pos.roePct.toFixed(2)}%` : 'n/a';
-      successMsg = `⛔ [Heartbeat] Closed ${pos.symbol} (${pos.side}) — trigger: ${fired.join(', ')}. ROE: ${roe}.`;
-      failMsg = `❌ [Heartbeat] FAILED to close ${pos.symbol} (${pos.side}) — trigger: ${fired.join(', ')}.`;
-    } else {
-      orderSize = pos.size * 0.5;
-      decisionAction = 'take_partial_profit';
-      successMsg = `⚠️ [Heartbeat] Reduced ${pos.symbol} (${pos.side}) by 50% — trigger: ${fired.join(', ')}.`;
-      failMsg = `❌ [Heartbeat] FAILED to reduce ${pos.symbol} (${pos.side}) — trigger: ${fired.join(', ')}.`;
-    }
-
-    const tool = await this.toolExec(
-      'perp_place_order',
-      { symbol: pos.symbol, side, size: orderSize, reduce_only: true, order_type: 'market' },
-      this.toolContext
-    );
-
-    this.logger.info(
-      `PositionHeartbeat: ${decisionAction} ${pos.symbol} (${pos.side}) size=${orderSize} ` +
-      `triggers=[${fired.join(',')}] outcome=${tool.success ? 'ok' : 'failed'}`
-    );
-
-    if (!tool.success) {
-      this.logger.warn(
-        `PositionHeartbeat: order failed for ${pos.symbol} — trigger: ${fired.join(',')}. Error: ${tool.error ?? 'unknown'}`
-      );
-    }
-
-    recordPositionHeartbeatDecision({
-      kind: 'position_heartbeat_journal',
-      symbol: pos.symbol,
-      timestamp,
-      triggers: fired,
-      decision: {
-        action: decisionAction,
-        reason: `Trigger action (${action}): ${fired.join(', ')}`,
-      },
-      outcome: tool.success ? 'ok' : 'failed',
-      snapshot: { liqDistPct, action, tool },
-      error: tool.success ? null : tool.error,
-    });
-
-    if (this.notify) {
-      try {
-        const notifyMsg = tool.success
-          ? successMsg
-          : `${failMsg} Reason: ${tool.error ?? 'unknown'}`;
-        await this.notify(notifyMsg);
-      } catch (err) {
-        this.logger.warn(`PositionHeartbeat: notify failed: ${stringifyError(err)}`);
-      }
-    }
   }
 
   /** Close a position entirely due to a policy-based trigger (time stop or invalidation). */
@@ -767,47 +722,29 @@ function normalizeTriggerConfig(config: ThufirConfig): HeartbeatTriggerConfig {
   };
 }
 
-function resolveAction(
-  fired: HeartbeatTriggerName[],
-  roePct: number | null
-): 'close' | 'reduce' {
-  // Any of these always warrant a full close.
-  if (
-    fired.includes('time_ceiling') ||
-    fired.includes('liquidation_proximity') ||
-    (fired.includes('pnl_shift') && (roePct == null || roePct <= 0))
-  ) {
-    return 'close';
-  }
-  // Positive PnL shift or volatility spike → reduce by half.
-  return 'reduce';
+function normalizeDynamicProfitProtectionConfig(config: ThufirConfig): DynamicProfitProtectionConfig {
+  const raw = config.heartbeat?.dynamicProfitProtection ?? ({} as Record<string, unknown>);
+  const toNumberOr = (value: unknown, fallback: number): number => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : fallback;
+  };
+  return {
+    enabled: raw.enabled !== false,
+    minRMultiple: toNumberOr(raw.minRMultiple, 4),
+    minRoePct: toNumberOr(raw.minRoePct, 12),
+    partialReduceRMultiple: toNumberOr(raw.partialReduceRMultiple, 5.5),
+    tightenAndReduceRMultiple: toNumberOr(raw.tightenAndReduceRMultiple, 7),
+    terminalCloseRMultiple: toNumberOr(raw.terminalCloseRMultiple, 9),
+    adverseMovePct: toNumberOr(raw.adverseMovePct, 1.5),
+    terminalAdverseMovePct: toNumberOr(raw.terminalAdverseMovePct, 2.5),
+  };
 }
 
-function resolveMaxLifecycleDurationMs(tradeType: string | null | undefined): number {
-  switch (tradeType) {
-    case 'scalp':
-      return 90 * 60 * 1000;
-    case 'structural':
-      return 48 * 60 * 60 * 1000;
-    case 'tactical':
-    default:
-      return 6 * 60 * 60 * 1000;
+function resolveExtendedTtl(requestedStopAtMs: number, nowMs: number): number {
+  if (!Number.isFinite(requestedStopAtMs) || requestedStopAtMs <= nowMs) {
+    return nowMs + 60 * 1000;
   }
-}
-
-function resolveBoundedTtlExtension(
-  position: Pick<BookEntry, 'exitContract' | 'entryAtMs'> | undefined,
-  requestedStopAtMs: number,
-  nowMs: number
-): { action: 'extend'; timeStopAtMs: number } | { action: 'close'; reason: string } {
-  const tradeType = position?.exitContract?.tradeType ?? 'tactical';
-  const entryMs = position?.entryAtMs ?? nowMs;
-  const maxStopAtMs = entryMs + resolveMaxLifecycleDurationMs(tradeType);
-  const boundedStopAtMs = Math.min(requestedStopAtMs, maxStopAtMs);
-  if (!Number.isFinite(boundedStopAtMs) || boundedStopAtMs <= nowMs) {
-    return { action: 'close', reason: `ttl_cap_reached (${tradeType})` };
-  }
-  return { action: 'extend', timeStopAtMs: boundedStopAtMs };
+  return requestedStopAtMs;
 }
 
 function buildUpdatedExitPolicyNotes(

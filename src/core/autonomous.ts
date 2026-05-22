@@ -84,6 +84,7 @@ function clampSignedScore(value: number): number {
 function toPolicyDirection(side: 'buy' | 'sell'): 'long' | 'short' {
   return side === 'buy' ? 'long' : 'short';
 }
+
 function resolvePredictionSignalWeights(config: ThufirConfig): SignalWeights {
   const learned = getSignalWeightsWithFallback(['perp', 'global']);
   if (learned) return learned;

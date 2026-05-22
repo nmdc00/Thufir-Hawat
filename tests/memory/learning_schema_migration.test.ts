@@ -513,6 +513,7 @@ describe('learning schema migration', () => {
 
     expect(repairActiveTradePolicyAdjustmentScopeMismatches(db)).toBe(0);
   });
+
   it('writes learning signal audits against the production legacy audit schema', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-prod-legacy-audits-')), 'thufir.sqlite');
     const raw = new Database(dbPath);
