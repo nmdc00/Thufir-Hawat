@@ -139,6 +139,31 @@ const TRADE_POLICY_ADJUSTMENTS_INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_trade_policy_adjustments_signal ON trade_policy_adjustments(signal_class, trigger_reason, symbol_class, market_regime, session_tag, strategy_source, direction);',
 ];
 
+const CANONICAL_TRADE_POLICY_SYMBOL_CLASS_SQL = `CASE
+  WHEN symbol IS NULL OR TRIM(symbol) = '' THEN NULL
+  WHEN UPPER(TRIM(symbol)) = 'BTC' OR UPPER(TRIM(symbol)) LIKE '%BTC' THEN 'major'
+  WHEN UPPER(TRIM(symbol)) = 'ETH' OR UPPER(TRIM(symbol)) LIKE '%ETH'
+    OR UPPER(TRIM(symbol)) = 'SOL' OR UPPER(TRIM(symbol)) LIKE '%SOL' THEN 'liquid_alt'
+  WHEN UPPER(TRIM(symbol)) LIKE 'XYZ:%' AND (
+    UPPER(TRIM(symbol)) LIKE '%COIN' OR UPPER(TRIM(symbol)) LIKE '%MSTR'
+  ) THEN 'equity_proxy'
+  WHEN UPPER(TRIM(symbol)) LIKE 'XYZ:%' THEN 'macro_contract'
+  WHEN UPPER(TRIM(symbol)) LIKE 'FLX:%' THEN 'alt_perp'
+  WHEN INSTR(symbol, '/') > 0 THEN 'spot_pair'
+  ELSE 'alt'
+END`;
+
+const TRADE_POLICY_SCOPE_KEY_FROM_COLUMNS_SQL = `'symbol=' || COALESCE(NULLIF(TRIM(symbol), ''), 'any') ||
+  '|direction=' || COALESCE(NULLIF(TRIM(direction), ''), 'any') ||
+  '|strategySource=' || COALESCE(NULLIF(TRIM(strategy_source), ''), 'any') ||
+  '|triggerReason=' || COALESCE(NULLIF(TRIM(trigger_reason), ''), 'any') ||
+  '|signalClass=' || COALESCE(NULLIF(TRIM(signal_class), ''), 'any') ||
+  '|symbolClass=' || COALESCE(NULLIF(TRIM(symbol_class), ''), 'any') ||
+  '|session=' || COALESCE(NULLIF(TRIM(session_tag), ''), 'any') ||
+  '|marketRegime=' || COALESCE(NULLIF(TRIM(market_regime), ''), 'any') ||
+  '|volatilityBucket=' || COALESCE(NULLIF(TRIM(volatility_bucket), ''), 'any') ||
+  '|liquidityBucket=' || COALESCE(NULLIF(TRIM(liquidity_bucket), ''), 'any')`;
+
 type ColumnSpec = {
   name: string;
   sql: string;
@@ -219,6 +244,7 @@ export function ensureLearningSchema(db: Database.Database): void {
   for (const statement of TRADE_POLICY_ADJUSTMENTS_INDEX_SQL) {
     db.exec(statement);
   }
+  repairActiveTradePolicyAdjustmentScopeMismatches(db);
 
   cleanupSyntheticPerpComparableRows(db);
 
@@ -387,19 +413,42 @@ function backfillLegacyTradePolicyAdjustmentColumns(db: Database.Database, prese
 function backfillTradePolicyAdjustmentScopeKeys(db: Database.Database): void {
   db.exec(`
     UPDATE trade_policy_adjustments
-    SET scope_key =
-      'symbol=' || COALESCE(NULLIF(TRIM(symbol), ''), 'any') ||
-      '|direction=' || COALESCE(NULLIF(TRIM(direction), ''), 'any') ||
-      '|strategySource=' || COALESCE(NULLIF(TRIM(strategy_source), ''), 'any') ||
-      '|triggerReason=' || COALESCE(NULLIF(TRIM(trigger_reason), ''), 'any') ||
-      '|signalClass=' || COALESCE(NULLIF(TRIM(signal_class), ''), 'any') ||
-      '|symbolClass=' || COALESCE(NULLIF(TRIM(symbol_class), ''), 'any') ||
-      '|session=' || COALESCE(NULLIF(TRIM(session_tag), ''), 'any') ||
-      '|marketRegime=' || COALESCE(NULLIF(TRIM(market_regime), ''), 'any') ||
-      '|volatilityBucket=' || COALESCE(NULLIF(TRIM(volatility_bucket), ''), 'any') ||
-      '|liquidityBucket=' || COALESCE(NULLIF(TRIM(liquidity_bucket), ''), 'any')
+    SET scope_key = ${TRADE_POLICY_SCOPE_KEY_FROM_COLUMNS_SQL}
     WHERE scope_key IS NULL OR TRIM(scope_key) = ''
   `);
+}
+
+export function repairActiveTradePolicyAdjustmentScopeMismatches(db: Database.Database): number {
+  const hasAdjustmentsTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_policy_adjustments' LIMIT 1")
+    .get();
+  if (!hasAdjustmentsTable) {
+    return 0;
+  }
+
+  const result = db
+    .prepare(
+      `UPDATE trade_policy_adjustments
+       SET symbol_class = ${CANONICAL_TRADE_POLICY_SYMBOL_CLASS_SQL},
+           scope_key =
+             'symbol=' || COALESCE(NULLIF(TRIM(symbol), ''), 'any') ||
+             '|direction=' || COALESCE(NULLIF(TRIM(direction), ''), 'any') ||
+             '|strategySource=' || COALESCE(NULLIF(TRIM(strategy_source), ''), 'any') ||
+             '|triggerReason=' || COALESCE(NULLIF(TRIM(trigger_reason), ''), 'any') ||
+             '|signalClass=' || COALESCE(NULLIF(TRIM(signal_class), ''), 'any') ||
+             '|symbolClass=' || COALESCE(${CANONICAL_TRADE_POLICY_SYMBOL_CLASS_SQL}, 'any') ||
+             '|session=' || COALESCE(NULLIF(TRIM(session_tag), ''), 'any') ||
+             '|marketRegime=' || COALESCE(NULLIF(TRIM(market_regime), ''), 'any') ||
+             '|volatilityBucket=' || COALESCE(NULLIF(TRIM(volatility_bucket), ''), 'any') ||
+             '|liquidityBucket=' || COALESCE(NULLIF(TRIM(liquidity_bucket), ''), 'any'),
+           updated_at = datetime('now')
+       WHERE active = 1
+         AND symbol IS NOT NULL
+         AND TRIM(symbol) != ''
+         AND COALESCE(symbol_class, '') != COALESCE(${CANONICAL_TRADE_POLICY_SYMBOL_CLASS_SQL}, '')`
+    )
+    .run();
+  return result.changes;
 }
 export function cleanupLegacyPerpComparableRows(db: Database.Database): number {
   if (
