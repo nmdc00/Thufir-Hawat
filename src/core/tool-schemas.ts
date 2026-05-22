@@ -741,7 +741,7 @@ export const THUFIR_TOOLS: Tool[] = [
   },
   {
     name: 'perp_place_order',
-    description: 'Place a perp order on the configured exchange. IMPORTANT: When closing a position (reduce_only=true), you MUST include exit_mode — the call will be rejected without it. Use exit_mode="manual" for any discretionary close where the thesis is not formally invalidated.',
+    description: 'Place a perp order on the configured exchange. IMPORTANT: When closing a position (reduce_only=true), you MUST include exit_mode — the call will be rejected without it.',
     input_schema: {
       type: 'object',
       properties: {
@@ -799,7 +799,7 @@ export const THUFIR_TOOLS: Tool[] = [
         },
         take_profit_r: {
           type: 'number',
-          description: 'Optional target expressed in R-multiples',
+          description: 'Optional authored profit target expressed in R-multiples; not used by the default exit lifecycle',
         },
         trail_mode: {
           type: 'string',
@@ -825,8 +825,8 @@ export const THUFIR_TOOLS: Tool[] = [
         },
         exit_mode: {
           type: 'string',
-          enum: ['thesis_invalidation', 'take_profit', 'time_exit', 'risk_reduction', 'manual', 'unknown'],
-          description: 'REQUIRED when reduce_only=true. Pick the closest reason: thesis_invalidation (price invalidation level hit), take_profit (target reached), time_exit (TTL expired), risk_reduction (cutting exposure), manual (discretionary decision — use this when none of the above apply).',
+          enum: ['thesis_invalidation', 'dynamic_profit_protection', 'risk_reduction', 'emergency_risk', 'take_profit', 'time_exit', 'manual', 'unknown'],
+          description: 'REQUIRED when reduce_only=true. Use thesis_invalidation for a thesis break, dynamic_profit_protection for extension-based de-risking, risk_reduction for non-terminal exposure cuts, or emergency_risk for liquidation-risk overrides. `take_profit` and `time_exit` remain as legacy compatibility values and should not be used by new autonomous flows.',
         },
         entry_price: {
           type: 'number',

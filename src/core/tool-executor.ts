@@ -134,11 +134,16 @@ type PerpOrderRealizedCloseSummary = PerpOrderRealizedFee & {
   net_realized_pnl_usd: number | null;
 };
 
+// TODO(v2.3.7-followup): remove legacy compatibility modes `take_profit` and
+// `time_exit` after downstream journal consumers and historical replay tools no
+// longer depend on them.
 type PerpExitMode =
   | 'thesis_invalidation'
   | 'take_profit'
   | 'time_exit'
+  | 'dynamic_profit_protection'
   | 'risk_reduction'
+  | 'emergency_risk'
   | 'manual'
   | 'unknown';
 
@@ -1010,7 +1015,9 @@ export function normalizeExitMode(input: unknown): PerpExitMode | null {
     value === 'thesis_invalidation' ||
     value === 'take_profit' ||
     value === 'time_exit' ||
+    value === 'dynamic_profit_protection' ||
     value === 'risk_reduction' ||
+    value === 'emergency_risk' ||
     value === 'manual' ||
     value === 'unknown'
   ) {
@@ -1057,7 +1064,7 @@ function validatePerpOrderContract(input: {
     return 'thesis_invalidation exit_mode requires thesis_invalidation_hit=true';
   }
   if (enforceReduceOnlyExitMode && thesisInvalidationHit !== true && exitMode == null) {
-    return 'reduce-only exit requires exit_mode (thesis_invalidation|take_profit|time_exit|risk_reduction|manual|unknown)';
+    return 'reduce-only exit requires exit_mode (thesis_invalidation|dynamic_profit_protection|risk_reduction|emergency_risk|take_profit|time_exit|manual|unknown)';
   }
   return null;
 }

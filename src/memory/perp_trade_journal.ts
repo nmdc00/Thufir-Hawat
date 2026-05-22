@@ -55,7 +55,18 @@ export type PerpTradeJournalEntry = {
   emergencyOverride?: boolean | null;
   emergencyReason?: string | null;
   thesisInvalidationHit?: boolean | null;
-  exitMode?: 'thesis_invalidation' | 'take_profit' | 'time_exit' | 'risk_reduction' | 'manual' | 'unknown' | null;
+  // TODO(v2.3.7-followup): trim legacy `take_profit` and `time_exit` values
+  // after older rows/callers no longer require compatibility decoding.
+  exitMode?:
+    | 'thesis_invalidation'
+    | 'dynamic_profit_protection'
+    | 'risk_reduction'
+    | 'emergency_risk'
+    | 'take_profit'
+    | 'time_exit'
+    | 'manual'
+    | 'unknown'
+    | null;
   emotionalExitFlag?: boolean | null;
   thesisEvaluationReason?: string | null;
   maeProxy?: number | null;

@@ -70,8 +70,7 @@ describe('trade contract validation', () => {
         invalidationType: 'price_level',
         invalidationPrice: 49000,
         timeStopAtMs: nowMs + 3 * 60 * 60 * 1000,
-        takeProfitR: 2,
-        trailMode: 'structure',
+        trailMode: 'none',
       },
       nowMs,
     });
@@ -134,7 +133,7 @@ describe('trade contract validation', () => {
     const normalized = normalizeReduceOnlyExitFsmInput({
       enabled: true,
       reduceOnly: true,
-      exitMode: 'take_profit',
+      exitMode: 'dynamic_profit_protection',
       thesisInvalidationHit: true,
     });
     expect(normalized.exitMode).toBe('thesis_invalidation');
