@@ -48,6 +48,7 @@ import { resilientWebSearch } from '../intel/web_search_resilience.js';
 import { computeClosedTradeComponentScores } from './decision_component_scores.js';
 import { buildPerpExecutionLearningCase, toPerpExecutionLearningCaseInput } from './perp_lifecycle.js';
 import { materializeTradePolicyAdjustmentFromLearningCase } from './trade_policy_materialization.js';
+import { inferTradeSymbolClass } from './trade_similarity.js';
 import {
   hydrateEntryTradeContract,
   normalizeReduceOnlyExitFsmInput,
@@ -482,12 +483,7 @@ function inferPerpTriggerReason(
 function inferPerpSymbolClass(symbol: string, planContext: Record<string, unknown> | null): string | null {
   const explicit = pickPlanContextString(planContext, 'symbolClass', 'symbol_class');
   if (explicit) return explicit;
-  const normalized = symbol.trim().toUpperCase();
-  if (normalized.endsWith('BTC') || normalized === 'BTC') return 'major';
-  if (normalized.endsWith('ETH') || normalized === 'ETH' || normalized.endsWith('SOL') || normalized === 'SOL') {
-    return 'liquid_alt';
-  }
-  return normalized.length > 0 ? 'alt' : null;
+  return inferTradeSymbolClass(symbol);
 }
 
 function readScopeDirection(
