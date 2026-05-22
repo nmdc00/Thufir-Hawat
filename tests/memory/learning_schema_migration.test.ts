@@ -9,6 +9,7 @@ import { openDatabase } from '../../src/memory/db.js';
 import {
   cleanupSyntheticPerpComparableRows,
   cleanupLegacyPerpComparableRows,
+  repairActiveTradePolicyAdjustmentScopeMismatches,
   summarizeLearningSchema,
 } from '../../src/memory/learning_schema.js';
 import { recordLearningSignalAudit } from '../../src/memory/learning_observability.js';
@@ -385,7 +386,7 @@ describe('learning schema migration', () => {
     expect(row.rationale).toBe('legacy adaptive downweight');
     expect(row.updated_at).toBeTruthy();
     expect(row.scope_key).toBe(
-      'symbol=BTC|direction=long|strategySource=autonomous|triggerReason=thesis_retry|signalClass=mean_reversion|symbolClass=majors|session=us_open|marketRegime=trending|volatilityBucket=high|liquidityBucket=deep'
+      'symbol=BTC|direction=long|strategySource=autonomous|triggerReason=thesis_retry|signalClass=mean_reversion|symbolClass=major|session=us_open|marketRegime=trending|volatilityBucket=high|liquidityBucket=deep'
     );
 
     const created = createTradePolicyAdjustment({
@@ -433,6 +434,85 @@ describe('learning schema migration', () => {
     expect(inserted.signal_class).toBe('mean_reversion');
   });
 
+  it('repairs active adjustment symbol_class scope mismatches for XYZ contracts', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-active-adjustment-repair-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE trade_policy_adjustments (
+        id TEXT PRIMARY KEY,
+        domain TEXT NOT NULL,
+        policy_key TEXT NOT NULL DEFAULT 'size',
+        scope_key TEXT NOT NULL,
+        symbol TEXT,
+        direction TEXT,
+        strategy_source TEXT,
+        trigger_reason TEXT,
+        signal_class TEXT,
+        symbol_class TEXT,
+        session_tag TEXT,
+        market_regime TEXT,
+        volatility_bucket TEXT,
+        liquidity_bucket TEXT,
+        action TEXT NOT NULL,
+        size_multiplier REAL NOT NULL,
+        leverage_cap REAL,
+        confirmation_required INTEGER,
+        cooldown_minutes INTEGER,
+        confidence REAL,
+        evidence_count INTEGER NOT NULL DEFAULT 0,
+        thesis_failure_rate REAL,
+        negative_pnl_rate REAL,
+        average_quality_score REAL,
+        source_learning_case_id TEXT,
+        source_trade_id INTEGER,
+        rationale TEXT,
+        evidence_payload TEXT,
+        expires_at TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO trade_policy_adjustments (
+        id, domain, policy_key, scope_key, symbol, direction, signal_class, symbol_class,
+        action, size_multiplier, confidence, evidence_count, active, created_at, updated_at
+      ) VALUES (
+        'active-scope-mismatch',
+        'perp',
+        'size',
+        'symbol=XYZ:SILVER|direction=long|strategySource=any|triggerReason=any|signalClass=llm_originator|symbolClass=alt|session=any|marketRegime=any|volatilityBucket=any|liquidityBucket=any',
+        'XYZ:SILVER',
+        'long',
+        'llm_originator',
+        'alt',
+        'downweight',
+        0.5,
+        0.9,
+        3,
+        1,
+        '2026-05-21 21:47:40',
+        '2026-05-21 21:47:40'
+      );
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+
+    const repaired = db
+      .prepare(
+        `SELECT symbol_class, scope_key
+         FROM trade_policy_adjustments
+         WHERE id = 'active-scope-mismatch'`
+      )
+      .get() as { symbol_class: string; scope_key: string };
+
+    expect(repaired.symbol_class).toBe('macro_contract');
+    expect(repaired.scope_key).toBe(
+      'symbol=XYZ:SILVER|direction=long|strategySource=any|triggerReason=any|signalClass=llm_originator|symbolClass=macro_contract|session=any|marketRegime=any|volatilityBucket=any|liquidityBucket=any'
+    );
+
+    expect(repairActiveTradePolicyAdjustmentScopeMismatches(db)).toBe(0);
+  });
   it('writes learning signal audits against the production legacy audit schema', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-prod-legacy-audits-')), 'thufir.sqlite');
     const raw = new Database(dbPath);
