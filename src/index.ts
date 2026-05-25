@@ -15,7 +15,6 @@ import { HyperliquidLiveExecutor } from './execution/modes/hyperliquid-live.js';
 import type { ExecutionAdapter } from './execution/executor.js';
 import { DbSpendingLimitEnforcer } from './execution/wallet/limits_db.js';
 import { listCalibrationSummaries } from './memory/calibration.js';
-import { checkPerpRiskLimits } from './execution/perp-risk.js';
 import { executeToolCall } from './core/tool-executor.js';
 
 // Re-export types
@@ -170,65 +169,38 @@ export class Thufir {
     if (!this.marketClient || !this.executor || !this.limiter) {
       throw new Error('Trading components not initialized');
     }
-
-    const symbol = _params.symbol;
-    const side = _params.side;
-    const sizeUsd = _params.sizeUsd;
-    const market = await this.marketClient.getMarket(symbol);
+    const market = await this.marketClient.getMarket(_params.symbol);
     const markPrice = market.markPrice ?? _params.price ?? null;
     if (!markPrice || markPrice <= 0) {
       return { executed: false, message: 'Missing or invalid mark price for sizing.' };
     }
-    const size = sizeUsd / markPrice;
+    const size = _params.sizeUsd / markPrice;
 
-    const riskCheck = await checkPerpRiskLimits({
-      config: this.config,
-      symbol,
-      side,
-      size,
-      leverage: _params.leverage,
-      reduceOnly: _params.reduceOnly ?? false,
-      markPrice,
-      notionalUsd: sizeUsd,
-      marketMaxLeverage:
-        typeof market.metadata?.maxLeverage === 'number'
-          ? (market.metadata.maxLeverage as number)
-          : null,
-    });
-    if (!riskCheck.allowed) {
-      return {
-        executed: false,
-        message: riskCheck.reason ?? 'Trade blocked by perp risk limits',
-      };
-    }
-    const limitCheck = await this.limiter.checkAndReserve(sizeUsd);
-    if (!limitCheck.allowed) {
-      return {
-        executed: false,
-        message: limitCheck.reason ?? 'Trade blocked by limits',
-      };
+    const toolResult = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: _params.symbol,
+        side: _params.side,
+        size,
+        order_type: _params.orderType ?? 'market',
+        price: _params.price,
+        leverage: _params.leverage,
+        reduce_only: _params.reduceOnly ?? false,
+        reasoning: `Programmatic trade for ${this.userId}`,
+      },
+      {
+        config: this.config,
+        marketClient: this.marketClient,
+        executor: this.executor,
+        limiter: this.limiter,
+      }
+    );
+
+    if (!toolResult.success) {
+      return { executed: false, message: toolResult.error };
     }
 
-    const result = await this.executor.execute(market, {
-      action: side,
-      side,
-      symbol,
-      size,
-      orderType: _params.orderType ?? 'market',
-      price: _params.price,
-      leverage: _params.leverage,
-      reduceOnly: _params.reduceOnly,
-      confidence: 'medium',
-      reasoning: `Programmatic trade for ${this.userId}`,
-    });
-
-    if (result.executed) {
-      this.limiter.confirm(sizeUsd);
-    } else {
-      this.limiter.release(sizeUsd);
-    }
-
-    return result;
+    return toolResult.data;
   }
 
   /**

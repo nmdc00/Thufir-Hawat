@@ -40,7 +40,7 @@ vi.mock('../../src/discovery/engine.js', () => ({
         confidence: 0.8,
         expectedEdge: 0.12,
         entryZone: 'market',
-        invalidation: 'x',
+        invalidation: 'below 68000',
         expectedMove: 'BTC sees upside continuation',
         orderType: 'market',
         leverage: 3,
@@ -71,7 +71,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
   computeFractionalKellyFraction: () => 0.25,
   evaluateGlobalTradeGate: () => ({ allowed: true }),
   evaluateNewsEntryGate: () => ({ allowed: true }),
-  inferBroadMarketPosture: () => 'neutral',
   isSignalClassAllowedForRegime: () => true,
   resolveLiquidityBucket: () => 'normal',
   resolveVolatilityBucket: () => 'medium',
@@ -79,7 +78,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
-  summarizeComparableSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
 }));
 
 vi.mock('../../src/memory/autonomy_policy_state.js', () => ({
@@ -135,7 +133,7 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     // Gate returns approve so execution proceeds; async enrichment disabled.
     const llmComplete = vi.fn(async () => ({
-      content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }),
+      content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: 68000, equityAtRiskPct: 2.5, targetRR: 2.0 }),
       model: 'test',
     }));
     const llm = { complete: llmComplete } as any;
@@ -164,7 +162,7 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     // First call: entry gate (returns approve JSON), second call: enrichment synthesis
     const llmComplete = vi.fn()
-      .mockResolvedValueOnce({ content: JSON.stringify({ verdict: 'approve', reasoning: 'go' , stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }), model: 'test' })
+      .mockResolvedValueOnce({ content: JSON.stringify({ verdict: 'approve', reasoning: 'go' , stopLevelPrice: 68000, equityAtRiskPct: 2.5, targetRR: 2.0 }), model: 'test' })
       .mockResolvedValue({ content: 'trade annotated', model: 'test' });
     const llm = { complete: llmComplete } as any;
     const executor = {
@@ -210,9 +208,18 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     expect(messages[1]).toMatchObject({ role: 'user' });
   });
 
-  it('scan returns expression results without touching LLM when no trades meet threshold', async () => {
+  it('stops before executor execution when the shared lifecycle limiter blocks after entry review', async () => {
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
-    const llmComplete = vi.fn();
+    const llmComplete = vi.fn(async () => ({
+      content: JSON.stringify({
+        verdict: 'approve',
+        reasoning: 'ok',
+        stopLevelPrice: 68000,
+        equityAtRiskPct: 2.5,
+        targetRR: 2.0,
+      }),
+      model: 'test',
+    }));
     const llm = { complete: llmComplete } as any;
     const executor = { execute: vi.fn() } as any;
     const marketClient = {
@@ -229,7 +236,7 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     const result = await manager.runScan();
 
     expect(result).toBeTruthy();
-    expect(llmComplete).not.toHaveBeenCalled();
+    expect(llmComplete).toHaveBeenCalledTimes(1);
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
@@ -273,7 +280,7 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     const executor = { execute: vi.fn(async () => ({ executed: true, message: 'ok' })) } as any;
     const llm = {
       complete: vi.fn().mockResolvedValue({
-        content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }),
+        content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: 68000, equityAtRiskPct: 2.5, targetRR: 2.0 }),
         model: 'test',
       }),
     } as any;
