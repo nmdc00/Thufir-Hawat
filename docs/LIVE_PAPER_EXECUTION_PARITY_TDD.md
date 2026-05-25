@@ -12,6 +12,9 @@ Implemented on 2026-05-25:
 - `Thufir.trade(...)` now routes through `perp_place_order` instead of bypassing lifecycle logic
 - fallback/dead ownership in autonomous open-path persistence was removed
 - `tool-executor` now imports canonical paper/perp lifecycle helpers instead of carrying shadow copies for runtime use
+- follow-up `v2.3.8` closed the remaining post-execution parity gap:
+  - open realized fee/order metadata now normalizes from shared execution observations
+  - full-close prediction resolution and reduce-only learning now use one canonical round-trip basis in both modes
 
 This TDD defines the refactor required to make `paper` and `live` execution follow the same trade lifecycle, with funding source and venue interaction as the only intentional differences.
 
