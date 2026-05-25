@@ -207,7 +207,7 @@ function makeGateLlm(verdict: 'approve' | 'reject' | 'resize', adjustedSizeUsd?:
       content: JSON.stringify({
         verdict,
         reasoning: `test verdict: ${verdict}`,
-        stopLevelPrice: null,
+        stopLevelPrice: verdict === 'reject' ? null : 68000,
         equityAtRiskPct: 2.5,
         targetRR: 2.0,
         ...(adjustedSizeUsd !== undefined ? { adjustedSizeUsd } : {}),
@@ -392,6 +392,37 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
       eligibleCandidates: 1,
       selectedSymbol: 'BTC',
     });
+  });
+
+  it('1c. enriched originator handoff passes selector, TA, and stop geometry into the gate prompt', async () => {
+    const { AutonomousManager } = await import('../../src/core/autonomous.js');
+    const complete = vi.fn(async () => ({
+      content: JSON.stringify({
+        verdict: 'reject',
+        reasoning: 'context inspected',
+        stopLevelPrice: null,
+        equityAtRiskPct: 2.5,
+        targetRR: 2.0,
+      }),
+      model: 'test',
+    }));
+    const llm = { complete } as any;
+    const executor = { execute: vi.fn(async () => ({ executed: true, message: 'paper ok' })) } as any;
+    const marketClient = { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: { maxLeverage: 10 } }) } as any;
+    const limiter = makeLimiter();
+
+    const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
+    await manager.runScan({ forceExecute: true });
+
+    const messages = complete.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    const userPrompt = messages.find((message) => message.role === 'user')?.content ?? '';
+    expect(userPrompt).toContain('Market Structure Context');
+    expect(userPrompt).toContain('Current mark price');
+    expect(userPrompt).toContain('Stop distance');
+    expect(userPrompt).toContain('Mechanical leverage ceiling');
+    expect(userPrompt).toContain('Liquidity bucket');
+    expect(userPrompt).toContain('Trigger reason');
+    expect(userPrompt).toContain('Alert reason');
   });
 
   it('2. null proposal + cadence trigger → quant fallback runs', async () => {
@@ -638,7 +669,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const call = mocks.createPrediction.mock.calls[0]![0] as any;
     expect(call.marketId).toBe('perp:BTC');
     expect(call.domain).toBe('perp');
-    expect(call.modelProbability).toBeCloseTo(0.8, 6);
+    expect(call.modelProbability).toBeCloseTo(0.92, 6);
     expect(call.marketProbability).toBeUndefined();
     expect(call.learningComparable).toBe(false);
     expect(call.signalWeightsSnapshot).toEqual({

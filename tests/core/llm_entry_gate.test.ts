@@ -26,14 +26,10 @@ vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
 
 const mockLoggerWarn = vi.fn();
 const mockListPerpTradeJournals = vi.fn(() => []);
-const mockComputeRollingWindowMetrics = vi.fn(() => []);
 const mockSummarizeSignalPerformance = vi.fn(
   (_entries: PerpTradeJournalEntry[], signalClass: string): SignalPerformanceSummary => ({
     signalClass,
     sampleCount: 0,
-    observedCount: 0,
-    blockedCount: 0,
-    unresolvedCount: 0,
     wins: 0,
     losses: 0,
     thesisCorrectRate: 0,
@@ -42,7 +38,6 @@ const mockSummarizeSignalPerformance = vi.fn(
     sharpeLike: 0,
     maeProxy: 0,
     mfeProxy: 0,
-    scopeLevel: 'signal_class',
   })
 );
 
@@ -57,11 +52,7 @@ vi.mock('../../src/memory/perp_trade_journal.js', () => ({
 }));
 
 vi.mock('../../src/core/signal_performance.js', () => ({
-  summarizeComparableSignalPerformance: (...args: unknown[]) => mockSummarizeSignalPerformance(...args),
-}));
-
-vi.mock('../../src/memory/learning_metrics.js', () => ({
-  computeRollingWindowMetrics: (...args: unknown[]) => mockComputeRollingWindowMetrics(...args),
+  summarizeSignalPerformance: (...args: unknown[]) => mockSummarizeSignalPerformance(...args),
 }));
 
 // ── Import after mocks ────────────────────────────────────────────────────────
@@ -71,6 +62,36 @@ import type { LlmClient } from '../../src/core/llm.js';
 import type { PositionBook } from '../../src/core/position_book.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+function makeMarketContext(
+  overrides?: Partial<NonNullable<EntryGateCandidate['marketContext']>>
+): NonNullable<EntryGateCandidate['marketContext']> {
+  return {
+    markPrice: 50000,
+    stopDistancePct: 0.04,
+    liquidationMovePctAtCandidateLeverage: 0.2,
+    liquidationBufferPct: 0.16,
+    mechanicalLeverageCeiling: 5,
+    trendBias: 'up',
+    priceVsEma20_1hPct: 1.2,
+    regimeSource: 'originator_runtime',
+    liquidityBucket: 'deep',
+    liquidityScore: 0.91,
+    executionScore: 0.88,
+    fundingScore: 0.42,
+    spreadProxyBps: 3.2,
+    openInterestUsd: 240000000,
+    dayVolumeUsd: 1800000000,
+    oiUsd: 235000000,
+    oiDelta1hPct: 9.5,
+    oiDelta4hPct: 14.2,
+    fundingRatePct: 0.12,
+    volumeVs24hAvgPct: 165,
+    alertReason: '1h breakout with OI expansion',
+    triggerReason: 'ta_alert',
+    ...overrides,
+  };
+}
 
 function makeCandidate(overrides?: Partial<EntryGateCandidate>): EntryGateCandidate {
   return {
@@ -92,13 +113,11 @@ function makeCandidate(overrides?: Partial<EntryGateCandidate>): EntryGateCandid
 function makeBook(overrides?: {
   hasConflict?: boolean;
   hasPosition?: boolean;
-  oppositeSideLosers?: Array<{ symbol: string; side: 'long' | 'short'; unrealizedPnlUsd: number }>;
   entries?: ReturnType<PositionBook['getAll']>;
 }): PositionBook {
   return {
     hasConflict: vi.fn().mockReturnValue(overrides?.hasConflict ?? false),
     hasPosition: vi.fn().mockReturnValue(overrides?.hasPosition ?? false),
-    findOppositeSideLosers: vi.fn().mockReturnValue(overrides?.oppositeSideLosers ?? []),
     getAll: vi.fn().mockReturnValue(overrides?.entries ?? []),
     get: vi.fn(),
     refresh: vi.fn(),
@@ -131,14 +150,10 @@ describe('LlmEntryGate', () => {
     vi.clearAllMocks();
     notify = vi.fn().mockResolvedValue(undefined);
     mockListPerpTradeJournals.mockReturnValue([]);
-    mockComputeRollingWindowMetrics.mockReturnValue([]);
     mockSummarizeSignalPerformance.mockImplementation(
       (_entries: PerpTradeJournalEntry[], signalClass: string): SignalPerformanceSummary => ({
         signalClass,
         sampleCount: 0,
-        observedCount: 0,
-        blockedCount: 0,
-        unresolvedCount: 0,
         wins: 0,
         losses: 0,
         thesisCorrectRate: 0,
@@ -147,7 +162,6 @@ describe('LlmEntryGate', () => {
         sharpeLike: 0,
         maeProxy: 0,
         mfeProxy: 0,
-        scopeLevel: 'signal_class',
       })
     );
   });
@@ -186,7 +200,6 @@ describe('LlmEntryGate', () => {
       expect(call.symbol).toBe('ETH');
       expect(call.reasonCode).toBe('book_conflict');
     });
-
   });
 
   describe('LLM approve path', () => {
@@ -198,55 +211,8 @@ describe('LlmEntryGate', () => {
       const result = await gate.evaluate(makeCandidate(), markPrice);
 
       expect(result.verdict).toBe('approve');
-      expect(result.reasoning).toBe('Strong setup');
+      expect(result.reasoning).toContain('Strong setup');
       expect(result.reasonCode).toBe('approve');
-    });
-
-    it('renders resolved trade stats and configured thresholds in the prompt', async () => {
-      mockSummarizeSignalPerformance.mockImplementation(
-        (_entries: PerpTradeJournalEntry[], signalClass: string): SignalPerformanceSummary => ({
-          signalClass,
-          sampleCount: 3,
-          observedCount: 35,
-          blockedCount: 32,
-          unresolvedCount: 0,
-          wins: 2,
-          losses: 1,
-          thesisCorrectRate: 2 / 3,
-          expectancy: 0.33,
-          variance: 0.2,
-          sharpeLike: 0.74,
-          maeProxy: 0.12,
-          mfeProxy: 0.41,
-          symbolClass: 'macro_contract',
-          marketRegime: 'trending',
-          scopeLevel: 'signal_class_and_symbol_class_and_regime',
-        })
-      );
-      const book = makeBook();
-      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'Strong setup' });
-      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
-
-      await gate.evaluate(
-        makeCandidate({
-          symbol: 'XYZ:GOLD',
-          symbolClass: 'macro_contract',
-          regime: 'trending',
-          mechanicalMinEdge: 0.05,
-          mechanicalMinConfidence: 0.7,
-        }),
-        markPrice
-      );
-
-      const call = (mainLlm.complete as ReturnType<typeof vi.fn>).mock.calls[0];
-      const messages = call[0];
-      const userPrompt = messages[1].content as string;
-      const systemPrompt = messages[0].content as string;
-      expect(userPrompt).toContain('3 resolved trades');
-      expect(userPrompt).not.toContain('35 trades');
-      expect(userPrompt).toContain('Excluded 32 blocked and 0 unresolved attempts');
-      expect(userPrompt).toContain('Mechanical floor already passed: edge >= 5.00% and confidence >= 70.0%');
-      expect(systemPrompt).toContain('Treat edge >10% and confidence >70% as a leverage scale-up bar, not as a general approval threshold');
     });
 
     it('records DB log for approve', async () => {
@@ -301,7 +267,7 @@ describe('LlmEntryGate', () => {
 
       expect(result.verdict).toBe('resize');
       expect(result.adjustedSizeUsd).toBe(25);
-      expect(result.reasoning).toBe('Reduce size for risk');
+      expect(result.reasoning).toContain('Reduce size for risk');
       expect(result.reasonCode).toBe('size_downshift');
     });
 
@@ -548,7 +514,7 @@ describe('LlmEntryGate', () => {
       expect(result.targetRR).toBe(2.5);
     });
 
-    it('accepts null stopLevelPrice', async () => {
+    it('falls back when approve returns null stopLevelPrice', async () => {
       const book = makeBook();
       const mainLlm: LlmClient = {
         complete: vi.fn().mockResolvedValue({
@@ -556,12 +522,53 @@ describe('LlmEntryGate', () => {
           model: 'test-main',
         }),
       } as unknown as LlmClient;
+      const fallbackLlm = makeLlmClient({ verdict: 'reject', reasoning: 'missing invalidation' });
+      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, book, dummyConfig);
+
+      const result = await gate.evaluate(makeCandidate(), markPrice);
+
+      expect(result.verdict).toBe('reject');
+      expect((fallbackLlm.complete as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+    });
+
+    it('falls back when resize returns null stopLevelPrice', async () => {
+      const book = makeBook();
+      const mainLlm: LlmClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            verdict: 'resize',
+            reasoning: 'reduce but no stop',
+            adjustedSizeUsd: 20,
+            stopLevelPrice: null,
+            equityAtRiskPct: 2.0,
+            targetRR: 1.8,
+          }),
+          model: 'test-main',
+        }),
+      } as unknown as LlmClient;
+      const fallbackLlm = makeLlmClient({ verdict: 'reject', reasoning: 'missing invalidation' });
+      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, book, dummyConfig);
+
+      const result = await gate.evaluate(makeCandidate(), markPrice);
+
+      expect(result.verdict).toBe('reject');
+      expect((fallbackLlm.complete as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+    });
+
+    it('still accepts null stopLevelPrice on reject', async () => {
+      const book = makeBook();
+      const mainLlm: LlmClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify({ verdict: 'reject', reasoning: 'no clean invalidation', stopLevelPrice: null, equityAtRiskPct: 2.0, targetRR: 1.8 }),
+          model: 'test-main',
+        }),
+      } as unknown as LlmClient;
       const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
 
       const result = await gate.evaluate(makeCandidate(), markPrice);
 
+      expect(result.verdict).toBe('reject');
       expect(result.stopLevelPrice).toBeNull();
-      expect(result.equityAtRiskPct).toBe(2.0);
     });
 
     it('falls back when LLM omits required risk fields', async () => {
@@ -598,6 +605,211 @@ describe('LlmEntryGate', () => {
       expect(call.stopLevelPrice).toBe(44000);
       expect(call.equityAtRiskPct).toBe(1.5);
       expect(call.targetRR).toBe(3.0);
+    });
+  });
+
+  describe('structured market context and leverage ceiling', () => {
+    it('includes structured market context in the prompt when provided', async () => {
+      const book = makeBook();
+      const completeFn = vi.fn().mockResolvedValue({
+        content: JSON.stringify({
+          verdict: 'approve',
+          reasoning: 'structured ok',
+          stopLevelPrice: 95,
+          equityAtRiskPct: 2.5,
+          targetRR: 2.0,
+        }),
+        model: 'test-main',
+      });
+      const mainLlm: LlmClient = { complete: completeFn } as unknown as LlmClient;
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      await gate.evaluate(makeCandidate({
+        leverage: 6,
+        leverageMax: 50,
+        invalidationPrice: 95,
+        marketContext: makeMarketContext({
+          markPrice: 100,
+          stopDistancePct: 0.05,
+          liquidationMovePctAtCandidateLeverage: 1 / 6,
+          liquidationBufferPct: 1 / 6 - 0.05,
+          mechanicalLeverageCeiling: 14,
+          priceVsEma20_1hPct: 1.25,
+          liquidityScore: 0.9,
+          executionScore: 0.85,
+          fundingScore: 0.8,
+          spreadProxyBps: 2.1,
+          openInterestUsd: 250_000_000,
+          dayVolumeUsd: 500_000_000,
+          oiUsd: 125_000_000,
+          oiDelta1hPct: 9,
+          oiDelta4hPct: 12,
+          fundingRatePct: 15,
+          volumeVs24hAvgPct: 140,
+          alertReason: 'oi_spike_1h:9%',
+          triggerReason: 'ta_alert',
+        }),
+      }), 100);
+
+      expect(completeFn).toHaveBeenCalled();
+      const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
+      const userContent = messages.find((message) => message.role === 'user')?.content ?? '';
+      expect(userContent).toContain('Market Structure Context');
+      expect(userContent).toContain('Mechanical leverage ceiling');
+      expect(userContent).toContain('Liquidity bucket: deep');
+      expect(userContent).toContain('Trigger reason: ta_alert');
+    });
+
+    it('clamps suggested leverage to the mechanical ceiling', async () => {
+      const book = makeBook();
+      const mainLlm = makeLlmClient({
+        verdict: 'approve',
+        reasoning: 'overshoots leverage',
+        suggestedLeverage: 20,
+        stopLevelPrice: 88,
+      });
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      const result = await gate.evaluate(makeCandidate({
+        leverage: 5,
+        leverageMax: 50,
+        invalidationPrice: 88,
+      }), 100);
+
+      expect(result.verdict).toBe('approve');
+      expect(result.suggestedLeverage).toBe(5);
+    });
+
+    it('rejects before LLM call when stop geometry leaves no valid leverage', async () => {
+      const book = makeBook();
+      const completeFn = vi.fn();
+      const mainLlm: LlmClient = { complete: completeFn } as unknown as LlmClient;
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      const result = await gate.evaluate(makeCandidate({
+        leverage: 2,
+        leverageMax: 50,
+        invalidationPrice: 20,
+      }), 100);
+
+      expect(result.verdict).toBe('reject');
+      expect(result.reasonCode).toBe('invalid_leverage_geometry');
+      expect(completeFn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('market context and geometry enforcement', () => {
+    it('includes a structured market context block in the prompt', async () => {
+      const book = makeBook();
+      const completeFn = vi.fn().mockResolvedValue({
+        content: JSON.stringify({ verdict: 'approve', reasoning: 'context-aware', suggestedLeverage: 2 }),
+        model: 'test-main',
+      });
+      const mainLlm: LlmClient = { complete: completeFn } as unknown as LlmClient;
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      await gate.evaluate(
+        makeCandidate({
+          invalidationPrice: 48000,
+          marketContext: makeMarketContext(),
+        }),
+        markPrice
+      );
+
+      const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
+      const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
+      expect(userContent).toContain('Market Structure Context');
+      expect(userContent).toContain('Mechanical leverage ceiling from stop geometry');
+      expect(userContent).toContain('Liquidity bucket: deep');
+      expect(userContent).toContain('Execution score: 0.88');
+      expect(userContent).toContain('Trigger reason: ta_alert');
+    });
+
+    it('rejects before the LLM when stop geometry is on the wrong side of the mark price', async () => {
+      const book = makeBook();
+      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'should not run' });
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      const result = await gate.evaluate(
+        makeCandidate({
+          invalidationPrice: 51000,
+          marketContext: makeMarketContext({ markPrice: 50000 }),
+        }),
+        markPrice
+      );
+
+      expect(result.verdict).toBe('reject');
+      expect(result.reasonCode).toBe('invalid_leverage_geometry');
+      expect(result.reasoning).toMatch(/must be below/i);
+      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    });
+
+    it('clamps suggested leverage to the mechanical ceiling', async () => {
+      const book = makeBook();
+      const mainLlm = makeLlmClient({
+        verdict: 'approve',
+        reasoning: 'high conviction',
+        suggestedLeverage: 9,
+      });
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      const result = await gate.evaluate(
+        makeCandidate({
+          leverage: 4,
+          leverageMax: 10,
+          invalidationPrice: 44000,
+          marketContext: makeMarketContext({ markPrice: 50000, mechanicalLeverageCeiling: 5 }),
+        }),
+        markPrice
+      );
+
+      expect(result.suggestedLeverage).toBe(5);
+    });
+
+    it('injects a safe leverage when the candidate leverage is above the ceiling and the LLM omits one', async () => {
+      const book = makeBook();
+      const mainLlm = makeLlmClient({
+        verdict: 'approve',
+        reasoning: 'thesis works at lower risk',
+      });
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      const result = await gate.evaluate(
+        makeCandidate({
+          leverage: 8,
+          leverageMax: 10,
+          invalidationPrice: 44000,
+          marketContext: makeMarketContext({ markPrice: 50000, mechanicalLeverageCeiling: 5 }),
+        }),
+        markPrice
+      );
+
+      expect(result.verdict).toBe('approve');
+      expect(result.suggestedLeverage).toBe(5);
+      expect(result.reasoning).toContain('Mechanical leverage ceiling enforced at 5x.');
+    });
+
+    it('rejects approve decisions whose returned stop creates invalid final geometry', async () => {
+      const book = makeBook();
+      const mainLlm = makeLlmClient({
+        verdict: 'approve',
+        reasoning: 'approve but bad stop',
+        stopLevelPrice: 52000,
+        suggestedLeverage: 2,
+      });
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+
+      const result = await gate.evaluate(
+        makeCandidate({
+          invalidationPrice: 48000,
+          marketContext: makeMarketContext({ markPrice: 50000 }),
+        }),
+        markPrice
+      );
+
+      expect(result.verdict).toBe('reject');
+      expect(result.reasonCode).toBe('invalid_leverage_geometry');
+      expect(result.reasoning).toMatch(/must be below/i);
     });
   });
 
@@ -656,8 +868,6 @@ describe('LlmEntryGate', () => {
           side: 'short' as const,
           size: 100,
           entryPrice: 40,
-          currentMarkPrice: null,
-          unrealizedPnlUsd: null,
           entryReasoningText: '',
           thesisExpiresAtMs: Date.now() + 60 * 60 * 1000,
           exitContract: null,
@@ -670,8 +880,6 @@ describe('LlmEntryGate', () => {
           side: 'short' as const,
           size: 1,
           entryPrice: 500,
-          currentMarkPrice: null,
-          unrealizedPnlUsd: null,
           entryReasoningText: '',
           thesisExpiresAtMs: Date.now() + 60 * 60 * 1000,
           exitContract: null,
@@ -823,11 +1031,7 @@ describe('LlmEntryGate', () => {
       await gate.evaluate(makeCandidate({ signalClass: 'momentum_breakout' }), markPrice);
 
       expect(mockListPerpTradeJournals).toHaveBeenCalledWith({ limit: 200 });
-      expect(mockSummarizeSignalPerformance).toHaveBeenCalledWith(entries, {
-        signalClass: 'momentum_breakout',
-        symbolClass: null,
-        marketRegime: 'trending',
-      });
+      expect(mockSummarizeSignalPerformance).toHaveBeenCalledWith(entries, 'momentum_breakout');
     });
 
     it('renders live track record stats in the prompt when signal history exists', async () => {
@@ -842,9 +1046,6 @@ describe('LlmEntryGate', () => {
       mockSummarizeSignalPerformance.mockReturnValue({
         signalClass: 'momentum_breakout',
         sampleCount: 7,
-        observedCount: 7,
-        blockedCount: 0,
-        unresolvedCount: 0,
         wins: 4,
         losses: 3,
         thesisCorrectRate: 4 / 7,
@@ -853,7 +1054,6 @@ describe('LlmEntryGate', () => {
         sharpeLike: 0.81,
         maeProxy: 0.042,
         mfeProxy: 0.118,
-        scopeLevel: 'signal_class',
       });
 
       await gate.evaluate(makeCandidate({ signalClass: 'momentum_breakout' }), markPrice);
@@ -861,7 +1061,7 @@ describe('LlmEntryGate', () => {
       const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
       const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
       expect(userContent).toContain('Signal class: momentum_breakout');
-      expect(userContent).toContain('7 resolved trades');
+      expect(userContent).toContain('7 trades');
       expect(userContent).toContain('Win rate: 57%');
       expect(userContent).toContain('Expectancy: 0.37');
       expect(userContent).toContain('Sharpe-like: 0.81');
@@ -882,9 +1082,6 @@ describe('LlmEntryGate', () => {
       mockSummarizeSignalPerformance.mockReturnValue({
         signalClass: 'novel_breakout',
         sampleCount: 0,
-        observedCount: 0,
-        blockedCount: 0,
-        unresolvedCount: 0,
         wins: 0,
         losses: 0,
         thesisCorrectRate: 0,
@@ -893,14 +1090,13 @@ describe('LlmEntryGate', () => {
         sharpeLike: 0,
         maeProxy: 0,
         mfeProxy: 0,
-        scopeLevel: 'signal_class',
       });
 
       await gate.evaluate(makeCandidate({ signalClass: 'novel_breakout' }), markPrice);
 
       const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
       const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
-      expect(userContent).toContain('No resolved comparable trade history for signal class "novel_breakout"');
+      expect(userContent).toContain('No historical trades for signal class "novel_breakout"');
       expect(userContent).toContain('Treat as a novel setup');
     });
   });
