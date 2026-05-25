@@ -60,6 +60,9 @@ export class PaperExecutor implements ExecutionAdapter {
         message: `${fill.message} symbol=${symbol} side=${side} size=${size}`,
         realizedPnlUsd: fill.realizedPnlUsd,
         feeUsd: fill.feeUsd,
+        feeToken: 'USDC',
+        fillCount: 1,
+        fillTimeMs: Date.now(),
         orderId: fill.orderId,
       };
     }

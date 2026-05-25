@@ -30,6 +30,7 @@ export type PerpTradeJournalEntry = {
   realizedFeeToken?: string | null;
   realizedFillCount?: number | null;
   realizedOrderId?: number | null;
+  realizedOrderRef?: string | null;
   realizedFillTimeMs?: number | null;
   feeObservationError?: string | null;
   signalClass?: string | null;
