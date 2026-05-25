@@ -16,7 +16,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { openDatabase } from '../../src/memory/db.js';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -60,9 +59,14 @@ vi.mock('../../src/markets/context.js', () => ({
 }));
 
 const mockRecordEntryGateDecision = vi.fn();
+const mockListPerpTradeJournals = vi.fn(() => []);
 
 vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
   recordEntryGateDecision: (...args: unknown[]) => mockRecordEntryGateDecision(...args),
+}));
+
+vi.mock('../../src/memory/perp_trade_journal.js', () => ({
+  listPerpTradeJournals: (...args: unknown[]) => mockListPerpTradeJournals(...args),
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
@@ -179,7 +183,6 @@ let dbDir: string | null = null;
 beforeEach(() => {
   dbDir = mkdtempSync(join(tmpdir(), 'thufir-origination-pipeline-'));
   process.env.THUFIR_DB_PATH = join(dbDir, 'thufir.sqlite');
-  openDatabase();
 });
 
 afterEach(() => {
@@ -397,6 +400,68 @@ describe('Section 3: LlmTradeOriginator → EntryGate handoff shape', () => {
       await mockExecute(candidate.symbol);
     }
     expect(mockExecute).toHaveBeenCalledWith('BTC');
+  });
+
+  it('renders structured market context and mechanical stop fields for enriched originator handoff', async () => {
+    const book = makeBook();
+    const completeFn = vi.fn().mockResolvedValue({
+      content: JSON.stringify({
+        verdict: 'reject',
+        reasoning: 'context inspected',
+        stopLevelPrice: null,
+        equityAtRiskPct: 1.8,
+        targetRR: 1.6,
+      }),
+      model: 'test-main',
+    });
+    const mainLlm = { complete: completeFn } as unknown as LlmClient;
+    const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), vi.fn().mockResolvedValue(undefined), book, dummyConfig);
+
+    await gate.evaluate({
+      ...makeGateCandidate({
+        symbol: 'ETH',
+        side: 'sell',
+        confidence: 0.73,
+        regime: 'trending',
+        entryReasoning: 'ETH breakdown with funding unwind',
+      }),
+      marketContext: {
+        markPrice: 3500,
+        stopDistancePct: 0.0857142857,
+        liquidationMovePctAtCandidateLeverage: 0.2,
+        liquidationBufferPct: 0.1142857143,
+        mechanicalLeverageCeiling: 8,
+        trendBias: 'down',
+        priceVsEma20_1hPct: -1.3,
+        regimeSource: 'originator_runtime',
+        liquidityBucket: 'deep',
+        liquidityScore: 0.84,
+        executionScore: 0.91,
+        fundingScore: 0.42,
+        spreadProxyBps: 4,
+        openInterestUsd: 320_000_000,
+        dayVolumeUsd: 1_600_000_000,
+        oiUsd: 280_000_000,
+        oiDelta1hPct: 11.2,
+        oiDelta4hPct: 18.5,
+        fundingRatePct: -14,
+        volumeVs24hAvgPct: 165,
+        alertReason: 'oi_spike_1h:11.2%',
+        triggerReason: 'ta_alert',
+      },
+    } as EntryGateCandidate, 3500);
+
+    expect(completeFn).toHaveBeenCalledOnce();
+    const messages = (completeFn.mock.calls[0]?.[0] ?? []) as Array<{ role: string; content: string }>;
+    const userContent = messages.find((message) => message.role === 'user')?.content ?? '';
+
+    expect(userContent).toContain('Market Structure Context');
+    expect(userContent).toContain('Current mark price');
+    expect(userContent).toContain('Stop distance');
+    expect(userContent).toContain('Mechanical leverage ceiling');
+    expect(userContent).toContain('Liquidity bucket');
+    expect(userContent).toContain('Trigger reason');
+    expect(userContent).toContain('Alert reason');
   });
 });
 

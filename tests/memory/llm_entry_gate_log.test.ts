@@ -1,57 +1,112 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const previousDbPath = process.env.THUFIR_DB_PATH;
+type PreparedStatement = {
+  all: () => Array<{ name: string }>;
+  run: (params: Record<string, unknown>) => void;
+};
 
-function createLegacyDb(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'thufir-entry-gate-log-'));
-  const dbPath = join(dir, 'thufir.sqlite');
-  const db = new Database(dbPath);
-  db.exec(`
-    CREATE TABLE llm_entry_gate_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      symbol TEXT NOT NULL,
-      side TEXT NOT NULL,
-      notional_usd REAL NOT NULL,
-      verdict TEXT NOT NULL,
-      reasoning TEXT NOT NULL,
-      adjusted_size_usd REAL,
-      used_fallback INTEGER NOT NULL DEFAULT 0,
-      signal_class TEXT,
-      regime TEXT,
-      session TEXT,
-      edge REAL
-    )
-  `);
-  db.close();
-  return dbPath;
+type FakeDatabase = {
+  columns: Set<string>;
+  execStatements: string[];
+  insertedRows: Array<Record<string, unknown>>;
+  exec: (sql: string) => void;
+  prepare: (sql: string) => PreparedStatement;
+};
+
+function createLegacyColumns(): Set<string> {
+  return new Set([
+    'id',
+    'created_at',
+    'symbol',
+    'side',
+    'notional_usd',
+    'verdict',
+    'reasoning',
+    'adjusted_size_usd',
+    'used_fallback',
+    'signal_class',
+    'regime',
+    'session',
+    'edge',
+  ]);
 }
 
-afterEach(() => {
-  vi.resetModules();
-  const dbPath = process.env.THUFIR_DB_PATH;
-  if (dbPath) {
-    rmSync(dbPath, { force: true });
-    rmSync(dirname(dbPath), { recursive: true, force: true });
-  }
-  if (previousDbPath === undefined) {
-    delete process.env.THUFIR_DB_PATH;
-  } else {
-    process.env.THUFIR_DB_PATH = previousDbPath;
-  }
+const fakeDb = vi.hoisted(() => {
+  const state: FakeDatabase = {
+    columns: createLegacyColumns(),
+    execStatements: [],
+    insertedRows: [],
+    exec(sql: string): void {
+      state.execStatements.push(sql);
+      const alterMatch = sql.match(/ALTER TABLE llm_entry_gate_log ADD COLUMN ([a-z_]+)/i);
+      if (alterMatch) {
+        state.columns.add(alterMatch[1]);
+      }
+      if (/CREATE TABLE IF NOT EXISTS llm_entry_gate_log/i.test(sql)) {
+        const expectedColumns = [
+          'reason_code',
+          'stop_level_price',
+          'equity_at_risk_pct',
+          'target_rr',
+          'suggested_leverage',
+          'mechanical_leverage_ceiling',
+          'stop_distance_pct',
+          'liquidity_score',
+          'execution_score',
+          'liquidity_bucket',
+        ];
+        for (const column of expectedColumns) {
+          state.columns.add(column);
+        }
+      }
+    },
+    prepare(sql: string): PreparedStatement {
+      if (/PRAGMA table_info\('llm_entry_gate_log'\)/i.test(sql)) {
+        return {
+          all: () => Array.from(state.columns).map((name) => ({ name })),
+          run: () => {},
+        };
+      }
+
+      if (/INSERT INTO llm_entry_gate_log/i.test(sql)) {
+        return {
+          all: () => [],
+          run: (params) => {
+            state.insertedRows.push(params);
+          },
+        };
+      }
+
+      throw new Error(`Unexpected SQL in fake db: ${sql}`);
+    },
+  };
+
+  return state;
 });
+const openDatabaseMock = vi.hoisted(() => vi.fn(() => fakeDb));
+
+vi.mock('../../src/memory/db.js', () => ({
+  openDatabase: openDatabaseMock,
+}));
 
 describe('recordEntryGateDecision schema migration', () => {
-  it('adds missing risk columns to a legacy llm_entry_gate_log table before insert', async () => {
-    const dbPath = createLegacyDb();
-    process.env.THUFIR_DB_PATH = dbPath;
+  beforeEach(() => {
+    fakeDb.columns = createLegacyColumns();
+    fakeDb.execStatements = [];
+    fakeDb.insertedRows = [];
+    openDatabaseMock.mockClear();
+  });
 
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it('adds missing risk and observability columns before insert', async () => {
     const { recordEntryGateDecision } = await import('../../src/memory/llm_entry_gate_log.js');
+
     recordEntryGateDecision({
       symbol: 'BTC',
       side: 'long',
@@ -65,48 +120,82 @@ describe('recordEntryGateDecision schema migration', () => {
       targetRR: 2,
     });
 
-    const db = new Database(dbPath, { readonly: true });
-    const columns = db.prepare("PRAGMA table_info('llm_entry_gate_log')").all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map((column) => column.name));
-    expect(columnNames.has('stop_level_price')).toBe(true);
-    expect(columnNames.has('equity_at_risk_pct')).toBe(true);
-    expect(columnNames.has('target_rr')).toBe(true);
+    expect(openDatabaseMock).toHaveBeenCalled();
+    expect(fakeDb.columns.has('reason_code')).toBe(true);
+    expect(fakeDb.columns.has('stop_level_price')).toBe(true);
+    expect(fakeDb.columns.has('equity_at_risk_pct')).toBe(true);
+    expect(fakeDb.columns.has('target_rr')).toBe(true);
+    expect(fakeDb.columns.has('suggested_leverage')).toBe(true);
+    expect(fakeDb.columns.has('mechanical_leverage_ceiling')).toBe(true);
+    expect(fakeDb.columns.has('stop_distance_pct')).toBe(true);
+    expect(fakeDb.columns.has('liquidity_score')).toBe(true);
+    expect(fakeDb.columns.has('execution_score')).toBe(true);
+    expect(fakeDb.columns.has('liquidity_bucket')).toBe(true);
 
-    const row = db
-      .prepare(
-        'SELECT stop_level_price, equity_at_risk_pct, target_rr FROM llm_entry_gate_log ORDER BY id DESC LIMIT 1'
-      )
-      .get() as { stop_level_price: number; equity_at_risk_pct: number; target_rr: number };
-    expect(row).toEqual({
-      stop_level_price: 95,
-      equity_at_risk_pct: 0.5,
-      target_rr: 2,
+    expect(fakeDb.insertedRows).toHaveLength(1);
+    expect(fakeDb.insertedRows[0]).toMatchObject({
+      symbol: 'BTC',
+      side: 'long',
+      notionalUsd: 100,
+      verdict: 'approve',
+      reasoning: 'ok',
+      reasonCode: 'approve',
+      usedFallback: 0,
+      stopLevelPrice: 95,
+      equityAtRiskPct: 0.5,
+      targetRR: 2,
+      suggestedLeverage: null,
+      mechanicalLeverageCeiling: null,
+      stopDistancePct: null,
+      liquidityScore: null,
+      executionScore: null,
+      liquidityBucket: null,
     });
-    db.close();
   });
 
-  it('adds missing reason_code column to a legacy llm_entry_gate_log table before insert', async () => {
-    const dbPath = createLegacyDb();
-    process.env.THUFIR_DB_PATH = dbPath;
-
+  it('persists optional observability fields when provided', async () => {
     const { recordEntryGateDecision } = await import('../../src/memory/llm_entry_gate_log.js');
+
     recordEntryGateDecision({
-      symbol: 'ETH',
-      side: 'short',
-      notionalUsd: 80,
-      verdict: 'reject',
-      reasoning: 'Opposite-side position already open on this symbol. Cannot open conflicting trade.',
-      reasonCode: 'book_conflict',
+      symbol: 'SOL',
+      side: 'long',
+      notionalUsd: 120,
+      verdict: 'approve',
+      reasoning: 'context-rich',
+      reasonCode: 'approve',
       usedFallback: false,
+      mechanicalLeverageCeiling: 12,
+      stopDistancePct: 0.041,
+      liquidityScore: 0.82,
+      executionScore: 0.91,
+      liquidityBucket: 'deep',
     });
 
-    const db = new Database(dbPath, { readonly: true });
-    const columns = db.prepare("PRAGMA table_info('llm_entry_gate_log')").all() as Array<{ name: string }>;
-    expect(new Set(columns.map((column) => column.name)).has('reason_code')).toBe(true);
-    const row = db
-      .prepare('SELECT reason_code FROM llm_entry_gate_log ORDER BY id DESC LIMIT 1')
-      .get() as { reason_code: string };
-    expect(row.reason_code).toBe('book_conflict');
-    db.close();
+    expect(fakeDb.insertedRows).toHaveLength(1);
+    expect(fakeDb.insertedRows[0]).toMatchObject({
+      symbol: 'SOL',
+      side: 'long',
+      notionalUsd: 120,
+      verdict: 'approve',
+      reasoning: 'context-rich',
+      reasonCode: 'approve',
+      usedFallback: 0,
+      mechanicalLeverageCeiling: 12,
+      stopDistancePct: 0.041,
+      liquidityScore: 0.82,
+      executionScore: 0.91,
+      liquidityBucket: 'deep',
+    });
+  });
+
+  it('declares the new observability columns in schema.sql', () => {
+    const schemaPath = join(process.cwd(), 'src/memory/schema.sql');
+    const schemaSql = readFileSync(schemaPath, 'utf-8');
+
+    expect(schemaSql).toContain('mechanical_leverage_ceiling REAL');
+    expect(schemaSql).toContain('stop_distance_pct REAL');
+    expect(schemaSql).toContain('liquidity_score   REAL');
+    expect(schemaSql).toContain('execution_score   REAL');
+    expect(schemaSql).toContain('liquidity_bucket  TEXT');
   });
 });

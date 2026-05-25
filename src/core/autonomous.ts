@@ -47,7 +47,7 @@ import { getPaperPerpBookSummary } from '../memory/paper_perps.js';
 import { upsertPositionExitPolicy } from '../memory/position_exit_policy.js';
 import { getCashBalance } from '../memory/portfolio.js';
 import { PositionBook } from './position_book.js';
-import { LlmEntryGate } from './llm_entry_gate.js';
+import { LlmEntryGate, type EntryGateCandidate } from './llm_entry_gate.js';
 import { buildLegacyExitContract, serializeExitContract } from './exit_contract.js';
 import { TaSurface, type TaSnapshot } from './ta_surface.js';
 import { OriginationTrigger } from './origination_trigger.js';
@@ -58,6 +58,7 @@ import { recordDecisionAudit } from '../memory/decision_audit.js';
 import { getSignalWeightsWithFallback, type SignalWeights } from '../memory/learning.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 import { inferTradeSymbolClass } from './trade_similarity.js';
+import { buildOriginatorEntryGateContext } from './entry_gate_market_context.js';
 import { recordOpportunityRankScan } from '../memory/opportunity_rank_logs.js';
 import { scoreAndRankOpportunityCandidates } from './opportunity_ranker.js';
 import type {
@@ -1096,33 +1097,54 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     }
 
     // LLM entry gate
-    const originatorLeverageMax =
+    const marketLeverageMax =
+      typeof market.metadata?.maxLeverage === 'number' &&
+      Number.isFinite(market.metadata.maxLeverage)
+        ? Math.max(1, Number(market.metadata.maxLeverage))
+        : null;
+    const configuredLeverageMax =
       typeof this.thufirConfig.hyperliquid?.maxLeverage === 'number' &&
       Number.isFinite(this.thufirConfig.hyperliquid.maxLeverage)
         ? Math.max(1, Number(this.thufirConfig.hyperliquid.maxLeverage))
         : 50;
-    const gateCandidate = {
+    const originatorLeverageMax = marketLeverageMax ?? configuredLeverageMax;
+    const selectedDiscoveryCandidate =
+      selectedCandidates.find((candidate) => candidate.symbol === symbol) ?? null;
+    const selectedTaSnapshot =
+      taSnapshots.find((snapshot) => snapshot.symbol === symbol) ?? null;
+    const gateContext = buildOriginatorEntryGateContext({
+      thesisText: proposal.thesisText,
+      confidence: proposal.confidence,
+      expectedRMultiple: proposal.expectedRMultiple,
+      selector: selectedDiscoveryCandidate,
+      ta: selectedTaSnapshot,
+      markPrice: markPrice || null,
+      invalidationPrice: proposal.invalidationPrice,
+      leverage: targetLeverage,
+      leverageMax: originatorLeverageMax,
+      triggerReason: triggerResult.reason,
+    });
+    const gateCandidate: EntryGateCandidate = {
       symbol,
       side: side as 'buy' | 'sell',
       notionalUsd: probeUsd,
       leverage: targetLeverage,
       leverageMax: originatorLeverageMax,
-      edge: 0.1,
+      edge: gateContext.gateExpectedEdge,
       confidence: proposal.confidence,
-      symbolClass: inferTradeSymbolClass(symbol),
       signalClass: 'llm_originator',
-      regime: 'unknown',
+      regime: gateContext.gateRegime,
       session: sessionContext.session,
-      entryReasoning: proposal.thesisText,
-      mechanicalMinEdge: this.config.minEdge,
-      mechanicalMinConfidence: this.config.requireHighConfidence ? 0.7 : 0,
+      entryReasoning: gateContext.gateEntryReasoning,
       invalidationPrice: proposal.invalidationPrice,
       suggestedTtlMinutes: proposal.suggestedTtlMinutes,
       expectedRMultiple: proposal.expectedRMultiple,
+      marketContext: gateContext.marketContext,
     };
 
     let originatorGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
     let originatorGateReasonCode: string | null = null;
+    let finalInvalidationPrice = proposal.invalidationPrice;
     if (this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false) {
       if (proposal.proposalRecordId != null) {
         updateTradeProposalStatus(proposal.proposalRecordId, {
@@ -1151,7 +1173,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             reasoning: `LLM entry gate rejected: ${gateDecision.reasoning}`,
             signalClass: 'llm_originator',
             symbolClass: inferTradeSymbolClass(symbol),
-            expectedEdge: 0.1,
+            marketRegime: gateContext.marketContext.marketRegime ?? null,
+            volatilityBucket: gateContext.marketContext.volatilityBucket ?? null,
+            liquidityBucket:
+              gateContext.marketContext.liquidityBucket === 'unknown'
+                ? null
+                : gateContext.marketContext.liquidityBucket,
+            expectedEdge: gateContext.gateExpectedEdge,
             entryGateVerdict: originatorGateVerdict,
             entryGateReasonCode: originatorGateReasonCode,
             outcome: 'blocked',
@@ -1177,6 +1205,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       if (gateDecision.suggestedLeverage != null) {
         targetLeverage = gateDecision.suggestedLeverage;
       }
+      finalInvalidationPrice = gateDecision.stopLevelPrice ?? finalInvalidationPrice;
       if (proposal.proposalRecordId != null) {
         updateTradeProposalStatus(proposal.proposalRecordId, {
           executeTrades: true,
@@ -1185,6 +1214,21 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           requestedLeverage: targetLeverage,
         });
       }
+    }
+
+    if (finalInvalidationPrice == null) {
+      this.limiter.release(probeUsd);
+      if (proposal.proposalRecordId != null) {
+        updateTradeProposalStatus(proposal.proposalRecordId, {
+          executeTrades: true,
+          originatorExitStage: 'entry_gate_rejected',
+          originatorExitReason: 'Missing machine-readable invalidation price after entry review',
+          requestedLeverage: targetLeverage,
+        });
+        updateTradeProposalOutcome(proposal.proposalRecordId, 'reject', false);
+      }
+      persistRankScan('entry_gate_reject:missing machine-readable invalidation price', symbol);
+      return `${symbol}: Originator proposal blocked (missing machine-readable invalidation price)`;
     }
 
     let size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
@@ -1298,12 +1342,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           thesis: decision.reasoning ?? `${symbol} ${positionSide} thesis`,
           side: positionSide,
           tradeType: proposal.tradeType,
+          invalidationPrice: finalInvalidationPrice,
         });
         upsertPositionExitPolicy(
           symbol,
           positionSide,
           timeStopAtMs,
-          proposal.invalidationPrice,
+          finalInvalidationPrice,
           serializeExitContract(exitContract),
           predictionId
         );
