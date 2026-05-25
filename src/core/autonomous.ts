@@ -9,17 +9,15 @@
  */
 
 import { EventEmitter } from 'eventemitter3';
+import { randomUUID } from 'node:crypto';
 import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
 import type { MarketClient } from '../execution/market-client.js';
-import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
+import type { ExecutionAdapter } from '../execution/executor.js';
 import { DbSpendingLimitEnforcer } from '../execution/wallet/limits_db.js';
 import { runDiscovery } from '../discovery/engine.js';
 import { selectDiscoveryMarkets, type DiscoveryCandidate } from '../discovery/market_selector.js';
 import { countFinalPredictions } from '../memory/calibration.js';
-import { createLearningCase } from '../memory/learning_cases.js';
-import { createPrediction } from '../memory/predictions.js';
-import { recordPerpTrade } from '../memory/perp_trades.js';
 import { listPerpTradeJournals, recordPerpTradeJournal } from '../memory/perp_trade_journal.js';
 import { checkPerpRiskLimits } from '../execution/perp-risk.js';
 import { getDailyPnLRollup } from './daily_pnl.js';
@@ -38,35 +36,26 @@ import {
   resolveVolatilityBucket,
 } from './autonomy_policy.js';
 import { getAutonomyPolicyState } from '../memory/autonomy_policy_state.js';
-import { summarizeComparableSignalPerformance } from './signal_performance.js';
+import { summarizeSignalPerformance } from './signal_performance.js';
 import { SchedulerControlPlane } from './scheduler_control_plane.js';
 import { resolveSessionWeightContext } from './session-weight.js';
 import { AutonomousScanTelemetry } from './performance_metrics.js';
 import { withExecutionContext } from './llm_infra.js';
 import { getPaperPerpBookSummary } from '../memory/paper_perps.js';
-import { upsertPositionExitPolicy } from '../memory/position_exit_policy.js';
 import { getCashBalance } from '../memory/portfolio.js';
 import { PositionBook } from './position_book.js';
 import { LlmEntryGate, type EntryGateCandidate } from './llm_entry_gate.js';
-import { buildLegacyExitContract, serializeExitContract } from './exit_contract.js';
-import { TaSurface, type TaSnapshot } from './ta_surface.js';
+import { TaSurface } from './ta_surface.js';
 import { OriginationTrigger } from './origination_trigger.js';
-import { LlmTradeOriginator, type RankedOpportunityContext } from './llm_trade_originator.js';
+import { LlmTradeOriginator } from './llm_trade_originator.js';
 import { listEvents } from '../memory/events.js';
 import { updateTradeProposalOutcome, updateTradeProposalStatus } from '../memory/llm_trade_proposals.js';
-import { recordDecisionAudit } from '../memory/decision_audit.js';
 import { getSignalWeightsWithFallback, type SignalWeights } from '../memory/learning.js';
 import type { ToolExecutorContext } from './tool-executor.js';
-import { inferTradeSymbolClass } from './trade_similarity.js';
-import { buildOriginatorEntryGateContext } from './entry_gate_market_context.js';
-import { recordOpportunityRankScan } from '../memory/opportunity_rank_logs.js';
-import { scoreAndRankOpportunityCandidates } from './opportunity_ranker.js';
-import type {
-  OpportunityCandidate,
-  OpportunityCandidateInput,
-  OpportunityMarketRegime,
-  OpportunitySignalClass,
-} from './opportunity_types.js';
+import { inferTradeSymbolClass } from './trade_symbol_class.js';
+import {
+  buildOriginatorEntryGateContext,
+} from './entry_gate_market_context.js';
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -126,8 +115,12 @@ function resolveExpressionInvalidationPrice(
 }
 
 function resolvePredictionSignalWeights(config: ThufirConfig): SignalWeights {
-  const learned = getSignalWeightsWithFallback(['perp', 'global']);
-  if (learned) return learned;
+  try {
+    const learned = getSignalWeightsWithFallback(['perp', 'global']);
+    if (learned) return learned;
+  } catch {
+    // Fall back to config/default weights when lightweight test DB stubs do not implement reads.
+  }
   const configured = config.technical?.signals?.weights;
   if (configured) {
     return {
@@ -190,241 +183,6 @@ function buildDiscoverySignalScores(params: {
     news: direction * clampSignedScore(newsConfidence),
     onChain: direction * clampSignedScore(onChainBase * Math.max(params.confidenceWeighted, 0.5)),
   };
-}
-
-function normalizeOpportunitySymbol(symbol: string): string {
-  return String(symbol ?? '').trim().toUpperCase();
-}
-
-function inferOpportunitySignalClass(snapshot: TaSnapshot): OpportunitySignalClass {
-  const realizedMovePct = Math.max(
-    Math.abs(snapshot.priceVs24hHigh),
-    Math.abs(snapshot.priceVs24hLow)
-  );
-  if (Math.abs(snapshot.fundingRatePct) >= 35) return 'funding_revert';
-  if (realizedMovePct >= 6 && Math.abs(snapshot.oiDelta1hPct) >= 10) return 'liquidation_cascade';
-  if (snapshot.trendBias === 'flat') return 'mean_reversion';
-  return 'momentum_breakout';
-}
-
-function inferOpportunityRegime(snapshot: TaSnapshot): OpportunityMarketRegime {
-  const realizedMovePct = Math.max(
-    Math.abs(snapshot.priceVs24hHigh),
-    Math.abs(snapshot.priceVs24hLow)
-  );
-  if (snapshot.trendBias === 'flat' && realizedMovePct <= 2) return 'quiet';
-  if (snapshot.trendBias === 'flat') return 'reversion';
-  if (realizedMovePct >= 6) return 'volatile';
-  if (Math.abs(snapshot.priceVsEma20_1h) >= 1.5) return 'breakout';
-  return 'trend';
-}
-
-function inferOpportunitySide(snapshot: TaSnapshot): 'long' | 'short' {
-  if (snapshot.trendBias === 'down') return 'short';
-  if (snapshot.trendBias === 'up') return 'long';
-  return snapshot.priceVs24hHigh < snapshot.priceVs24hLow ? 'long' : 'short';
-}
-
-function countSymbolEvents(symbol: string, pendingEvents: Array<{ title: string; tags?: string[] }>): number {
-  const normalizedSymbol = normalizeOpportunitySymbol(symbol);
-  return pendingEvents.filter((event) => {
-    const haystacks = [event.title, ...(event.tags ?? [])].map((value) =>
-      String(value ?? '').toUpperCase()
-    );
-    return haystacks.some((value) => value.includes(normalizedSymbol));
-  }).length;
-}
-
-function buildOpportunityCandidateInputs(
-  candidates: DiscoveryCandidate[],
-  snapshots: TaSnapshot[],
-  book: PositionBook,
-  pendingEvents: Array<{ title: string; tags?: string[] }>
-): OpportunityCandidateInput[] {
-  const candidateBySymbol = new Map(
-    candidates.map((candidate) => [normalizeOpportunitySymbol(candidate.symbol), candidate])
-  );
-  return snapshots.map((snapshot) => {
-    const candidate = candidateBySymbol.get(normalizeOpportunitySymbol(snapshot.symbol));
-    const eventMatches = countSymbolEvents(snapshot.symbol, pendingEvents);
-    const realizedMovePct = Math.max(
-      Math.abs(snapshot.priceVs24hHigh),
-      Math.abs(snapshot.priceVs24hLow)
-    );
-    const trendStrength = clamp01(Math.abs(snapshot.priceVsEma20_1h) / 3.5);
-    const breakoutQuality =
-      snapshot.trendBias === 'up'
-        ? clamp01(1 - Math.abs(Math.min(0, snapshot.priceVs24hHigh)) / 5)
-        : snapshot.trendBias === 'down'
-          ? clamp01(1 - Math.abs(Math.max(0, snapshot.priceVs24hLow)) / 5)
-          : clamp01(1 - Math.abs(snapshot.priceVsEma20_1h) / 4);
-    const regime = inferOpportunityRegime(snapshot);
-    const signalClass = inferOpportunitySignalClass(snapshot);
-    const inferredSide = inferOpportunitySide(snapshot);
-    const liquidityUsd = Math.max(
-      candidate?.dayVolumeUsd ?? 0,
-      candidate?.openInterestUsd ?? 0,
-      snapshot.oiUsd
-    );
-    const stopDistancePct = Math.max(
-      0.5,
-      Math.min(8, Math.abs(snapshot.priceVsEma20_1h) * 0.9 + realizedMovePct * 0.35)
-    );
-    const invalidationClarity = clamp01(
-      0.45 +
-        (candidate?.executionScore ?? 0.5) * 0.25 +
-        breakoutQuality * 0.2 +
-        Math.max(0, 1 - stopDistancePct / 8) * 0.1
-    );
-    const expectedR = 1.1 + breakoutQuality * 1.4 + trendStrength * 1.1;
-    const priceExtension = clamp01(
-      Math.max(0, realizedMovePct - 1.5) / 8 + Math.abs(snapshot.priceVsEma20_1h) / 8
-    );
-    return {
-      symbol: snapshot.symbol,
-      symbolClass: candidate?.assetClass === 'cross_asset' ? 'xyz' : 'crypto',
-      signalClass,
-      triggerReasons: snapshot.triggerReasons,
-      attentionFeatures: {
-        volumeAbnormalityPct: snapshot.volumeVs24hAvgPct,
-        oiAbnormalityPct: Math.max(Math.abs(snapshot.oiDelta1hPct), Math.abs(snapshot.oiDelta4hPct)),
-        fundingRatePct: candidate?.assetClass === 'cross_asset' ? null : snapshot.fundingRatePct,
-        realizedMovePct,
-        eventIntensity: clamp01(eventMatches / 2),
-        cadenceWeight: 1,
-      },
-      structuralFeatures: {
-        expectedEdge: clamp01((candidate?.score ?? 0.4) * 0.45 + breakoutQuality * 0.3 + trendStrength * 0.25),
-        setupQuality: breakoutQuality,
-        relativeStrength: trendStrength,
-        signalAgreement: clamp01(
-          (snapshot.trendBias === 'flat' ? 0.45 : 0.75) +
-            Math.max(0, snapshot.oiDelta1hPct) / 40
-        ),
-        catalystFreshness: clamp01((snapshot.triggerReasons.length > 0 ? 0.6 : 0.3) + eventMatches * 0.2),
-        invalidationClarity,
-        expectedR,
-      },
-      crowdingFeatures: {
-        priceExtension,
-        oiConfirmation: clamp01(Math.abs(snapshot.oiDelta4hPct) / 12),
-        fundingSkew: clamp01(Math.abs(snapshot.fundingRatePct) / 80),
-        participationQuality: clamp01(
-          Math.abs(snapshot.oiDelta1hPct) / 16 + Math.min(snapshot.volumeVs24hAvgPct, 220) / 440
-        ),
-        exhaustionRisk: clamp01(
-          Math.max(0, snapshot.volumeVs24hAvgPct - 170) / 220 +
-            Math.max(0, Math.abs(snapshot.fundingRatePct) - 35) / 120
-        ),
-      },
-      regimeFeatures: {
-        marketRegime: regime,
-        regimeCompatibility: clamp01(
-          (signalClass === 'mean_reversion'
-            ? regime === 'reversion' || regime === 'quiet'
-              ? 0.85
-              : 0.35
-            : regime === 'trend' || regime === 'breakout' || regime === 'volatile'
-              ? 0.82
-              : 0.4)
-        ),
-        volatilityState: clamp01(realizedMovePct / 6),
-        expansionBias: clamp01(Math.abs(snapshot.priceVsEma20_1h) / 3),
-        trendPersistence: snapshot.trendBias === 'flat' ? 0.35 : clamp01(0.55 + Math.abs(snapshot.oiDelta4hPct) / 25),
-      },
-      executionFeatures: {
-        liquidityUsd,
-        spreadBps: candidate?.spreadProxyBps ?? 25,
-        stopDistancePct,
-        invalidationClarity,
-        expectedR,
-        portfolioConflict: book.hasConflict(snapshot.symbol, inferredSide),
-        sameSymbolConflict: book.hasPosition(snapshot.symbol, inferredSide),
-        stackingOverride: false,
-      },
-    } satisfies OpportunityCandidateInput;
-  });
-}
-
-function buildShortlistReason(candidate: OpportunityCandidate): string {
-  if (candidate.triggerReasons.length > 0) {
-    return candidate.triggerReasons.join('; ');
-  }
-  if (candidate.hardFloorVerdict.failedFloors.length > 0) {
-    return `ineligible:${candidate.hardFloorVerdict.failedFloors.join(',')}`;
-  }
-  return `edge=${candidate.componentScores.structuralEdgeScore.toFixed(2)} regime=${candidate.componentScores.regimeFitScore.toFixed(2)}`;
-}
-
-function buildRankedOpportunityContexts(
-  rankedCandidates: OpportunityCandidate[],
-  selectedCandidates: DiscoveryCandidate[],
-  snapshots: TaSnapshot[],
-  records: Array<{ symbol: string; rank: number; selectedForShortlist: boolean }>
-): RankedOpportunityContext[] {
-  const selectedBySymbol = new Map(
-    selectedCandidates.map((candidate) => [normalizeOpportunitySymbol(candidate.symbol), candidate])
-  );
-  const snapshotsBySymbol = new Map(
-    snapshots.map((snapshot) => [normalizeOpportunitySymbol(snapshot.symbol), snapshot])
-  );
-  const ranksBySymbol = new Map(
-    records.map((record) => [normalizeOpportunitySymbol(record.symbol), record])
-  );
-
-  return rankedCandidates
-    .filter((candidate) => ranksBySymbol.get(normalizeOpportunitySymbol(candidate.symbol))?.selectedForShortlist)
-    .map((candidate) => {
-      const discovery = selectedBySymbol.get(normalizeOpportunitySymbol(candidate.symbol));
-      const snapshot = snapshotsBySymbol.get(normalizeOpportunitySymbol(candidate.symbol));
-      const rankRecord = ranksBySymbol.get(normalizeOpportunitySymbol(candidate.symbol));
-      return {
-        symbol: candidate.symbol,
-        rank: rankRecord?.rank ?? 0,
-        opportunityScore: candidate.opportunityScore,
-        symbolClass: candidate.symbolClass,
-        signalClass: candidate.signalClass,
-        shortlistReason: buildShortlistReason(candidate),
-        triggerReasons: [...candidate.triggerReasons],
-        componentScores: candidate.componentScores,
-        hardFloorVerdict: candidate.hardFloorVerdict,
-        discovery: {
-          score: discovery?.score ?? 0,
-          liquidityScore: discovery?.liquidityScore ?? 0,
-          executionScore: discovery?.executionScore ?? 0,
-          fundingScore: discovery?.fundingScore ?? 0,
-          openInterestUsd: discovery?.openInterestUsd ?? 0,
-          dayVolumeUsd: discovery?.dayVolumeUsd ?? 0,
-          fundingRate: discovery?.fundingRate ?? 0,
-          spreadProxyBps: discovery?.spreadProxyBps ?? 0,
-          markPx: discovery?.markPx ?? 0,
-          oraclePx: discovery?.oraclePx ?? 0,
-        },
-        ta: {
-          price: snapshot?.price ?? 0,
-          priceVs24hHigh: snapshot?.priceVs24hHigh ?? 0,
-          priceVs24hLow: snapshot?.priceVs24hLow ?? 0,
-          oiUsd: snapshot?.oiUsd ?? 0,
-          oiDelta1hPct: snapshot?.oiDelta1hPct ?? 0,
-          oiDelta4hPct: snapshot?.oiDelta4hPct ?? 0,
-          fundingRatePct: snapshot?.fundingRatePct ?? 0,
-          volumeVs24hAvgPct: snapshot?.volumeVs24hAvgPct ?? 0,
-          priceVsEma20_1h: snapshot?.priceVsEma20_1h ?? 0,
-          trendBias: snapshot?.trendBias ?? 'flat',
-          rawFeatures: snapshot?.rawFeatures ?? {
-            priceVs24hHighPct: 0,
-            priceVs24hLowPct: 0,
-            oiUsd: 0,
-            oiDelta1hPct: 0,
-            oiDelta4hPct: 0,
-            fundingRateAnnualPct: 0,
-            volumeVs24hAvgPct: 0,
-            priceVsEma20_1hPct: 0,
-            trendBias: 'flat',
-          },
-        },
-      };
-    });
 }
 
 interface ScanCycleSnapshot {
@@ -775,6 +533,39 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     return this.runDiscoveryScan(scanInput);
   }
 
+  private async executeSharedPerpOrder(
+    input: Record<string, unknown>
+  ): Promise<{ executed: boolean; message: string; data: Record<string, unknown> | null }> {
+    const { executeToolCall } = await import('./tool-executor.js');
+    const result = await executeToolCall(
+      'perp_place_order',
+      input,
+      this.toolContext ?? {
+        config: this.thufirConfig,
+        marketClient: this.marketClient,
+        executor: this.executor,
+        limiter: this.limiter,
+      }
+    );
+    if (!result.success) {
+      return {
+        executed: false,
+        message: result.error,
+        data: null,
+      };
+    }
+    const data =
+      result.data && typeof result.data === 'object' ? (result.data as Record<string, unknown>) : null;
+    return {
+      executed: Boolean(data?.executed ?? true),
+      message:
+        typeof data?.message === 'string' && data.message.trim().length > 0
+          ? data.message
+          : 'perp_place_order executed',
+      data,
+    };
+  }
+
   private async getMarketContextCached(signalSymbols: string[] = []): Promise<string> {
     const now = Date.now();
     const normalizedSymbols = signalSymbols
@@ -801,8 +592,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         {
           message:
             normalizedSymbols.length > 0
-              ? `mixed perpetual markets overview for ${normalizedSymbols.join(', ')}`
-              : 'mixed perpetual markets overview',
+              ? `crypto perpetual markets overview for ${normalizedSymbols.join(', ')}`
+              : 'crypto perpetual markets overview',
           domain: 'crypto',
           marketLimit: 20,
           signalSymbols: normalizedSymbols,
@@ -840,30 +631,42 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     const book = PositionBook.getInstance();
     const topMarketsCount = this.thufirConfig.autonomy?.origination?.topMarketsCount ?? 20;
-    const shortlistLimit = Math.min(5, topMarketsCount);
     const cooldownMs = (this.thufirConfig.autonomy?.origination?.cooldownMinutes ?? 30) * 60 * 1000;
     const quantFallbackEnabled = this.thufirConfig.autonomy?.origination?.quantFallbackEnabled !== false;
 
     // Get top markets
-    let selectedCandidates: DiscoveryCandidate[];
     let topMarkets: string[];
+    let topMarketCandidates: DiscoveryCandidate[] = [];
     try {
       const selected = await selectDiscoveryMarkets(this.thufirConfig, { limit: topMarketsCount });
-      selectedCandidates = selected.candidates;
+      topMarketCandidates = selected.candidates;
       topMarkets = selected.candidates.map((c) => c.symbol);
     } catch {
-      selectedCandidates = [];
       topMarkets = this.thufirConfig.hyperliquid?.symbols?.length
         ? (this.thufirConfig.hyperliquid.symbols as string[])
         : ['BTC', 'ETH'];
+      topMarketCandidates = topMarkets.map((symbol) => ({
+        symbol,
+        score: 1,
+        liquidityScore: 1,
+        executionScore: 1,
+        fundingScore: 1,
+        openInterestUsd: 0,
+        dayVolumeUsd: 0,
+        fundingRate: 0,
+        spreadProxyBps: 0,
+      }));
     }
 
     // Compute TA surface for all top markets
     const allSnapshots = await this.taSurface.computeAll(topMarkets);
 
-    // Preserve permissive candidate generation, but continue honoring cooldown.
+    // Filter out symbols already in the book or on cooldown
     const now = Date.now();
     const taSnapshots = allSnapshots.filter((snap) => {
+      if (book.hasPosition(snap.symbol, 'long') || book.hasPosition(snap.symbol, 'short')) {
+        return false;
+      }
       const lastCooldown = this.symbolCooldownMap.get(snap.symbol);
       if (lastCooldown !== undefined && now - lastCooldown < cooldownMs) {
         return false;
@@ -873,55 +676,15 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     // Get pending events for trigger
     const pendingEvents = listEvents({ limit: 10 });
-    const scanId = `originator_scan_${now}`;
-    const ranking = scoreAndRankOpportunityCandidates(
-      buildOpportunityCandidateInputs(selectedCandidates, taSnapshots, book, pendingEvents),
-      {
-        shortlistSize: shortlistLimit,
-        scanId,
-        createdAt: new Date(now),
-      }
-    );
-    const rankedOpportunities = buildRankedOpportunityContexts(
-      ranking.rankedCandidates,
-      selectedCandidates,
-      taSnapshots,
-      ranking.records
-    );
 
     // Check if trigger fires
     const triggerResult = this.originationTrigger.shouldFire(
       this.lastFiredMs,
       taSnapshots,
-      pendingEvents,
-      rankedOpportunities
+      pendingEvents
     );
-    const persistRankScan = (selectionReason: string, selectedSymbol?: string | null): void => {
-      recordOpportunityRankScan({
-        scanId,
-        source: 'autonomous_originator_scan',
-        generatedAt: new Date(now).toISOString(),
-        triggerReason: triggerResult.reason,
-        totalCandidates: ranking.rankedCandidates.length,
-        eligibleCandidates: ranking.rankedCandidates.filter(
-          (candidate) => candidate.hardFloorVerdict.eligible
-        ).length,
-        selectedSymbol: selectedSymbol ?? null,
-        selectionReason,
-        rankedCandidates: ranking.records,
-        payload: {
-          topMarkets,
-          shortlistSymbols: rankedOpportunities.map((opportunity) => opportunity.symbol),
-        },
-        notes: {
-          topMarketsCount,
-          shortlistLimit,
-        },
-      });
-    };
 
     if (!triggerResult.fire) {
-      persistRankScan('no_trigger');
       return null; // no-op — return null to fall through to quant path if desired
     }
 
@@ -938,17 +701,12 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             .slice(0, 500);
 
     // Fetch market context (10-min cached)
-    const contextSymbols =
-      rankedOpportunities.length > 0
-        ? rankedOpportunities.map((opportunity) => opportunity.symbol)
-        : topMarkets;
-    const marketContext = await this.getMarketContextCached(contextSymbols);
+    const marketContext = await this.getMarketContextCached(topMarkets);
 
     // Assemble bundle and propose
     const bundle = {
       book: book.getAll(),
       taSnapshots,
-      rankedOpportunities,
       marketContext,
       recentEvents,
       alertedSymbols: triggerResult.alertedSymbols,
@@ -973,7 +731,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     this.lastFiredMs = now;
 
     if (proposal === null) {
-      persistRankScan(`proposal_null:${triggerResult.reason}`);
       // Quant fallback only on cadence trigger
       if (triggerResult.reason === 'cadence' && quantFallbackEnabled) {
         return null; // signal caller to run quant path
@@ -990,7 +747,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           originatorExitReason: 'runScan invoked with executeTrades=false',
         });
       }
-      persistRankScan('proposal_generated_execute_false', proposal.symbol);
       return `Originator proposed ${proposal.symbol} ${proposal.side} (confidence=${proposal.confidence.toFixed(2)}) but execute=false.`;
     }
 
@@ -999,6 +755,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     const side = proposal.side === 'long' ? 'buy' : 'sell';
     const market = await this.marketClient.getMarket(symbol);
     const markPrice = market.markPrice ?? 0;
+    const selectedTaSnapshot = taSnapshots.find((snapshot) => snapshot.symbol === symbol) ?? null;
+    const selectedDiscoveryCandidate =
+      topMarketCandidates.find((candidate) => candidate.symbol === symbol) ?? null;
 
     const minOrderUsd =
       typeof (this.thufirConfig as any)?.hyperliquid?.minOrderNotionalUsd === 'number'
@@ -1023,14 +782,29 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       return limiterRemaining;
     })();
 
+    let targetLeverage = proposal.leverage;
     const sessionContext = resolveSessionWeightContext(new Date());
-    const recentJournals = listPerpTradeJournals({ limit: 200 });
-    const perf = summarizeComparableSignalPerformance(recentJournals, {
-      signalClass: 'llm_originator',
-      symbolClass: inferTradeSymbolClass(symbol),
+    const originatorLeverageMax =
+      typeof this.thufirConfig.hyperliquid?.maxLeverage === 'number' &&
+      Number.isFinite(this.thufirConfig.hyperliquid.maxLeverage)
+        ? Math.max(1, Number(this.thufirConfig.hyperliquid.maxLeverage))
+        : 50;
+    const gateContext = buildOriginatorEntryGateContext({
+      thesisText: proposal.thesisText,
+      confidence: proposal.confidence,
+      expectedRMultiple: proposal.expectedRMultiple,
+      selector: selectedDiscoveryCandidate,
+      ta: selectedTaSnapshot,
+      markPrice: markPrice || null,
+      invalidationPrice: proposal.invalidationPrice,
+      leverage: targetLeverage,
+      leverageMax: originatorLeverageMax,
+      triggerReason: triggerResult.reason,
     });
+    const recentJournals = listPerpTradeJournals({ limit: 200 });
+    const perf = summarizeSignalPerformance(recentJournals, 'llm_originator');
     const kellyFraction = computeFractionalKellyFraction({
-      expectedEdge: 0.1,
+      expectedEdge: gateContext.gateExpectedEdge,
       signalExpectancy: Math.max(0.01, perf.expectancy + 0.5),
       signalVariance: Math.max(0.1, perf.variance),
       sampleCount: perf.sampleCount,
@@ -1048,11 +822,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           originatorExitReason: `insufficient daily budget ${remainingDaily.toFixed(2)} below min order ${minOrderUsd.toFixed(2)}`,
         });
       }
-      persistRankScan('insufficient_daily_budget', symbol);
       return `${symbol}: Skipped originator proposal (insufficient daily budget $${remainingDaily.toFixed(2)})`;
     }
-
-    let targetLeverage = proposal.leverage;
 
     const riskCheck = await checkPerpRiskLimits({
       config: this.thufirConfig,
@@ -1078,52 +849,22 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           requestedLeverage: targetLeverage,
         });
       }
-      persistRankScan(`risk_block:${riskCheck.reason ?? 'perp risk limits exceeded'}`, symbol);
       return `${symbol}: Originator proposal blocked (${riskCheck.reason ?? 'perp risk limits exceeded'})`;
     }
 
-    const limitCheck = await this.limiter.checkAndReserve(probeUsd);
-    if (!limitCheck.allowed) {
+    if (this.limiter.getRemainingDaily() < probeUsd) {
       if (proposal.proposalRecordId != null) {
         updateTradeProposalStatus(proposal.proposalRecordId, {
           executeTrades: true,
           originatorExitStage: 'wallet_limit_blocked',
-          originatorExitReason: limitCheck.reason ?? 'wallet spending limiter blocked proposal',
+          originatorExitReason: 'wallet spending limiter blocked proposal',
           requestedLeverage: targetLeverage,
         });
       }
-      persistRankScan(`budget_block:${limitCheck.reason}`, symbol);
-      return `${symbol}: Originator proposal blocked (${limitCheck.reason})`;
+      return `${symbol}: Originator proposal blocked (wallet spending limiter blocked proposal)`;
     }
 
     // LLM entry gate
-    const marketLeverageMax =
-      typeof market.metadata?.maxLeverage === 'number' &&
-      Number.isFinite(market.metadata.maxLeverage)
-        ? Math.max(1, Number(market.metadata.maxLeverage))
-        : null;
-    const configuredLeverageMax =
-      typeof this.thufirConfig.hyperliquid?.maxLeverage === 'number' &&
-      Number.isFinite(this.thufirConfig.hyperliquid.maxLeverage)
-        ? Math.max(1, Number(this.thufirConfig.hyperliquid.maxLeverage))
-        : 50;
-    const originatorLeverageMax = marketLeverageMax ?? configuredLeverageMax;
-    const selectedDiscoveryCandidate =
-      selectedCandidates.find((candidate) => candidate.symbol === symbol) ?? null;
-    const selectedTaSnapshot =
-      taSnapshots.find((snapshot) => snapshot.symbol === symbol) ?? null;
-    const gateContext = buildOriginatorEntryGateContext({
-      thesisText: proposal.thesisText,
-      confidence: proposal.confidence,
-      expectedRMultiple: proposal.expectedRMultiple,
-      selector: selectedDiscoveryCandidate,
-      ta: selectedTaSnapshot,
-      markPrice: markPrice || null,
-      invalidationPrice: proposal.invalidationPrice,
-      leverage: targetLeverage,
-      leverageMax: originatorLeverageMax,
-      triggerReason: triggerResult.reason,
-    });
     const gateCandidate: EntryGateCandidate = {
       symbol,
       side: side as 'buy' | 'sell',
@@ -1144,7 +885,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
 
     let originatorGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
     let originatorGateReasonCode: string | null = null;
-    let finalInvalidationPrice = proposal.invalidationPrice;
+    let finalInvalidationPrice = toFiniteNumberOrNull(proposal.invalidationPrice);
     if (this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false) {
       if (proposal.proposalRecordId != null) {
         updateTradeProposalStatus(proposal.proposalRecordId, {
@@ -1172,7 +913,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             confidence: String(proposal.confidence),
             reasoning: `LLM entry gate rejected: ${gateDecision.reasoning}`,
             signalClass: 'llm_originator',
-            symbolClass: inferTradeSymbolClass(symbol),
             marketRegime: gateContext.marketContext.marketRegime ?? null,
             volatilityBucket: gateContext.marketContext.volatilityBucket ?? null,
             liquidityBucket:
@@ -1196,7 +936,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           });
           updateTradeProposalOutcome(proposal.proposalRecordId, gateDecision.verdict, false);
         }
-        persistRankScan(`entry_gate_reject:${gateDecision.reasoning}`, symbol);
         return `${symbol}: Originator proposal rejected by LLM entry gate — ${gateDecision.reasoning}`;
       }
       if (gateDecision.verdict === 'resize' && gateDecision.adjustedSizeUsd) {
@@ -1205,7 +944,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       if (gateDecision.suggestedLeverage != null) {
         targetLeverage = gateDecision.suggestedLeverage;
       }
-      finalInvalidationPrice = gateDecision.stopLevelPrice ?? finalInvalidationPrice;
+      finalInvalidationPrice = toFiniteNumberOrNull(gateDecision.stopLevelPrice) ?? finalInvalidationPrice;
       if (proposal.proposalRecordId != null) {
         updateTradeProposalStatus(proposal.proposalRecordId, {
           executeTrades: true,
@@ -1227,24 +966,46 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         });
         updateTradeProposalOutcome(proposal.proposalRecordId, 'reject', false);
       }
-      persistRankScan('entry_gate_reject:missing machine-readable invalidation price', symbol);
       return `${symbol}: Originator proposal blocked (missing machine-readable invalidation price)`;
     }
 
-    let size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
-
-    const decision: TradeDecision = {
-      action: side,
-      side,
+    const size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
+    const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
+    const predictionSignalWeights = resolvePredictionSignalWeights(this.thufirConfig);
+    const predictionSignalScores = buildOriginatorSignalScores(proposal);
+    const tradeReasoning =
+      `LLM originator: ${proposal.thesisText} | confidence=${proposal.confidence.toFixed(2)} ` +
+      `invalidation=${proposal.invalidationCondition} ttl=${proposal.suggestedTtlMinutes}min`;
+    const tradeResult = await this.executeSharedPerpOrder({
       symbol,
+      side,
       size,
-      orderType: 'market',
+      order_type: 'market',
       leverage: targetLeverage,
-      modelProbability: proposal.confidence,
-      reasoning: `LLM originator: ${proposal.thesisText} | confidence=${proposal.confidence.toFixed(2)} invalidation=${proposal.invalidationCondition} ttl=${proposal.suggestedTtlMinutes}min`,
-    };
-
-    const tradeResult = await this.executor.execute(market, decision);
+      mode: executionMode,
+      signal_class: 'llm_originator',
+      market_regime: gateContext.marketContext.marketRegime ?? null,
+      volatility_bucket: gateContext.marketContext.volatilityBucket ?? null,
+      liquidity_bucket:
+        gateContext.marketContext.liquidityBucket === 'unknown'
+          ? null
+          : gateContext.marketContext.liquidityBucket,
+      expected_edge: gateContext.gateExpectedEdge,
+      trade_type: proposal.tradeType,
+      invalidation_price: finalInvalidationPrice,
+      time_stop_at_ms: now + proposal.suggestedTtlMinutes * 60_000,
+      thesis_expires_at_ms: now + proposal.suggestedTtlMinutes * 60_000,
+      confidence: proposal.confidence,
+      reasoning: tradeReasoning,
+      create_learning_prediction: true,
+      prediction_market_title: `${symbol} ${side === 'buy' ? 'long' : 'short'}: ${proposal.thesisText.slice(0, 100)}`,
+      prediction_model_probability: proposal.confidence,
+      prediction_signal_scores: predictionSignalScores,
+      prediction_signal_weights: predictionSignalWeights,
+      prediction_session_tag: resolveSessionWeightContext(new Date()).session,
+      prediction_horizon_minutes: proposal.suggestedTtlMinutes,
+      prediction_reasoning: proposal.thesisText,
+    });
     if (proposal.proposalRecordId != null) {
       updateTradeProposalStatus(proposal.proposalRecordId, {
         executeTrades: true,
@@ -1254,118 +1015,16 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       });
       updateTradeProposalOutcome(proposal.proposalRecordId, 'approve', tradeResult.executed);
     }
-    persistRankScan(
-      tradeResult.executed ? 'executed' : `not_executed:${tradeResult.message ?? 'unknown'}`,
-      symbol
-    );
     if (tradeResult.executed) {
-      this.limiter.confirm(probeUsd);
-
-      // Record learning prediction — resolved when position closes
-      let predictionId: string | null = null;
-      try {
-        const predictedOutcome = side === 'buy' ? 'YES' : 'NO';
-        const signalWeightsSnapshot = resolvePredictionSignalWeights(this.thufirConfig);
-        const signalScores = buildOriginatorSignalScores(proposal);
-        predictionId = createPrediction({
-          marketId: `perp:${symbol}`,
-          marketTitle: `${symbol} ${side === 'buy' ? 'long' : 'short'}: ${proposal.thesisText.slice(0, 100)}`,
-          predictedOutcome,
-          predictedProbability: proposal.confidence,
-          modelProbability: proposal.confidence,
-          signalScores,
-          signalWeightsSnapshot,
-          sessionTag: resolveSessionWeightContext(new Date()).session,
-          regimeTag: undefined,
-          strategyClass: undefined,
-          symbol,
-          domain: 'perp',
-          learningComparable: false,
-          horizonMinutes: proposal.suggestedTtlMinutes,
-          reasoning: proposal.thesisText,
-          executed: true,
-          executionPrice: markPrice || undefined,
-          positionSize: size,
-        });
-        createLearningCase({
-          caseType: 'comparable_forecast',
-          domain: 'perp',
-          entityType: 'symbol',
-          entityId: symbol,
-          comparable: false,
-          comparatorKind: null,
-          exclusionReason: 'missing_comparator',
-          sourcePredictionId: predictionId,
-          belief: {
-            modelProbability: proposal.confidence,
-            predictedOutcome,
-          },
-          baseline: {
-            marketProbability: null,
-          },
-          context: {
-            horizonMinutes: proposal.suggestedTtlMinutes,
-            mode: this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper',
-          },
-          action: {
-            side,
-            executed: true,
-            executionPrice: markPrice || null,
-            positionSize: size,
-          },
-        });
-      } catch { }
-
-      try {
-        recordDecisionAudit({
-          source: 'autonomous',
-          mode: 'autonomous',
-          marketId: symbol,
-          tradeAction: `${side} open ${symbol}`,
-          tradeOutcome: 'executed',
-          confidence: proposal.confidence,
-          notes: {
-            tradeType: proposal.tradeType,
-            expectedRMultiple: proposal.expectedRMultiple,
-            thesisText: proposal.thesisText.slice(0, 200),
-            suggestedTtlMinutes: proposal.suggestedTtlMinutes,
-          },
-        });
-      } catch { }
-
-      // Write exit policy using proposal TTL and invalidation price
-      const ttlMs = proposal.suggestedTtlMinutes * 60_000;
-      const timeStopAtMs = now + ttlMs;
-      try {
-        const positionSide = proposal.side === 'long' ? 'long' : 'short';
-        const exitContract = buildLegacyExitContract({
-          thesis: decision.reasoning ?? `${symbol} ${positionSide} thesis`,
-          side: positionSide,
-          tradeType: proposal.tradeType,
-          invalidationPrice: finalInvalidationPrice,
-        });
-        upsertPositionExitPolicy(
-          symbol,
-          positionSide,
-          timeStopAtMs,
-          finalInvalidationPrice,
-          serializeExitContract(exitContract),
-          predictionId
-        );
-      } catch { }
-
       if (this.notify) {
         const sideEmoji = side === 'buy' ? '📈' : '📉';
-        const mode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
         this.notify(
           `${sideEmoji} [LLM-ORIG] ${side === 'buy' ? 'LONG' : 'SHORT'} ${symbol}` +
           ` @ $${markPrice > 0 ? markPrice.toFixed(2) : '?'}` +
           ` | notional=$${probeUsd.toFixed(2)} lev=${targetLeverage}x` +
-          ` | ttl=${proposal.suggestedTtlMinutes}min conf=${(proposal.confidence * 100).toFixed(0)}% mode=${mode}`
+          ` | ttl=${proposal.suggestedTtlMinutes}min conf=${(proposal.confidence * 100).toFixed(0)}% mode=${executionMode}`
         ).catch(() => {});
       }
-    } else {
-      this.limiter.release(probeUsd);
     }
 
     return tradeResult.message;
@@ -1406,7 +1065,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           const cluster = cycleSnapshot.clusterBySymbol.get(expr.symbol);
           const regime = cluster ? classifyMarketRegime(cluster) : 'choppy';
           const signalClass = classifySignalClass(expr);
-          const symbolClass = inferTradeSymbolClass(symbol);
           const volatilityBucket = cluster ? resolveVolatilityBucket(cluster) : 'medium';
           const liquidityBucket = cluster ? resolveLiquidityBucket(cluster) : 'normal';
           const contextTrace = formatContextPackTrace({
@@ -1435,7 +1093,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
               confidence: expr.confidence != null ? String(expr.confidence) : null,
               reasoning: `Observation-only mode: would execute ${expr.side} ${symbol} (edge=${(expr.expectedEdge * 100).toFixed(2)}%) ${contextTrace}`,
               signalClass,
-              symbolClass,
               marketRegime: regime,
               volatilityBucket,
               liquidityBucket,
@@ -1497,14 +1154,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const sessionContext = resolveSessionWeightContext(new Date());
       const regime = cluster ? classifyMarketRegime(cluster) : 'choppy';
       const signalClass = classifySignalClass(expr);
-      const symbolClass = inferTradeSymbolClass(symbol);
       const globalGate = evaluateGlobalTradeGate(this.thufirConfig, {
         symbol,
         direction: toPolicyDirection(expr.side),
         strategySource: expr.newsTrigger?.enabled ? 'discovery_news' : 'discovery_quant',
         triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
         signalClass,
-        symbolClass,
+        symbolClass: inferTradeSymbolClass(symbol),
         session: sessionContext.session,
         marketRegime: regime,
         expectedEdge: expr.expectedEdge,
@@ -1577,7 +1233,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const snapshotAgeMs = Math.max(0, Date.now() - cycleSnapshot.capturedAtMs);
       const regime = cluster ? classifyMarketRegime(cluster) : 'choppy';
       const signalClass = classifySignalClass(expr);
-      const symbolClass = inferTradeSymbolClass(symbol);
       const volatilityBucket = cluster ? resolveVolatilityBucket(cluster) : 'medium';
       const liquidityBucket = cluster ? resolveLiquidityBucket(cluster) : 'normal';
       const globalGate = evaluateGlobalTradeGate(this.thufirConfig, {
@@ -1586,7 +1241,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         strategySource: expr.newsTrigger?.enabled ? 'discovery_news' : 'discovery_quant',
         triggerReason: expr.newsTrigger?.enabled ? 'news' : 'technical',
         signalClass,
-        symbolClass,
+        symbolClass: inferTradeSymbolClass(symbol),
         session: sessionContext.session,
         marketRegime: regime,
         expectedEdge: expr.expectedEdge,
@@ -1638,11 +1293,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         policySizeMultiplier < 1
           ? `policy=${globalGate.reasonCode ?? 'policy.size_adjust'} size_multiplier=${policySizeMultiplier.toFixed(2)} reason=${globalGate.reason ?? 'size adjustment applied'}`
           : null;
-      const perf = summarizeComparableSignalPerformance(listPerpTradeJournals({ limit: 200 }), {
-        signalClass,
-        symbolClass,
-        marketRegime: regime,
-      });
+      const perf = summarizeSignalPerformance(listPerpTradeJournals({ limit: 200 }), signalClass);
       const kellyFraction = computeFractionalKellyFraction({
         expectedEdge: expr.expectedEdge,
         signalExpectancy: Math.max(0.01, perf.expectancy + 0.5),
@@ -1704,9 +1355,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         continue;
       }
 
-      const limitCheck = await this.limiter.checkAndReserve(probeUsd);
-      if (!limitCheck.allowed) {
-        outputs.push(`${symbol}: Blocked (${limitCheck.reason})`);
+      if (this.limiter.getRemainingDaily() < probeUsd) {
+        outputs.push(`${symbol}: Blocked (wallet spending limiter blocked proposal)`);
         continue;
       }
 
@@ -1724,14 +1374,11 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         leverageMax,
         edge: expr.expectedEdge,
         confidence: confidenceWeighted,
-        symbolClass,
         signalClass,
         regime,
         session: sessionContext.session,
         entryReasoning: expr.expectedMove ?? '',
         invalidationPrice: expressionInvalidationPrice,
-        mechanicalMinEdge: adaptiveMinEdge,
-        mechanicalMinConfidence: this.config.requireHighConfidence ? 0.7 : 0,
       };
       let entryGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
       let entryGateReasonCode: string | null = null;
@@ -1757,7 +1404,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
               confidence: String(confidenceWeighted),
               reasoning: `LLM entry gate rejected: ${gateDecision.reasoning}${policyReasoning ? ` | ${policyReasoning}` : ''}`,
               signalClass,
-              symbolClass,
               marketRegime: regime,
               volatilityBucket,
               liquidityBucket,
@@ -1772,7 +1418,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             });
           } catch { /* best-effort */ }
           outputs.push(`${symbol}: Rejected by LLM entry gate — ${gateDecision.reasoning}`);
-          this.limiter.release(probeUsd);
           continue;
         }
         if (gateDecision.verdict === 'resize' && gateDecision.adjustedSizeUsd) {
@@ -1803,7 +1448,6 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             confidence: String(confidenceWeighted),
             reasoning: `Blocked: missing machine-readable invalidation price${policyReasoning ? ` | ${policyReasoning}` : ''}`,
             signalClass,
-            symbolClass,
             marketRegime: regime,
             volatilityBucket,
             liquidityBucket,
@@ -1818,159 +1462,104 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
           });
         } catch { /* best-effort */ }
         outputs.push(`${symbol}: Blocked (missing machine-readable invalidation price)`);
-        this.limiter.release(probeUsd);
         continue;
       }
       // gate approved or was disabled; fall through to executor.execute()
-
-      const decision: TradeDecision = {
-        action: expr.side,
+      const decisionReasoning = `${expr.expectedMove} | edge=${(expr.expectedEdge * 100).toFixed(2)}% confidence=${(
+        confidenceWeighted * 100
+      ).toFixed(1)}% regime=${regime} signal=${signalClass} kelly=${(kellyFraction * 100).toFixed(
+        1
+      )}% snapshotId=${cycleSnapshot.id} snapshotTs=${cycleSnapshot.capturedAtIso} snapshotAgeMs=${snapshotAgeMs} session=${sessionContext.session} sessionWeight=${sessionContext.sessionWeight.toFixed(
+        2
+      )} confidenceRaw=${confidenceRaw.toFixed(3)} confidenceWeighted=${confidenceWeighted.toFixed(
+        3
+      )} sizingModifier=${sizingModifier.toFixed(2)}${policyReasoning ? ` ${policyReasoning}` : ''} ${formatContextPackTrace({
+        marketRegime: expr.contextPack?.regime.marketRegime ?? regime,
+        volatilityBucket: expr.contextPack?.regime.volatilityBucket ?? volatilityBucket,
+        liquidityBucket: expr.contextPack?.regime.liquidityBucket ?? liquidityBucket,
+        executionStatus: expr.contextPack?.executionQuality.status ?? 'unknown',
+        eventKind: expr.contextPack?.event.kind ?? (expr.newsTrigger?.enabled ? 'news_event' : 'technical'),
+        portfolioPosture: expr.contextPack?.portfolioState.posture ?? 'unknown',
+        missing: expr.contextPack?.missing ?? ['contextPack.provider'],
+      })}`;
+      const predictionSignalWeights = resolvePredictionSignalWeights(this.thufirConfig);
+      const predictionSignalScores = buildDiscoverySignalScores({
         side: expr.side,
+        signalClass,
+        confidenceRaw,
+        confidenceWeighted,
+        noveltyScore: expr.newsTrigger?.noveltyScore ?? null,
+        marketConfirmationScore: expr.newsTrigger?.marketConfirmationScore ?? null,
+        executionStatus: expr.contextPack?.executionQuality.status ?? null,
+        portfolioPosture: expr.contextPack?.portfolioState.posture ?? null,
+      });
+      const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
+      const defaultThesisTtlMs =
+        ((this.thufirConfig.autonomy as any)?.newsEntry?.thesisTtlMinutes ?? 120) * 60_000;
+      const timeStopAtMs = expr.newsTrigger?.expiresAtMs ?? Date.now() + defaultThesisTtlMs;
+      const horizonMinutes = Math.max(1, Math.round((timeStopAtMs - Date.now()) / 60_000));
+      const tradeResult = await this.executeSharedPerpOrder({
         symbol,
+        side: expr.side,
         size,
-        orderType: expr.orderType,
+        order_type: expr.orderType,
+        skip_policy_gate: true,
         leverage: targetLeverage,
-        reasoning: `${expr.expectedMove} | edge=${(expr.expectedEdge * 100).toFixed(2)}% confidence=${(
-          confidenceWeighted * 100
-        ).toFixed(1)}% regime=${regime} signal=${signalClass} kelly=${(kellyFraction * 100).toFixed(
-          1
-        )}% snapshotId=${cycleSnapshot.id} snapshotTs=${cycleSnapshot.capturedAtIso} snapshotAgeMs=${snapshotAgeMs} session=${sessionContext.session} sessionWeight=${sessionContext.sessionWeight.toFixed(
-          2
-        )} confidenceRaw=${confidenceRaw.toFixed(3)} confidenceWeighted=${confidenceWeighted.toFixed(
-          3
-        )} sizingModifier=${sizingModifier.toFixed(2)}${policyReasoning ? ` ${policyReasoning}` : ''} ${formatContextPackTrace({
-          marketRegime: expr.contextPack?.regime.marketRegime ?? regime,
-          volatilityBucket: expr.contextPack?.regime.volatilityBucket ?? volatilityBucket,
-          liquidityBucket: expr.contextPack?.regime.liquidityBucket ?? liquidityBucket,
-          executionStatus: expr.contextPack?.executionQuality.status ?? 'unknown',
-          eventKind: expr.contextPack?.event.kind ?? (expr.newsTrigger?.enabled ? 'news_event' : 'technical'),
-          portfolioPosture: expr.contextPack?.portfolioState.posture ?? 'unknown',
-          missing: expr.contextPack?.missing ?? ['contextPack.provider'],
-        })}`,
-      };
-
-      const tradeResult = await this.executor.execute(market, decision);
+        mode: executionMode,
+        hypothesis_id: expr.hypothesisId ?? null,
+        signal_class: signalClass,
+        market_regime: regime,
+        volatility_bucket: volatilityBucket,
+        liquidity_bucket: liquidityBucket,
+        expected_edge: expr.expectedEdge,
+        trade_type: expr.newsTrigger?.enabled ? 'structural' : 'tactical',
+        invalidation_price: finalInvalidationPrice,
+        time_stop_at_ms: timeStopAtMs,
+        thesis_expires_at_ms: expr.newsTrigger?.expiresAtMs ?? timeStopAtMs,
+        confidence: confidenceWeighted,
+        reasoning: decisionReasoning,
+        entry_trigger: expr.newsTrigger?.enabled ? 'news' : 'technical',
+        news_subtype: expr.newsTrigger?.subtype ?? null,
+        news_sources: expr.newsTrigger?.sources ?? null,
+        novelty_score: expr.newsTrigger?.noveltyScore ?? null,
+        market_confirmation_score: expr.newsTrigger?.marketConfirmationScore ?? null,
+        create_learning_prediction: true,
+        prediction_market_title: `${symbol} ${expr.side === 'buy' ? 'long' : 'short'}: quant scan`,
+        prediction_model_probability: confidenceWeighted,
+        prediction_signal_scores: predictionSignalScores,
+        prediction_signal_weights: predictionSignalWeights,
+        prediction_session_tag: sessionContext.session,
+        prediction_regime_tag: regime,
+        prediction_strategy_class: signalClass,
+        prediction_horizon_minutes: horizonMinutes,
+      });
       if (tradeResult.executed) {
         executedCount += 1;
-        this.limiter.confirm(probeUsd);
-        // Write per-position exit policy so the heartbeat knows when to close.
-        const defaultThesisTtlMs =
-          ((this.thufirConfig.autonomy as any)?.newsEntry?.thesisTtlMinutes ?? 120) * 60_000;
-        const timeStopAtMs = expr.newsTrigger?.expiresAtMs ?? Date.now() + defaultThesisTtlMs;
-        let predictionId: string | null = null;
-        try {
-          const predictedOutcome = expr.side === 'buy' ? 'YES' : 'NO';
-          const signalWeightsSnapshot = resolvePredictionSignalWeights(this.thufirConfig);
-          const signalScores = buildDiscoverySignalScores({
-            side: expr.side,
-            signalClass,
-            confidenceRaw,
-            confidenceWeighted,
-            noveltyScore: expr.newsTrigger?.noveltyScore ?? null,
-            marketConfirmationScore: expr.newsTrigger?.marketConfirmationScore ?? null,
-            executionStatus: expr.contextPack?.executionQuality.status ?? null,
-            portfolioPosture: expr.contextPack?.portfolioState.posture ?? null,
-          });
-          predictionId = createPrediction({
-            marketId: `perp:${symbol}`,
-            marketTitle: `${symbol} ${expr.side === 'buy' ? 'long' : 'short'}: quant scan`,
-            predictedOutcome,
-            predictedProbability: confidenceWeighted,
-            modelProbability: confidenceWeighted,
-            signalScores,
-            signalWeightsSnapshot,
-            sessionTag: sessionContext.session,
-            regimeTag: regime,
-            strategyClass: signalClass,
-            symbol,
-            domain: 'perp',
-            learningComparable: false,
-            horizonMinutes: Math.round((timeStopAtMs - Date.now()) / 60_000),
-            executed: true,
-            executionPrice: markPrice || undefined,
-            positionSize: size,
-          });
-          createLearningCase({
-            caseType: 'comparable_forecast',
-            domain: 'perp',
-            entityType: 'symbol',
-            entityId: symbol,
-            comparable: false,
-            comparatorKind: null,
-            exclusionReason: 'missing_comparator',
-            sourcePredictionId: predictionId,
-            belief: {
-              modelProbability: confidenceWeighted,
-              predictedOutcome,
-            },
-            baseline: {
-              marketProbability: null,
-            },
-            context: {
-              horizonMinutes: Math.round((timeStopAtMs - Date.now()) / 60_000),
-              mode: this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper',
-            },
-            action: {
-              side: expr.side,
-              executed: true,
-              executionPrice: markPrice || null,
-              positionSize: size,
-            },
-          });
-        } catch { }
-        try {
-          const side = expr.side === 'buy' ? 'long' : 'short';
-          const exitContract = buildLegacyExitContract({
-            thesis: decision.reasoning ?? `${symbol} ${side} thesis`,
-            side,
-            tradeType: expr.newsTrigger?.enabled ? 'structural' : 'tactical',
-            invalidationPrice: finalInvalidationPrice,
-          });
-          upsertPositionExitPolicy(
-            symbol,
-            side,
-            timeStopAtMs,
-            finalInvalidationPrice,
-            serializeExitContract(exitContract),
-            predictionId
-          );
-        } catch { }
         // Notify on position open.
         if (this.notify) {
           const sideEmoji = expr.side === 'buy' ? '📈' : '📉';
           const ttlMinutes = Math.round((timeStopAtMs - Date.now()) / 60_000);
-          const mode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
           const notifyMsg =
             `${sideEmoji} Opened ${expr.side === 'buy' ? 'LONG' : 'SHORT'} ${symbol}` +
             ` @ $${markPrice > 0 ? markPrice.toFixed(2) : '?'}` +
             ` | size=${size.toPrecision(4)} notional=$${probeUsd.toFixed(2)}` +
             ` | lev=${targetLeverage}x edge=${(expr.expectedEdge * 100).toFixed(1)}%` +
-            ` | ttl=${ttlMinutes}min mode=${mode}`;
+            ` | ttl=${ttlMinutes}min mode=${executionMode}`;
           this.notify(notifyMsg).catch(() => {});
         }
-      } else {
-        this.limiter.release(probeUsd);
       }
       this.scheduleAsyncExecutionEnrichment({
         symbol,
         side: expr.side,
         executed: tradeResult.executed,
         message: tradeResult.message,
-        reasoning: decision.reasoning ?? null,
+        reasoning: decisionReasoning,
       });
       try {
-        const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
-        const tradeId = recordPerpTrade({
-          hypothesisId: expr.hypothesisId,
-          symbol,
-          side: expr.side,
-          size,
-          executionMode,
-          price: markPrice || null,
-          leverage: expr.leverage,
-          orderType: expr.orderType,
-          status: tradeResult.executed ? 'executed' : 'failed',
-        });
+        const tradeId =
+          tradeResult.data?.trade_id != null
+            ? String(tradeResult.data.trade_id)
+            : `${symbol}-${Date.now()}-${randomUUID().slice(0, 8)}`;
         const db = openDatabase();
         db.prepare(`
           INSERT INTO autonomous_trades (
@@ -1999,57 +1588,17 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             @pnl
           )
         `).run({
-          id: String(tradeId),
+          id: tradeId,
           marketId: symbol,
           marketTitle: `${symbol} perp`,
           direction: expr.side,
           amount: probeUsd,
           entryPrice: markPrice || 0,
           confidence: expr.confidence != null ? String(expr.confidence) : null,
-          reasoning: decision.reasoning ?? null,
+          reasoning: decisionReasoning,
           timestamp: new Date().toISOString(),
           outcome: tradeResult.executed ? 'pending' : 'failed',
           pnl: null,
-        });
-        recordPerpTradeJournal({
-          kind: 'perp_trade_journal',
-          execution_mode: executionMode,
-          tradeId,
-          hypothesisId: expr.hypothesisId ?? null,
-          symbol,
-          side: expr.side,
-          size,
-          leverage: targetLeverage ?? null,
-          orderType: expr.orderType ?? null,
-          reduceOnly: false,
-          markPrice: markPrice || null,
-          confidence: String(confidenceWeighted),
-          reasoning: decision.reasoning ?? null,
-          policyReasonCode: globalGate.reasonCode ?? null,
-          policyReason: globalGate.reason ?? null,
-          policySizeMultiplier: policySizeMultiplier < 1 ? policySizeMultiplier : null,
-          entryGateVerdict,
-          entryGateReasonCode,
-          signalClass,
-          symbolClass,
-          marketRegime: regime,
-          volatilityBucket,
-          liquidityBucket,
-          expectedEdge: expr.expectedEdge,
-          thesisCorrect: tradeResult.executed ? null : false,
-          entryTrigger: expr.newsTrigger?.enabled ? 'news' : 'technical',
-          newsSubtype: expr.newsTrigger?.subtype ?? null,
-          newsSources: Array.isArray(expr.newsTrigger?.sources)
-            ? expr.newsTrigger?.sources
-                .map((source) => String(source.ref ?? source.source ?? '').trim())
-                .filter((source) => source.length > 0)
-            : null,
-          newsSourceCount: Array.isArray(expr.newsTrigger?.sources) ? expr.newsTrigger.sources.length : null,
-          noveltyScore: expr.newsTrigger?.noveltyScore ?? null,
-          marketConfirmationScore: expr.newsTrigger?.marketConfirmationScore ?? null,
-          thesisExpiresAtMs: expr.newsTrigger?.expiresAtMs ?? null,
-          outcome: tradeResult.executed ? 'executed' : 'failed',
-          message: tradeResult.message,
         });
       } catch {
         // Best-effort journaling: never block trading due to local DB issues.

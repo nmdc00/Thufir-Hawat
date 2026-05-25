@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const executeToolCall = vi.fn(async () => ({
+  success: true,
+  data: { executed: true, message: 'ok' },
+}));
 const dbRun = vi.fn(() => ({}));
 const dbPrepare = vi.fn((sql: string) => {
   if (sql.includes('COUNT(*)')) {
@@ -94,7 +98,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
     policyState: {},
   }),
   evaluateNewsEntryGate: () => ({ allowed: true }),
-  inferBroadMarketPosture: () => 'neutral',
   isSignalClassAllowedForRegime: () => true,
   resolveLiquidityBucket: () => 'normal',
   resolveVolatilityBucket: () => 'medium',
@@ -102,7 +105,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
-  summarizeComparableSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
 }));
 
 vi.mock('../../src/memory/autonomy_policy_state.js', () => ({
@@ -146,7 +148,20 @@ vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
   recordEntryGateDecision: vi.fn(),
 }));
 
+vi.mock('../../src/core/tool-executor.js', () => ({
+  executeToolCall,
+}));
+
 describe('AutonomousManager mechanical expression selection', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-02-16T14:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('selects highest-edge expression first without LLM selection call', async () => {
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     const executor = {
@@ -166,7 +181,7 @@ describe('AutonomousManager mechanical expression selection', () => {
 
     const gateLlm = {
       complete: vi.fn(async () => ({
-        content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }),
+        content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: 980, equityAtRiskPct: 2.5, targetRR: 2.0 }),
         model: 'test',
       })),
     } as any;
@@ -185,9 +200,9 @@ describe('AutonomousManager mechanical expression selection', () => {
 
     await manager.runScan();
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    const firstDecision = executor.execute.mock.calls[0]?.[1];
-    expect(firstDecision?.symbol).toBe('BTC');
-    expect(firstDecision?.size).toBeCloseTo(0.0115, 8);
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
+    const firstToolInput = executeToolCall.mock.calls[0]?.[1];
+    expect(firstToolInput?.symbol).toBe('BTC');
+    expect(Number(firstToolInput?.size ?? 0)).toBeCloseTo(0.0115, 8);
   }, 20000);
 });

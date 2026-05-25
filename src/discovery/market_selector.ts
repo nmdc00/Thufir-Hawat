@@ -13,8 +13,6 @@ type MarketRow = {
 
 export interface DiscoveryCandidate {
   symbol: string;
-  assetClass: 'crypto' | 'cross_asset';
-  marketDisplay: string;
   score: number;
   liquidityScore: number;
   executionScore: number;
@@ -23,8 +21,6 @@ export interface DiscoveryCandidate {
   dayVolumeUsd: number;
   fundingRate: number;
   spreadProxyBps: number;
-  markPx: number;
-  oraclePx: number;
 }
 
 function toNumber(value: unknown): number {
@@ -42,10 +38,6 @@ function normalizeSymbol(symbol: string): string {
 
 function uniq(values: string[]): string[] {
   return Array.from(new Set(values.map(normalizeSymbol).filter(Boolean)));
-}
-
-function resolveAssetClass(symbol: string): 'crypto' | 'cross_asset' {
-  return symbol.includes(':') ? 'cross_asset' : 'crypto';
 }
 
 export function getConfiguredDiscoveryUniverse(config: ThufirConfig): string[] {
@@ -69,8 +61,6 @@ function scoreRows(rows: MarketRow[]): DiscoveryCandidate[] {
       const score = clamp01(liquidityScore * 0.65 + executionScore * 0.25 + fundingScore * 0.1);
       return {
         symbol: row.symbol,
-        assetClass: resolveAssetClass(row.symbol),
-        marketDisplay: row.symbol,
         score,
         liquidityScore,
         executionScore,
@@ -79,8 +69,6 @@ function scoreRows(rows: MarketRow[]): DiscoveryCandidate[] {
         dayVolumeUsd: row.dayVolumeUsd,
         fundingRate: row.fundingRate,
         spreadProxyBps: row.spreadProxyBps,
-        markPx: row.markPx,
-        oraclePx: row.oraclePx,
       };
     })
     .sort((a, b) => {
@@ -104,8 +92,6 @@ export async function selectDiscoveryMarkets(
     const base = configured.length > 0 ? configured : ['BTC', 'ETH'];
     return base.map((symbol) => ({
       symbol,
-      assetClass: resolveAssetClass(symbol),
-      marketDisplay: symbol,
       score: 1,
       liquidityScore: 1,
       executionScore: 1,
@@ -114,8 +100,6 @@ export async function selectDiscoveryMarkets(
       dayVolumeUsd: 0,
       fundingRate: 0,
       spreadProxyBps: 0,
-      markPx: 0,
-      oraclePx: 0,
     }));
   })();
 

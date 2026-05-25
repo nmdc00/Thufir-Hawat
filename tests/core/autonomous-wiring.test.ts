@@ -8,7 +8,7 @@
  * - Gate reject / resize
  * - Exit policy uses LLM TTL and invalidation price
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ── Hoisted mock functions (available before vi.mock calls) ───────────────────
 
@@ -33,13 +33,12 @@ const mocks = vi.hoisted(() => {
     expressions: [],
     selector: { source: 'configured', symbols: [] },
   }));
-  const recordOpportunityRankScan = vi.fn();
 
   // Stable mock objects — replaced entirely on each TaSurface/OriginationTrigger/LlmTradeOriginator construction
   // by capturing via the constructor mock
   const taSurfaceInstance = {
     computeAll: (...args: unknown[]) => taComputeAll(...args),
-    hasAlert: (snap: any) => Array.isArray(snap.triggerReasons) && snap.triggerReasons.length > 0,
+    hasAlert: (snap: any) => snap.alertReason !== undefined,
   };
   const triggerInstance = {
     shouldFire: (...args: unknown[]) => triggerShouldFire(...args),
@@ -52,7 +51,7 @@ const mocks = vi.hoisted(() => {
     dbRun, dbPrepare, dbExec,
     taComputeAll, triggerShouldFire, originatorPropose,
     upsertExitPolicy, updateTradeProposalOutcome, updateTradeProposalStatus,
-    updateTradeProposalStatus, createPrediction, runDiscovery, recordOpportunityRankScan,
+    createPrediction, runDiscovery,
     taSurfaceInstance, triggerInstance, originatorInstance,
   };
 });
@@ -85,10 +84,6 @@ vi.mock('../../src/memory/llm_trade_proposals.js', () => ({
   updateTradeProposalStatus: (...args: unknown[]) => mocks.updateTradeProposalStatus(...args),
 }));
 
-vi.mock('../../src/memory/opportunity_rank_logs.js', () => ({
-  recordOpportunityRankScan: (...args: unknown[]) => mocks.recordOpportunityRankScan(...args),
-}));
-
 vi.mock('../../src/discovery/engine.js', () => ({
   runDiscovery: (...args: unknown[]) => mocks.runDiscovery(...args),
 }));
@@ -97,8 +92,8 @@ vi.mock('../../src/discovery/market_selector.js', () => ({
   selectDiscoveryMarkets: vi.fn(async () => ({
     source: 'full_universe' as const,
     candidates: [
-      { symbol: 'BTC', assetClass: 'crypto', marketDisplay: 'BTC', score: 1, liquidityScore: 1, executionScore: 1, fundingScore: 1, openInterestUsd: 1e9, dayVolumeUsd: 1e8, fundingRate: 0, spreadProxyBps: 0, markPx: 70000, oraclePx: 70000 },
-      { symbol: 'ETH', assetClass: 'crypto', marketDisplay: 'ETH', score: 0.9, liquidityScore: 1, executionScore: 1, fundingScore: 1, openInterestUsd: 5e8, dayVolumeUsd: 5e7, fundingRate: 0, spreadProxyBps: 0, markPx: 3500, oraclePx: 3500 },
+      { symbol: 'BTC', score: 1, liquidityScore: 1, executionScore: 1, fundingScore: 1, openInterestUsd: 1e9, dayVolumeUsd: 1e8, fundingRate: 0, spreadProxyBps: 0 },
+      { symbol: 'ETH', score: 0.9, liquidityScore: 1, executionScore: 1, fundingScore: 1, openInterestUsd: 5e8, dayVolumeUsd: 5e7, fundingRate: 0, spreadProxyBps: 0 },
     ],
   })),
 }));
@@ -130,7 +125,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: vi.fn(() => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 })),
-  summarizeComparableSignalPerformance: vi.fn(() => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 })),
 }));
 
 vi.mock('../../src/memory/autonomy_policy_state.js', () => ({
@@ -238,18 +232,6 @@ const BASE_SNAPSHOT = {
   volumeVs24hAvgPct: 200,
   priceVsEma20_1h: 1.5,
   trendBias: 'up' as const,
-  triggerReasons: ['oi_spike_1h:12.0%', 'volume_spike:200.0%'],
-  rawFeatures: {
-    priceVs24hHighPct: -1,
-    priceVs24hLowPct: 5,
-    oiUsd: 1_000_000,
-    oiDelta1hPct: 12,
-    oiDelta4hPct: 5,
-    fundingRateAnnualPct: 10,
-    volumeVs24hAvgPct: 200,
-    priceVsEma20_1hPct: 1.5,
-    trendBias: 'up' as const,
-  },
   alertReason: 'oi_spike_1h:12.0%',
 };
 
@@ -263,6 +245,8 @@ const BASE_PROPOSAL = {
   invalidationPrice: 68000,
   suggestedTtlMinutes: 45,
   confidence: 0.72,
+  expectedRMultiple: 2.4,
+  tradeType: 'tactical' as const,
 };
 
 const baseConfig = {
@@ -290,6 +274,8 @@ const baseConfig = {
 
 describe('AutonomousManager — originator wiring (v1.98)', () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-02-16T14:00:00.000Z'));
     // Reset call history only (not implementations)
     vi.clearAllMocks();
     // Restore default behaviors
@@ -303,6 +289,10 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
       expressions: [],
       selector: { source: 'configured', symbols: [] },
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('1. proposal → gate approve → executor called, exit policy written with LLM TTL and invalidation price', async () => {
@@ -354,44 +344,37 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     }));
     expect(mocks.updateTradeProposalOutcome).toHaveBeenCalledWith(42, 'approve', true);
 
+    expect(llm.complete).toHaveBeenCalledTimes(1);
+    const messages = llm.complete.mock.calls[0]![0] as Array<{ role: string; content: string }>;
+    const userContent = messages.find((message) => message.role === 'user')?.content ?? '';
+    expect(userContent).toContain('Market Structure Context');
+    expect(userContent).toContain('Mechanical leverage ceiling');
+    expect(userContent).toContain('Liquidity bucket');
+    expect(userContent).toContain('Trigger reason: ta_alert');
+
     expect(result).toContain('paper ok');
   });
 
-  it('1b. builds a ranked shortlist before origination and passes it to trigger + originator', async () => {
+  it('1b. originator gate prompt carries derived selector, TA, and stop context', async () => {
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     const llm = makeGateLlm('approve');
-    const executor = { execute: vi.fn(async () => ({ executed: false, message: 'paper skipped' })) } as any;
+    const executor = { execute: vi.fn(async () => ({ executed: true, message: 'paper ok' })) } as any;
     const marketClient = { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: { maxLeverage: 10 } }) } as any;
     const limiter = makeLimiter();
 
     const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
     await manager.runScan({ forceExecute: true });
 
-    expect(mocks.triggerShouldFire).toHaveBeenCalledTimes(1);
-    const shortlist = mocks.triggerShouldFire.mock.calls[0]![3] as Array<Record<string, unknown>>;
-    expect(Array.isArray(shortlist)).toBe(true);
-    expect(shortlist[0]).toMatchObject({
-      symbol: 'BTC',
-      rank: 1,
-      symbolClass: 'crypto',
-    });
+    expect(llm.complete).toHaveBeenCalledTimes(1);
+    const messages = llm.complete.mock.calls[0]![0] as Array<{ role: string; content: string }>;
+    const userPrompt = messages.find((message) => message.role === 'user')?.content ?? '';
 
-    const bundle = mocks.originatorPropose.mock.calls[0]![0] as Record<string, any>;
-    expect(bundle.rankedOpportunities[0]).toMatchObject({
-      symbol: 'BTC',
-      rank: 1,
-    });
-    expect(bundle.rankedOpportunities[0].triggerReasons).toEqual(
-      expect.arrayContaining(['oi_spike_1h:12.0%', 'volume_spike:200.0%'])
-    );
-    expect(bundle.rankedOpportunities[0].componentScores.structuralEdgeScore).toBeGreaterThan(0);
-    expect(mocks.recordOpportunityRankScan).toHaveBeenCalledTimes(1);
-    expect(mocks.recordOpportunityRankScan.mock.calls[0]![0]).toMatchObject({
-      source: 'autonomous_originator_scan',
-      totalCandidates: 1,
-      eligibleCandidates: 1,
-      selectedSymbol: 'BTC',
-    });
+    expect(userPrompt).toContain('Regime: high_vol_expansion | vol=high | liq=deep | exec=good');
+    expect(userPrompt).toContain('Edge: 7.03%');
+    expect(userPrompt).toContain('selector=1.00');
+    expect(userPrompt).toContain('stop=2.86%');
+    expect(userPrompt).not.toContain('Regime: unknown');
+    expect(userPrompt).not.toContain('Edge: 10.00%');
   });
 
   it('1c. enriched originator handoff passes selector, TA, and stop geometry into the gate prompt', async () => {

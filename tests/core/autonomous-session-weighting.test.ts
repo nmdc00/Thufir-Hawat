@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const recordPerpTradeJournal = vi.fn();
 const recordPerpTrade = vi.fn(() => 1);
+const executeToolCall = vi.fn(async () => ({
+  success: true,
+  data: { executed: true, message: 'ok' },
+}));
 const dbRun = vi.fn(() => ({}));
 const dbPrepare = vi.fn((sql: string) => {
   if (sql.includes('COUNT(*)')) {
@@ -65,7 +69,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
   computeFractionalKellyFraction: () => 0.25,
   evaluateGlobalTradeGate: () => ({ allowed: true, policyState: {} }),
   evaluateNewsEntryGate: () => ({ allowed: true }),
-  inferBroadMarketPosture: () => 'neutral',
   isSignalClassAllowedForRegime: () => true,
   resolveLiquidityBucket: () => 'normal',
   resolveVolatilityBucket: () => 'medium',
@@ -73,7 +76,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
-  summarizeComparableSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
 }));
 
 vi.mock('../../src/memory/autonomy_policy_state.js', () => ({
@@ -117,6 +119,10 @@ vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
   recordEntryGateDecision: vi.fn(),
 }));
 
+vi.mock('../../src/core/tool-executor.js', () => ({
+  executeToolCall,
+}));
+
 async function createManager(limiter: any, executor: any) {
   const { AutonomousManager } = await import('../../src/core/autonomous.js');
   const marketClient = {
@@ -124,7 +130,7 @@ async function createManager(limiter: any, executor: any) {
   } as any;
   const gateLlm = {
     complete: vi.fn(async () => ({
-      content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }),
+      content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: 68000, equityAtRiskPct: 2.5, targetRR: 2.0 }),
       model: 'test',
     })),
   } as any;
@@ -165,11 +171,11 @@ describe('AutonomousManager session weighting', () => {
 
     vi.setSystemTime(new Date('2026-02-14T02:00:00.000Z')); // weekend
     await manager.runScan();
-    const weekendReasoning = String(executor.execute.mock.calls[0]?.[1]?.reasoning ?? '');
+    const weekendReasoning = String(executeToolCall.mock.calls[0]?.[1]?.reasoning ?? '');
 
     vi.setSystemTime(new Date('2026-02-16T14:00:00.000Z')); // us_open
     await manager.runScan();
-    const usOpenReasoning = String(executor.execute.mock.calls[1]?.[1]?.reasoning ?? '');
+    const usOpenReasoning = String(executeToolCall.mock.calls[1]?.[1]?.reasoning ?? '');
 
     expect(weekendReasoning).toContain('session=weekend');
     expect(weekendReasoning).toContain('confidenceWeighted=0.520');
@@ -193,11 +199,13 @@ describe('AutonomousManager session weighting', () => {
 
     vi.setSystemTime(new Date('2026-02-14T02:00:00.000Z')); // weekend weight 0.65
     await manager.runScan();
-    const weekendReservedUsd = Number(limiter.checkAndReserve.mock.calls[0]?.[0] ?? 0);
+    const weekendSize = Number(executeToolCall.mock.calls[0]?.[1]?.size ?? 0);
 
     vi.setSystemTime(new Date('2026-02-16T14:00:00.000Z')); // us_open weight 1.15
     await manager.runScan();
-    const usOpenReservedUsd = Number(limiter.checkAndReserve.mock.calls[1]?.[0] ?? 0);
+    const usOpenSize = Number(executeToolCall.mock.calls[1]?.[1]?.size ?? 0);
+    const weekendReservedUsd = weekendSize * 70000;
+    const usOpenReservedUsd = usOpenSize * 70000;
 
     expect(weekendReservedUsd).toBeCloseTo(13, 6);
     expect(usOpenReservedUsd).toBeCloseTo(23, 6);
