@@ -103,6 +103,21 @@ The target architecture for perp trades is now:
 3. shared path performs validation, execution, and lifecycle finalization
 4. backend adapter only executes/simulates
 
+### Post-Refactor Cleanup
+
+After the main parity refactor shipped, a follow-up hotfix removed a remaining source of drift:
+
+- [src/core/tool-executor.ts](../src/core/tool-executor.ts) had retained local copies of paper/perp helper logic
+- the canonical extracted helpers already existed in:
+  - [src/core/perp_lifecycle.ts](../src/core/perp_lifecycle.ts)
+  - [src/core/tool_executor_paper.ts](../src/core/tool_executor_paper.ts)
+
+The runtime now imports and uses those canonical modules directly, so:
+
+- the tested helper modules and the live `perp_place_order` path are the same code
+- duplicate helper ownership inside `tool-executor` is removed
+- future helper changes only need to be made in one place
+
 ### 1. `PaperExecutor` is now backend-only for perps
 
 Current behavior in:
