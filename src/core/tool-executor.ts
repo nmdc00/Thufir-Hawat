@@ -25,7 +25,11 @@ import {
   setActivePerpPositionLifecycle,
 } from '../memory/perp_trades.js';
 import { createLearningCase } from '../memory/learning_cases.js';
-import { recordPerpTradeJournal, listPerpTradeJournals } from '../memory/perp_trade_journal.js';
+import {
+  recordPerpTradeJournal,
+  listPerpTradeJournals,
+  type PerpTradeJournalEntry,
+} from '../memory/perp_trade_journal.js';
 import { createPrediction, findOpenPerpPrediction, findOpenPerpPredictionById } from '../memory/predictions.js';
 import { recordDecisionAudit } from '../memory/decision_audit.js';
 import { storeDecisionArtifact } from '../memory/decision_artifacts.js';
@@ -149,6 +153,7 @@ type PerpOrderRealizedFee = {
   realized_fee_token: string | null;
   realized_fill_count: number;
   realized_order_id: number | null;
+  realized_order_ref: string | null;
   realized_fill_time_ms: number | null;
   error?: string | null;
 };
@@ -158,6 +163,18 @@ type PerpOrderRealizedCloseSummary = PerpOrderRealizedFee & {
   net_realized_pnl_usd: number | null;
 };
 
+type PerpCanonicalCloseSummary = {
+  basis: 'normalized_round_trip';
+  realizedPnlUsd: number | null;
+  closeFeeUsd: number | null;
+  entryFeeUsd: number | null;
+  netRealizedPnlUsd: number | null;
+  orderId: number | null;
+  orderRef: string | null;
+  fillCount: number;
+  closeFillCount: number;
+  entryFillCount: number;
+};
 function validateLiveBookPolicy(config: ThufirConfig, symbol: string): string | null {
   const allowlist = (config.paper?.liveSymbolsAllowlist ?? []).map((entry) => entry.trim().toUpperCase());
   const normalizedSymbol = symbol.trim().toUpperCase();
@@ -671,15 +688,6 @@ type ReduceOnlyPositionSnapshot = {
   size: number;
 };
 
-type PerpCloseResolutionSummary = {
-  netRealizedPnlUsd: number | null;
-  realizedPnlUsd: number | null;
-  feeUsd: number | null;
-  orderId: number | string | null;
-  fillCount: number | null;
-  basis: 'paper_executor' | 'live_fill_lookup';
-};
-
 async function getPerpPositionSnapshotForLifecycle(params: {
   config: ThufirConfig;
   symbol: string;
@@ -729,11 +737,12 @@ async function getReduceOnlyPositionSnapshot(
 
 async function maybeResolvePerpPredictionFromClose(params: {
   ctx: ToolExecutorContext;
-  mode: 'live' | 'paper';
   symbol: string;
   reduceOnly: boolean;
+  lifecycleTradeId?: number | null;
   positionBefore: ReduceOnlyPositionSnapshot | null;
   positionAfter: ReduceOnlyPositionSnapshot | null;
+  closeSummary: PerpCanonicalCloseSummary;
   linkedPredictionId?: string | null;
 }): Promise<void> {
   if (!params.reduceOnly || params.positionBefore == null) {
@@ -750,18 +759,14 @@ async function maybeResolvePerpPredictionFromClose(params: {
   if (!openPrediction) {
     return;
   }
-
-  const closeSummary = await resolvePerpCloseSummary({
-    ctx: params.ctx,
-    mode: params.mode,
-    symbol: params.symbol,
-    predictionCreatedAt: openPrediction.createdAt,
-  });
-  if (closeSummary.netRealizedPnlUsd == null || !Number.isFinite(closeSummary.netRealizedPnlUsd)) {
+  if (
+    params.closeSummary.netRealizedPnlUsd == null ||
+    !Number.isFinite(params.closeSummary.netRealizedPnlUsd)
+  ) {
     return;
   }
 
-  const thesisWorked = closeSummary.netRealizedPnlUsd > 0;
+  const thesisWorked = params.closeSummary.netRealizedPnlUsd > 0;
   const outcome = thesisWorked
     ? openPrediction.predictedOutcome
     : (openPrediction.predictedOutcome === 'YES' ? 'NO' : 'YES');
@@ -770,73 +775,86 @@ async function maybeResolvePerpPredictionFromClose(params: {
     id: openPrediction.id,
     outcome,
     outcomeBasis: 'final',
-    pnl: closeSummary.netRealizedPnlUsd,
+    pnl: params.closeSummary.netRealizedPnlUsd,
     resolutionMetadata: {
       basis: 'realized_net_pnl_close',
       symbol: params.symbol,
-      closeBasis: closeSummary.basis,
-      realizedPnlUsd: closeSummary.realizedPnlUsd,
-      feeUsd: closeSummary.feeUsd,
-      netRealizedPnlUsd: closeSummary.netRealizedPnlUsd,
-      orderId: closeSummary.orderId,
-      fillCount: closeSummary.fillCount,
+      closeBasis: params.closeSummary.basis,
+      realizedPnlUsd: params.closeSummary.realizedPnlUsd,
+      closeFeeUsd: params.closeSummary.closeFeeUsd,
+      entryFeeUsd: params.closeSummary.entryFeeUsd,
+      feeUsd:
+        (params.closeSummary.closeFeeUsd ?? 0) + (params.closeSummary.entryFeeUsd ?? 0),
+      netRealizedPnlUsd: params.closeSummary.netRealizedPnlUsd,
+      orderId: params.closeSummary.orderId,
+      orderRef: params.closeSummary.orderRef,
+      fillCount: params.closeSummary.fillCount,
+      closeFillCount: params.closeSummary.closeFillCount,
+      entryFillCount: params.closeSummary.entryFillCount,
       resolvedAt: new Date().toISOString(),
     },
   });
 }
 
-async function resolvePerpCloseSummary(params: {
-  ctx: ToolExecutorContext;
-  mode: 'live' | 'paper';
+function findOpenPerpTradeJournal(params: {
   symbol: string;
-  predictionCreatedAt: string;
-}): Promise<PerpCloseResolutionSummary> {
-  const predictionStartMs = parseTimestampMs(params.predictionCreatedAt);
-  const effectiveStartMs = Number.isFinite(predictionStartMs)
-    ? Math.max(0, predictionStartMs - 5_000)
-    : Date.now() - 86_400_000;
-
-  if (params.mode === 'paper') {
-    const fills = listPaperPerpFills(
-      { symbol: params.symbol, limit: 100 },
-      params.ctx.config.paper?.initialCashUsdc ?? 200
-    ).filter((fill) => parseTimestampMs(fill.createdAt) >= effectiveStartMs);
-    if (fills.length === 0) {
-      return {
-        netRealizedPnlUsd: null,
-        realizedPnlUsd: null,
-        feeUsd: null,
-        orderId: null,
-        fillCount: 0,
-        basis: 'paper_executor',
-      };
-    }
-    const realizedPnlUsd = fills.reduce((sum, fill) => sum + fill.realizedPnlUsd, 0);
-    const feeUsd = fills.reduce((sum, fill) => sum + fill.feeUsd, 0);
-    const latestFill = fills.reduce((acc, fill) =>
-      parseTimestampMs(fill.createdAt) > parseTimestampMs(acc.createdAt) ? fill : acc
+  lifecycleTradeId?: number | null;
+}): PerpTradeJournalEntry | null {
+  const entries = listPerpTradeJournals({ symbol: params.symbol, limit: 50 });
+  if (params.lifecycleTradeId != null) {
+    const byTrade = entries.find(
+      (entry) =>
+        entry.outcome === 'executed' &&
+        entry.reduceOnly !== true &&
+        entry.tradeId === params.lifecycleTradeId
     );
-    return {
-      netRealizedPnlUsd: realizedPnlUsd - feeUsd,
-      realizedPnlUsd,
-      feeUsd,
-      orderId: latestFill.orderId,
-      fillCount: fills.length,
-      basis: 'paper_executor',
-    };
+    if (byTrade) {
+      return byTrade;
+    }
   }
+  return (
+    entries.find((entry) => entry.outcome === 'executed' && entry.reduceOnly !== true) ?? null
+  );
+}
 
-  const liveSummary = await fetchRealizedPerpCloseSummary(params.ctx, {
+function buildCanonicalPerpCloseSummary(params: {
+  symbol: string;
+  lifecycleTradeId?: number | null;
+  closeObservation: PerpOrderRealizedCloseSummary;
+}): PerpCanonicalCloseSummary {
+  const openJournal = findOpenPerpTradeJournal({
     symbol: params.symbol,
-    startTimeMs: effectiveStartMs,
+    lifecycleTradeId: params.lifecycleTradeId,
   });
+  const entryFeeUsd =
+    typeof openJournal?.realizedFeeUsd === 'number' && Number.isFinite(openJournal.realizedFeeUsd)
+      ? openJournal.realizedFeeUsd
+      : 0;
+  const entryFillCount =
+    typeof openJournal?.realizedFillCount === 'number' && Number.isFinite(openJournal.realizedFillCount)
+      ? openJournal.realizedFillCount
+      : 0;
+  const closeFeeUsd =
+    typeof params.closeObservation.realized_fee_usd === 'number' &&
+    Number.isFinite(params.closeObservation.realized_fee_usd)
+      ? params.closeObservation.realized_fee_usd
+      : 0;
+  const closePnlUsd =
+    typeof params.closeObservation.realized_pnl_usd === 'number' &&
+    Number.isFinite(params.closeObservation.realized_pnl_usd)
+      ? params.closeObservation.realized_pnl_usd
+      : null;
   return {
-    netRealizedPnlUsd: liveSummary.net_realized_pnl_usd,
-    realizedPnlUsd: liveSummary.realized_pnl_usd,
-    feeUsd: liveSummary.realized_fee_usd,
-    orderId: liveSummary.realized_order_id,
-    fillCount: liveSummary.realized_fill_count,
-    basis: 'live_fill_lookup',
+    basis: 'normalized_round_trip',
+    realizedPnlUsd: closePnlUsd,
+    closeFeeUsd,
+    entryFeeUsd,
+    netRealizedPnlUsd: closePnlUsd == null ? null : closePnlUsd - closeFeeUsd - entryFeeUsd,
+    orderId: params.closeObservation.realized_order_id,
+    orderRef: params.closeObservation.realized_order_ref,
+    fillCount: entryFillCount + params.closeObservation.realized_fill_count,
+    closeFillCount: params.closeObservation.realized_fill_count,
+    entryFillCount,
   };
 }
 
@@ -2398,13 +2416,19 @@ export async function executeToolCall(
             lifecycleTradeId = null;
           }
         }
-        const inferredOrderId = parseOrderIdFromResultMessage(result.message);
-        const realizedFee = await fetchRealizedPerpFee(ctx, {
+        const realizedObservation = await normalizeRealizedPerpObservation(ctx, {
           symbol,
-          side: side as 'buy' | 'sell',
-          orderId: inferredOrderId,
+          result,
           startTimeMs: Math.max(0, executionStartMs - 10_000),
         });
+        const canonicalCloseSummary =
+          reduceOnly && positionBefore != null && (positionAfter == null || (positionAfter.size ?? 0) === 0)
+            ? buildCanonicalPerpCloseSummary({
+                symbol,
+                lifecycleTradeId,
+                closeObservation: realizedObservation,
+              })
+            : null;
         let componentScores:
           | {
               directionScore: number;
@@ -2544,12 +2568,13 @@ export async function executeToolCall(
             left_on_table_r: componentScores?.leftOnTableR ?? null,
             would_hit_2r: componentScores?.wouldHit2R ?? null,
             would_hit_3r: componentScores?.wouldHit3R ?? null,
-            realizedFeeUsd: realizedFee.realized_fee_usd,
-            realizedFeeToken: realizedFee.realized_fee_token,
-            realizedFillCount: realizedFee.realized_fill_count,
-            realizedOrderId: realizedFee.realized_order_id,
-            realizedFillTimeMs: realizedFee.realized_fill_time_ms,
-            feeObservationError: realizedFee.error ?? null,
+            realizedFeeUsd: realizedObservation.realized_fee_usd,
+            realizedFeeToken: realizedObservation.realized_fee_token,
+            realizedFillCount: realizedObservation.realized_fill_count,
+            realizedOrderId: realizedObservation.realized_order_id,
+            realizedOrderRef: realizedObservation.realized_order_ref,
+            realizedFillTimeMs: realizedObservation.realized_fill_time_ms,
+            feeObservationError: realizedObservation.error ?? null,
             snapshot: executedSnapshot,
             planContext,
             outcome: 'executed',
@@ -2594,12 +2619,12 @@ export async function executeToolCall(
               thesisCorrect: exitAssessment.thesisCorrect,
               thesisInvalidationHit: exitAssessment.thesisInvalidationHit,
               exitMode: exitAssessment.exitMode,
-              realizedPnlUsd: result.realizedPnlUsd ?? null,
-              netRealizedPnlUsd:
-                typeof result.realizedPnlUsd === 'number'
-                  ? result.realizedPnlUsd - (realizedFee.realized_fee_usd ?? 0)
-                  : null,
-              realizedFeeUsd: realizedFee.realized_fee_usd,
+              realizedPnlUsd: canonicalCloseSummary?.realizedPnlUsd ?? realizedObservation.realized_pnl_usd ?? null,
+              netRealizedPnlUsd: canonicalCloseSummary?.netRealizedPnlUsd ?? realizedObservation.net_realized_pnl_usd ?? null,
+              realizedFeeUsd:
+                canonicalCloseSummary == null
+                  ? realizedObservation.realized_fee_usd
+                  : (canonicalCloseSummary.closeFeeUsd ?? 0) + (canonicalCloseSummary.entryFeeUsd ?? 0),
               directionScore: componentScores?.directionScore ?? null,
               timingScore: componentScores?.timingScore ?? null,
               sizingScore: componentScores?.sizingScore ?? null,
@@ -2694,11 +2719,18 @@ export async function executeToolCall(
         try {
           await maybeResolvePerpPredictionFromClose({
             ctx,
-            mode: bookMode,
             symbol,
             reduceOnly,
+            lifecycleTradeId,
             positionBefore,
             positionAfter,
+            closeSummary:
+              canonicalCloseSummary ??
+              buildCanonicalPerpCloseSummary({
+                symbol,
+                lifecycleTradeId,
+                closeObservation: realizedObservation,
+              }),
             linkedPredictionId: activeExitPolicy?.predictionId ?? null,
           });
         } catch {
@@ -2733,7 +2765,13 @@ export async function executeToolCall(
             },
             fees: {
               ...feeEstimate,
-              ...realizedFee,
+              realized_fee_usd: realizedObservation.realized_fee_usd,
+              realized_fee_token: realizedObservation.realized_fee_token,
+              realized_fill_count: realizedObservation.realized_fill_count,
+              realized_order_id: realizedObservation.realized_order_id,
+              realized_order_ref: realizedObservation.realized_order_ref,
+              realized_fill_time_ms: realizedObservation.realized_fill_time_ms,
+              observation_error: realizedObservation.error ?? null,
             },
             execution_attempts: execution.attempts,
           },
@@ -4034,6 +4072,14 @@ function parseOrderIdFromResultMessage(message: string | undefined): number | nu
   return Number.isFinite(orderId) ? orderId : null;
 }
 
+function parseOrderRef(result: TradeResult): string | null {
+  if (typeof result.orderId === 'string' && result.orderId.trim().length > 0) {
+    return result.orderId.trim();
+  }
+  const inferredOrderId = parseOrderIdFromResultMessage(result.message);
+  return inferredOrderId != null ? String(inferredOrderId) : null;
+}
+
 function parseTimestampMs(value: string | null | undefined): number {
   if (typeof value !== 'string' || value.trim().length === 0) {
     return NaN;
@@ -4045,23 +4091,108 @@ function parseTimestampMs(value: string | null | undefined): number {
   return Date.parse(value);
 }
 
-async function fetchRealizedPerpFee(
+async function normalizeRealizedPerpObservation(
   ctx: ToolExecutorContext,
   params: {
     symbol: string;
-    side: 'buy' | 'sell';
+    result: TradeResult;
     startTimeMs: number;
-    orderId?: number | null;
   }
-): Promise<PerpOrderRealizedFee> {
-  const summary = await fetchRealizedPerpCloseSummary(ctx, params);
+): Promise<PerpOrderRealizedCloseSummary> {
+  const inferredOrderId = parseOrderIdFromResultMessage(params.result.message);
+  const directOrderId =
+    typeof params.result.orderId === 'string' && /^\d+$/.test(params.result.orderId.trim())
+      ? Number(params.result.orderId.trim())
+      : null;
+  const orderId = directOrderId ?? inferredOrderId ?? null;
+  const orderRef = parseOrderRef(params.result);
+  const directFillCount =
+    typeof params.result.fillCount === 'number' && Number.isFinite(params.result.fillCount)
+      ? Math.max(0, params.result.fillCount)
+      : params.result.executed &&
+          (params.result.feeUsd != null ||
+            params.result.realizedPnlUsd != null ||
+            (orderRef != null && orderRef.startsWith('paper-')))
+        ? 1
+        : 0;
+  const paperFill =
+    orderRef != null && orderRef.startsWith('paper-')
+      ? listPaperPerpFills(
+          { symbol: params.symbol, limit: 5 },
+          ctx.config.paper?.initialCashUsdc ?? 200
+        ).find((fill) => fill.orderId === orderRef)
+      : null;
+  const direct: PerpOrderRealizedCloseSummary = {
+    realized_fee_usd:
+      typeof params.result.feeUsd === 'number' && Number.isFinite(params.result.feeUsd)
+        ? params.result.feeUsd
+        : null,
+    realized_fee_token:
+      typeof params.result.feeToken === 'string' && params.result.feeToken.trim().length > 0
+        ? params.result.feeToken.trim()
+        : params.result.executed && params.result.feeUsd != null
+          ? 'USDC'
+          : null,
+    realized_fill_count: directFillCount,
+    realized_order_id: orderId ?? (paperFill?.id ?? null),
+    realized_order_ref: orderRef,
+    realized_fill_time_ms:
+      typeof params.result.fillTimeMs === 'number' && Number.isFinite(params.result.fillTimeMs)
+        ? params.result.fillTimeMs
+        : paperFill
+          ? parseTimestampMs(paperFill.createdAt)
+        : params.result.executed && orderRef != null
+          ? Date.now()
+          : null,
+    realized_pnl_usd:
+      typeof params.result.realizedPnlUsd === 'number' && Number.isFinite(params.result.realizedPnlUsd)
+        ? params.result.realizedPnlUsd
+        : typeof paperFill?.realizedPnlUsd === 'number' && Number.isFinite(paperFill.realizedPnlUsd)
+          ? paperFill.realizedPnlUsd
+        : null,
+    net_realized_pnl_usd: null,
+    error: null,
+  };
+  const needsLookup =
+    ctx.config.execution?.provider === 'hyperliquid' &&
+    (direct.realized_fee_usd == null ||
+      direct.realized_order_id == null ||
+      direct.realized_fill_count === 0 ||
+      (params.result.realizedPnlUsd == null && params.result.executed));
+  if (!needsLookup) {
+    return {
+      ...direct,
+      net_realized_pnl_usd:
+        direct.realized_pnl_usd == null || direct.realized_fee_usd == null
+          ? null
+          : direct.realized_pnl_usd - direct.realized_fee_usd,
+    };
+  }
+  const lookedUp = await fetchRealizedPerpCloseSummary(ctx, {
+    symbol: params.symbol,
+    startTimeMs: params.startTimeMs,
+    orderId: direct.realized_order_id,
+  });
+  const merged: PerpOrderRealizedCloseSummary = {
+    realized_fee_usd: direct.realized_fee_usd ?? lookedUp.realized_fee_usd,
+    realized_fee_token: direct.realized_fee_token ?? lookedUp.realized_fee_token,
+    realized_fill_count:
+      direct.realized_fill_count > 0 ? direct.realized_fill_count : lookedUp.realized_fill_count,
+    realized_order_id: direct.realized_order_id ?? lookedUp.realized_order_id,
+    realized_order_ref:
+      direct.realized_order_ref ??
+      (lookedUp.realized_order_id != null ? String(lookedUp.realized_order_id) : null),
+    realized_fill_time_ms: direct.realized_fill_time_ms ?? lookedUp.realized_fill_time_ms,
+    realized_pnl_usd: direct.realized_pnl_usd ?? lookedUp.realized_pnl_usd,
+    net_realized_pnl_usd: null,
+    error: direct.error ?? lookedUp.error ?? null,
+  };
   return {
-    realized_fee_usd: summary.realized_fee_usd,
-    realized_fee_token: summary.realized_fee_token,
-    realized_fill_count: summary.realized_fill_count,
-    realized_order_id: summary.realized_order_id,
-    realized_fill_time_ms: summary.realized_fill_time_ms,
-    error: summary.error ?? null,
+    ...merged,
+    net_realized_pnl_usd:
+      merged.realized_pnl_usd == null || merged.realized_fee_usd == null
+        ? null
+        : merged.realized_pnl_usd - merged.realized_fee_usd,
   };
 }
 
@@ -4078,6 +4209,7 @@ async function fetchRealizedPerpCloseSummary(
     realized_fee_token: null,
     realized_fill_count: 0,
     realized_order_id: params.orderId ?? null,
+    realized_order_ref: params.orderId != null ? String(params.orderId) : null,
     realized_fill_time_ms: null,
     error: null,
   };
@@ -4157,6 +4289,9 @@ async function fetchRealizedPerpCloseSummary(
       realized_order_id: Number.isFinite(selectedOrderId)
         ? selectedOrderId
         : (params.orderId ?? null),
+      realized_order_ref: Number.isFinite(selectedOrderId)
+        ? String(selectedOrderId)
+        : (params.orderId != null ? String(params.orderId) : null),
       realized_fill_time_ms: Number.isFinite(selectedFillTime) ? selectedFillTime : null,
       realized_pnl_usd: normalizedRealizedPnl,
       net_realized_pnl_usd:
