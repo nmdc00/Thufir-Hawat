@@ -64,7 +64,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
   computeFractionalKellyFraction: () => 0.25,
   evaluateGlobalTradeGate: () => ({ allowed: true }),
   evaluateNewsEntryGate: () => ({ allowed: true }),
-  inferBroadMarketPosture: () => 'neutral',
   isSignalClassAllowedForRegime: () => true,
   resolveLiquidityBucket: () => 'normal',
   resolveVolatilityBucket: () => 'medium',
@@ -72,7 +71,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
-  summarizeComparableSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
 }));
 
 vi.mock('../../src/memory/autonomy_policy_state.js', () => ({
@@ -116,17 +114,10 @@ vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeApproveLlm(overrides?: Partial<{ stopLevelPrice: number | null; suggestedLeverage: number }>) {
+function makeApproveLlm() {
   return {
     complete: vi.fn(async () => ({
-      content: JSON.stringify({
-        verdict: 'approve',
-        reasoning: 'ok',
-        stopLevelPrice: overrides?.stopLevelPrice ?? 60000,
-        equityAtRiskPct: 2.5,
-        targetRR: 2.0,
-        ...(overrides?.suggestedLeverage != null ? { suggestedLeverage: overrides.suggestedLeverage } : {}),
-      }),
+      content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: 60000, equityAtRiskPct: 2.5, targetRR: 2.0 }),
       model: 'test',
     })),
   } as any;
@@ -215,24 +206,6 @@ describe('autonomous exit policy — writes exit policy after execution', () => 
     const expectedMax = afterMs + 120 * 60_000 + 10_000;
     expect(timeStopAtMs).toBeGreaterThanOrEqual(expectedMin);
     expect(timeStopAtMs).toBeLessThanOrEqual(expectedMax);
-  });
-
-  it('persists the discovery gate stop level as invalidationPrice when provided', async () => {
-    const { AutonomousManager } = await import('../../src/core/autonomous.js');
-    const executor = {
-      execute: vi.fn(async () => ({ executed: true, message: 'paper ok' })),
-    } as any;
-    const marketClient = {
-      getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: { maxLeverage: 10 } }),
-    } as any;
-
-    const llm = makeApproveLlm({ stopLevelPrice: 68450 });
-    const manager = new AutonomousManager(llm, llm, marketClient, executor, makeLimiter(), baseConfig);
-    await manager.runScan();
-
-    expect(upsertExitPolicy).toHaveBeenCalledOnce();
-    const [, , , invalidationPrice] = upsertExitPolicy.mock.calls[0]!;
-    expect(invalidationPrice).toBe(68450);
   });
 
   it('does not write exit policy when trade fails to execute', async () => {

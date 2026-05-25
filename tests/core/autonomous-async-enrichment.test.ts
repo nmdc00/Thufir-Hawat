@@ -63,7 +63,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
   computeFractionalKellyFraction: () => 0.25,
   evaluateGlobalTradeGate: () => ({ allowed: true, policyState: {} }),
   evaluateNewsEntryGate: () => ({ allowed: true }),
-  inferBroadMarketPosture: () => 'neutral',
   isSignalClassAllowedForRegime: () => true,
   resolveLiquidityBucket: () => 'normal',
   resolveVolatilityBucket: () => 'medium',
@@ -71,7 +70,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
-  summarizeComparableSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
 }));
 
 vi.mock('../../src/memory/autonomy_policy_state.js', () => ({
@@ -120,7 +118,7 @@ describe('AutonomousManager async enrichment', () => {
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     // Gate call (1st): approve immediately; enrichment call (2nd+): never resolve (timeout test)
     const completeFn = vi.fn()
-      .mockResolvedValueOnce({ content: JSON.stringify({ verdict: 'approve', reasoning: 'go', stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }), model: 'test' })
+      .mockResolvedValueOnce({ content: JSON.stringify({ verdict: 'approve', reasoning: 'go', stopLevelPrice: 68000, equityAtRiskPct: 2.5, targetRR: 2.0 }), model: 'test' })
       .mockImplementation(() => new Promise(() => {}));
     const llm = { complete: completeFn } as any;
     const executor = {

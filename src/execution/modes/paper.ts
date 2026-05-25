@@ -4,8 +4,7 @@ import { logWalletOperation } from '../../memory/audit.js';
 import { createLearningCase } from '../../memory/learning_cases.js';
 import { createPrediction, recordExecution } from '../../memory/predictions.js';
 import { recordTrade } from '../../memory/trades.js';
-import { recordPerpTrade } from '../../memory/perp_trades.js';
-import { cancelPaperPerpOrder, getPaperPerpBookSummary, listPaperPerpOpenOrders, placePaperPerpOrder } from '../../memory/paper_perps.js';
+import { cancelPaperPerpOrder, listPaperPerpOpenOrders, placePaperPerpOrder } from '../../memory/paper_perps.js';
 
 export interface PaperExecutorOptions {
   initialCashUsdc?: number;
@@ -56,38 +55,12 @@ export class PaperExecutor implements ExecutionAdapter {
         },
         { initialCashUsdc: this.initialCashUsdc }
       );
-
-      const tradeId = recordPerpTrade({
-        symbol,
-        side,
-        size,
-        executionMode: 'paper',
-        price: fill.fillPrice ?? limitPrice ?? markPrice,
-        leverage: decision.leverage ?? null,
-        orderType,
-        status: 'paper',
-      });
-      const book = getPaperPerpBookSummary(this.initialCashUsdc);
-      logWalletOperation({
-        operation: 'paper',
-        amount: size,
-        status: 'confirmed',
-        metadata: {
-          symbol,
-          side,
-          leverage: decision.leverage,
-          order_id: fill.orderId,
-          paper_cash_usdc: book.cashBalanceUsdc,
-          realized_pnl_usdc: fill.realizedPnlUsd,
-        },
-      });
       return {
         executed: true,
         message: `${fill.message} symbol=${symbol} side=${side} size=${size}`,
         realizedPnlUsd: fill.realizedPnlUsd,
         feeUsd: fill.feeUsd,
         orderId: fill.orderId,
-        tradeId,
       };
     }
 
@@ -113,9 +86,7 @@ export class PaperExecutor implements ExecutionAdapter {
       entityId: market.id,
       comparable: isComparablePredictionTrade(market, decision),
       comparatorKind: isComparablePredictionTrade(market, decision) ? 'market_price' : null,
-      exclusionReason: isComparablePredictionTrade(market, decision)
-        ? null
-        : 'missing_model_probability',
+      exclusionReason: isComparablePredictionTrade(market, decision) ? null : 'missing_model_probability',
       sourcePredictionId: predictionId,
       belief: {
         modelProbability: decision.modelProbability ?? null,
@@ -190,7 +161,6 @@ function isComparablePredictionTrade(market: Market, decision: TradeDecision): b
   return (
     market.kind !== 'perp' &&
     decision.outcome != null &&
-    Number.isFinite(Number(decision.modelProbability)) &&
     Number.isFinite(Number(market.prices?.[decision.outcome]))
   );
 }
