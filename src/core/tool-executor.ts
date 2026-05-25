@@ -1,7 +1,7 @@
 import type { ThufirConfig } from './config.js';
 import type { Market } from '../execution/markets.js';
 import type { MarketClient } from '../execution/market-client.js';
-import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
+import type { ExecutionAdapter, TradeDecision, TradeResult } from '../execution/executor.js';
 import { PaperExecutor } from '../execution/modes/paper.js';
 import { HyperliquidLiveExecutor } from '../execution/modes/hyperliquid-live.js';
 import type { LimitCheckResult } from '../execution/wallet/limits.js';
