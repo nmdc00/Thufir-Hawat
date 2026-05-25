@@ -11,6 +11,7 @@ Implemented on 2026-05-25:
 - `AutonomousManager` originator and quant execution now route through the shared perp tool path
 - `Thufir.trade(...)` now routes through `perp_place_order` instead of bypassing lifecycle logic
 - fallback/dead ownership in autonomous open-path persistence was removed
+- `tool-executor` now imports canonical paper/perp lifecycle helpers instead of carrying shadow copies for runtime use
 
 This TDD defines the refactor required to make `paper` and `live` execution follow the same trade lifecycle, with funding source and venue interaction as the only intentional differences.
 

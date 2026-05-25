@@ -135,6 +135,18 @@ vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
   recordEntryGateDecision: vi.fn(),
 }));
 
+const executeToolCall = vi.fn(async () => {
+  recordPerpTrade();
+  return {
+    success: true,
+    data: { executed: true, message: 'ok' },
+  };
+});
+
+vi.mock('../../src/core/tool-executor.js', () => ({
+  executeToolCall,
+}));
+
 describe('AutonomousManager v1.3 observation mode', () => {
   it('suppresses live execution and journals would-trade entries when observation-only is active', async () => {
     mockObservationOnlyUntilMs = Date.now() + 60_000;
@@ -171,6 +183,7 @@ describe('AutonomousManager v1.3 observation mode', () => {
 
     expect(text).toContain('observation-only mode');
     expect(text).toContain('context_pack{');
+    expect(executeToolCall).not.toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
     expect(recordPerpTradeJournal).toHaveBeenCalled();
     expect(recordPerpTrade).not.toHaveBeenCalled();
@@ -220,6 +233,7 @@ describe('AutonomousManager v1.3 observation mode', () => {
 
     await manager.runScan();
 
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     expect(recordPerpTrade).toHaveBeenCalled();
     expect(
       dbPrepare.mock.calls.some((args) => String(args[0]).includes('INSERT INTO autonomous_trades'))

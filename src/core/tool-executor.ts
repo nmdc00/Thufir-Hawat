@@ -1,7 +1,7 @@
 import type { ThufirConfig } from './config.js';
 import type { Market } from '../execution/markets.js';
 import type { MarketClient } from '../execution/market-client.js';
-import type { ExecutionAdapter, TradeDecision, TradeResult } from '../execution/executor.js';
+import type { ExecutionAdapter, TradeDecision } from '../execution/executor.js';
 import { PaperExecutor } from '../execution/modes/paper.js';
 import { HyperliquidLiveExecutor } from '../execution/modes/hyperliquid-live.js';
 import type { LimitCheckResult } from '../execution/wallet/limits.js';
@@ -47,12 +47,24 @@ import { evaluateGlobalTradeGate, type GlobalTradeGateResult } from './autonomy_
 import { buildPaperPromotionReport } from './paper_promotion.js';
 import { resilientWebSearch } from '../intel/web_search_resilience.js';
 import { computeClosedTradeComponentScores } from './decision_component_scores.js';
-import { buildPerpExecutionLearningCase, toPerpExecutionLearningCaseInput } from './perp_lifecycle.js';
+import {
+  buildPerpExecutionLearningCase,
+  evaluateReduceOnlyExitAssessment,
+  executePerpWithRetry,
+  normalizeExitMode,
+  normalizeTradeArchetype,
+  resolvePerpBookMode,
+  toPerpExecutionLearningCaseInput,
+  validatePerpOrderContract,
+  type PerpBookMode,
+  type PerpExitMode,
+} from './perp_lifecycle.js';
 import { materializeTradePolicyAdjustmentFromLearningCase } from './trade_policy_materialization.js';
 import { inferTradeSymbolClass } from './trade_symbol_class.js';
 import {
   hydrateEntryTradeContract,
   normalizeReduceOnlyExitFsmInput,
+  type TradeArchetype,
   validateEntryTradeContract,
   validateReduceOnlyExitFsm,
 } from './trade_contract.js';
@@ -66,6 +78,12 @@ import {
   getPositionExitPolicy,
   upsertPositionExitPolicy,
 } from '../memory/position_exit_policy.js';
+import {
+  buildPaperPerpSnapshot,
+  evaluatePaperReduceOnlyPostcondition,
+  getPaperPositionSnapshot,
+  resolvePaperMids,
+} from './tool_executor_paper.js';
 
 /** Minimal interface for spending limit enforcement used in tool execution */
 export interface ToolSpendingLimiter {
@@ -75,7 +93,7 @@ export interface ToolSpendingLimiter {
   getState?(): { todaySpent: number; reserved: number } & Record<string, unknown>;
 }
 import { getCashBalance } from '../memory/portfolio.js';
-import { getPaperPerpBookSummary, listPaperPerpFills, listPaperPerpPositions, listPaperPerpPositionsWithMark } from '../memory/paper_perps.js';
+import { getPaperPerpBookSummary, listPaperPerpFills, listPaperPerpPositionsWithMark } from '../memory/paper_perps.js';
 import { getWalletBalances } from '../execution/wallet/balances.js';
 import { loadWallet } from '../execution/wallet/manager.js';
 import { loadKeystore } from '../execution/wallet/keystore.js';
@@ -91,6 +109,11 @@ import { homedir } from 'node:os';
 import { constants as fsConstants } from 'node:fs';
 
 const execAsync = promisify(exec);
+
+export {
+  evaluateReduceOnlyExitAssessment,
+  normalizeExitMode,
+} from './perp_lifecycle.js';
 
 type InstallManager = 'npm' | 'pnpm' | 'bun';
 
@@ -135,91 +158,6 @@ type PerpOrderRealizedCloseSummary = PerpOrderRealizedFee & {
   net_realized_pnl_usd: number | null;
 };
 
-type PerpExitMode =
-  | 'thesis_invalidation'
-  | 'take_profit'
-  | 'time_exit'
-  | 'risk_reduction'
-  | 'manual'
-  | 'unknown';
-
-type PerpExecutionAttempt = {
-  attempt: number;
-  slippage_bps: number;
-  executed: boolean;
-  message: string;
-};
-
-type PerpBookMode = 'paper' | 'live';
-
-function isNoImmediateMatchError(message: string | null | undefined): boolean {
-  if (!message) return false;
-  return /could not immediately match against any resting orders/i.test(message);
-}
-
-async function executePerpWithRetry(params: {
-  executor: ExecutionAdapter;
-  marketClient: MarketClient;
-  market: Market;
-  symbol: string;
-  decision: TradeDecision;
-  baseSlippageBps: number;
-}): Promise<{ result: TradeResult; attempts: PerpExecutionAttempt[] }> {
-  const slippageSequence = [params.baseSlippageBps, params.baseSlippageBps + 25, params.baseSlippageBps + 50]
-    .map((value) => Math.max(0, Math.min(300, value)));
-  const attempts: PerpExecutionAttempt[] = [];
-
-  for (let index = 0; index < slippageSequence.length; index += 1) {
-    const slippageBps = slippageSequence[index]!;
-    const market = index === 0 ? params.market : await params.marketClient.getMarket(params.symbol);
-    const attemptDecision: TradeDecision = {
-      ...params.decision,
-      marketSlippageBps: slippageBps,
-    };
-    const result = await params.executor.execute(market, attemptDecision);
-    attempts.push({
-      attempt: index + 1,
-      slippage_bps: slippageBps,
-      executed: result.executed,
-      message: result.message,
-    });
-
-    if (result.executed) {
-      return { result, attempts };
-    }
-    if (!isNoImmediateMatchError(result.message) || index === slippageSequence.length - 1) {
-      return { result, attempts };
-    }
-  }
-
-  return {
-    result: { executed: false, message: 'Execution failed before attempting order placement.' },
-    attempts,
-  };
-}
-
-function normalizePerpBookMode(value: unknown): PerpBookMode | null {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim().toLowerCase();
-  return normalized === 'paper' || normalized === 'live' ? normalized : null;
-}
-
-function resolvePerpBookMode(config: ThufirConfig, toolInput: Record<string, unknown>): PerpBookMode {
-  const explicit = normalizePerpBookMode(toolInput.mode);
-  if (explicit) return explicit;
-
-  if (config.execution?.mode === 'paper') {
-    return 'paper';
-  }
-
-  const defaultMode = config.paper?.defaultMode ?? 'paper';
-  const requireExplicitLive = config.paper?.requireExplicitLive ?? true;
-  if (defaultMode === 'live' && !requireExplicitLive) {
-    return 'live';
-  }
-  return 'paper';
-}
-
 function validateLiveBookPolicy(config: ThufirConfig, symbol: string): string | null {
   const allowlist = (config.paper?.liveSymbolsAllowlist ?? []).map((entry) => entry.trim().toUpperCase());
   const normalizedSymbol = symbol.trim().toUpperCase();
@@ -248,184 +186,6 @@ function resolvePerpExecutor(ctx: ToolExecutorContext, mode: PerpBookMode): Exec
   }
   return new PaperExecutor();
 }
-
-function resolveMidForSymbol(symbol: string, mids: Record<string, number>): number | undefined {
-  if (mids[symbol] != null) return mids[symbol];
-  // Strip DEX prefix: "XYZ:CL" → "CL"
-  if (symbol.includes(':')) {
-    const afterColon = symbol.split(':').at(-1);
-    if (afterColon && mids[afterColon] != null) return mids[afterColon];
-  }
-  // Strip quote currency: "CL/USDC" → "CL"
-  const beforeSlash = symbol.split('/')[0];
-  if (beforeSlash && beforeSlash !== symbol && mids[beforeSlash] != null) return mids[beforeSlash];
-  return undefined;
-}
-
-async function resolvePaperMids(
-  marketClient: MarketClient,
-  config?: ThufirConfig
-): Promise<Record<string, number>> {
-  try {
-    if (marketClient.isAvailable()) {
-      const markets = await marketClient.listMarkets(500);
-      const mids: Record<string, number> = {};
-      // First pass: index main-perp markets (no colon prefix) so they take priority.
-      for (const m of markets) {
-        if (m.symbol && !m.symbol.includes(':') && typeof m.markPrice === 'number' && Number.isFinite(m.markPrice)) {
-          mids[m.symbol] = m.markPrice;
-          // Also index by base for slash-quoted symbols (e.g. "CL/USDC" → "CL").
-          if (m.symbol.includes('/')) {
-            const base = m.symbol.split('/')[0];
-            if (base && base !== m.symbol) mids[base] = m.markPrice;
-          }
-        }
-      }
-      // Second pass: index DEX markets; strip prefix only if base has no main-perp price.
-      // e.g. "xyz:CL" → "CL" when there is no main "CL", but "cash:BTC" → "BTC" is skipped.
-      for (const m of markets) {
-        if (m.symbol && m.symbol.includes(':') && typeof m.markPrice === 'number' && Number.isFinite(m.markPrice)) {
-          mids[m.symbol] = m.markPrice;
-          const afterColon = m.symbol.split(':').at(-1);
-          if (afterColon && afterColon !== m.symbol && mids[afterColon] == null) {
-            mids[afterColon] = m.markPrice;
-          }
-        }
-      }
-      return mids;
-    }
-    // Fall back to direct HyperliquidClient when execution provider doesn't expose a market client
-    if (config?.hyperliquid?.enabled !== false) {
-      const raw = await new HyperliquidClient(config!).getAllMids();
-      // Normalize keys to uppercase so "xyz:CL" → "XYZ:CL" matches position symbols
-      return Object.fromEntries(Object.entries(raw).map(([k, v]) => [k.toUpperCase(), v]));
-    }
-    return {};
-  } catch {
-    return {};
-  }
-}
-
-function buildPaperPerpSnapshot(initialCashUsdc: number, mids: Record<string, number> = {}): {
-  cashBalanceUsdc: number;
-  totalNotionalUsdc: number;
-  accountValueUsdc: number;
-  positions: Array<{
-    symbol: string;
-    side: 'long' | 'short';
-    size: number;
-    entry_price: number;
-    leverage: number | null;
-    position_value: number;
-    unrealized_pnl: number | null;
-    return_on_equity: number | null;
-    liquidation_price: number | null;
-    margin_used: number | null;
-    leverage_type: string | null;
-    max_leverage: number | null;
-  }>;
-} {
-  const book = getPaperPerpBookSummary(initialCashUsdc);
-  const positions = listPaperPerpPositions(initialCashUsdc).map((position) => {
-    const markPrice = resolveMidForSymbol(position.symbol, mids);
-    const effectivePrice = markPrice ?? position.entryPrice;
-    const direction = position.side === 'long' ? 1 : -1;
-    // Recover leverage from fill metadata when position column is null
-    let leverage = position.leverage;
-    if (leverage == null) {
-      const openFill = listPaperPerpFills({ symbol: position.symbol, limit: 20 }, initialCashUsdc)
-        .find((f) => !f.reduceOnly && f.leverage != null);
-      leverage = openFill?.leverage ?? null;
-    }
-    return {
-      symbol: position.symbol,
-      side: position.side,
-      size: position.size,
-      entry_price: position.entryPrice,
-      leverage,
-      position_value: effectivePrice * position.size,
-      unrealized_pnl: markPrice != null
-        ? (markPrice - position.entryPrice) * position.size * direction
-        : null,
-      return_on_equity: markPrice != null && position.entryPrice > 0
-        ? ((markPrice - position.entryPrice) * direction / position.entryPrice) * 100
-        : null,
-      liquidation_price: leverage != null && leverage > 1
-        ? position.side === 'long'
-          ? position.entryPrice * (1 - 1 / leverage)
-          : position.entryPrice * (1 + 1 / leverage)
-        : null,
-      margin_used: null,
-      leverage_type: null,
-      max_leverage: null,
-    };
-  });
-  const totalNotionalUsdc = positions.reduce((sum, position) => sum + Number(position.position_value ?? 0), 0);
-  const totalUnrealizedPnlUsdc = positions.reduce((sum, p) => sum + (p.unrealized_pnl ?? 0), 0);
-  return {
-    cashBalanceUsdc: book.cashBalanceUsdc,
-    totalNotionalUsdc,
-    accountValueUsdc: book.cashBalanceUsdc + totalUnrealizedPnlUsdc,
-    positions,
-  };
-}
-
-function getPaperPositionSnapshot(
-  symbol: string,
-  initialCashUsdc: number
-): { symbol: string; side: 'long' | 'short'; size: number } | null {
-  const normalized = symbol.trim().toUpperCase();
-  if (!normalized) return null;
-  const position = listPaperPerpPositions(initialCashUsdc).find(
-    (entry) => entry.symbol.trim().toUpperCase() === normalized
-  );
-  if (!position) return null;
-  return {
-    symbol: position.symbol,
-    side: position.side,
-    size: position.size,
-  };
-}
-
-function evaluatePaperReduceOnlyPostcondition(params: {
-  symbol: string;
-  before: { symbol: string; side: 'long' | 'short'; size: number } | null;
-  after: { symbol: string; side: 'long' | 'short'; size: number } | null;
-}) {
-  const beforeSize = params.before?.size ?? 0;
-  const afterSize = params.after?.size ?? 0;
-  const sideFlipped =
-    params.before != null &&
-    params.after != null &&
-    params.before.side !== params.after.side &&
-    afterSize > 0;
-  const reduced = afterSize < beforeSize;
-  const closeComplete = beforeSize > 0 && afterSize === 0;
-  const verified = reduced && !sideFlipped;
-  const reason = verified
-    ? closeComplete
-      ? 'position_flat'
-      : 'position_reduced'
-    : sideFlipped
-      ? 'side_flip_detected'
-      : beforeSize <= 0
-        ? 'no_position_before'
-        : 'size_not_reduced';
-
-  return {
-    verified,
-    reason,
-    close_complete: closeComplete,
-    reduced,
-    before_size: beforeSize,
-    after_size: afterSize,
-    before_side: params.before?.side ?? null,
-    after_side: params.after?.side ?? null,
-    symbol: params.symbol,
-  };
-}
-
-type TradeArchetype = 'scalp' | 'intraday' | 'swing';
 
 function parseNewsSources(input: unknown): string[] | null {
   if (Array.isArray(input)) {
@@ -1154,148 +914,6 @@ function resolveClosedTradeReference(params: {
     return entry;
   }
   return null;
-}
-
-export function normalizeExitMode(input: unknown): PerpExitMode | null {
-  if (typeof input !== 'string') return null;
-  const value = input.trim();
-  if (
-    value === 'thesis_invalidation' ||
-    value === 'take_profit' ||
-    value === 'time_exit' ||
-    value === 'risk_reduction' ||
-    value === 'manual' ||
-    value === 'unknown'
-  ) {
-    return value;
-  }
-  return null;
-}
-
-function normalizeTradeArchetype(input: unknown): TradeArchetype | null {
-  if (typeof input !== 'string') return null;
-  const value = input.trim();
-  if (value === 'scalp' || value === 'intraday' || value === 'swing') {
-    return value;
-  }
-  return null;
-}
-
-function validatePerpOrderContract(input: {
-  reduceOnly: boolean;
-  thesisInvalidationHit: boolean | null;
-  exitMode: PerpExitMode | null;
-  tradeArchetype: TradeArchetype | null;
-  enforceReduceOnlyExitMode: boolean;
-}): string | null {
-  const { reduceOnly, thesisInvalidationHit, exitMode, tradeArchetype, enforceReduceOnlyExitMode } = input;
-
-  if (!reduceOnly) {
-    if (thesisInvalidationHit === true) {
-      return 'thesis_invalidation_hit=true conflicts with non-reduce-only order';
-    }
-    if (exitMode != null && exitMode !== 'unknown') {
-      return 'non-reduce-only order must not set exit_mode';
-    }
-    if (!tradeArchetype) {
-      return 'Missing/invalid trade_archetype (scalp|intraday|swing)';
-    }
-    return null;
-  }
-
-  if (thesisInvalidationHit === true && exitMode != null && exitMode !== 'thesis_invalidation') {
-    return 'thesis_invalidation_hit=true conflicts with non-invalidation exit_mode';
-  }
-  if (thesisInvalidationHit === false && exitMode === 'thesis_invalidation') {
-    return 'thesis_invalidation exit_mode requires thesis_invalidation_hit=true';
-  }
-  if (enforceReduceOnlyExitMode && thesisInvalidationHit !== true && exitMode == null) {
-    return 'reduce-only exit requires exit_mode (thesis_invalidation|take_profit|time_exit|risk_reduction|manual|unknown)';
-  }
-  return null;
-}
-
-export function evaluateReduceOnlyExitAssessment(params: {
-  reduceOnly: boolean;
-  thesisInvalidationHit: boolean | null;
-  exitMode: PerpExitMode | null;
-}): {
-  thesisCorrect: boolean | null;
-  thesisInvalidationHit: boolean | null;
-  exitMode: PerpExitMode | null;
-  emotionalExitFlag: boolean | null;
-  thesisEvaluationReason: string | null;
-} {
-  if (!params.reduceOnly) {
-    return {
-      thesisCorrect: null,
-      thesisInvalidationHit: null,
-      exitMode: null,
-      emotionalExitFlag: null,
-      thesisEvaluationReason: null,
-    };
-  }
-
-  const normalizedExitMode =
-    params.exitMode ?? (params.thesisInvalidationHit === true ? 'thesis_invalidation' : null);
-  const invalidationHit =
-    params.thesisInvalidationHit ??
-    (normalizedExitMode === 'thesis_invalidation' ? true : null);
-
-  if (invalidationHit === true) {
-    return {
-      thesisCorrect: false,
-      thesisInvalidationHit: true,
-      exitMode: normalizedExitMode,
-      emotionalExitFlag: false,
-      thesisEvaluationReason: 'Exit aligned with explicit thesis invalidation condition.',
-    };
-  }
-
-  if (invalidationHit === false) {
-    const emotional = normalizedExitMode === 'manual' || normalizedExitMode === 'unknown';
-    return {
-      thesisCorrect: emotional ? false : true,
-      thesisInvalidationHit: false,
-      exitMode: normalizedExitMode,
-      emotionalExitFlag: emotional,
-      thesisEvaluationReason: emotional
-        ? 'Exited before invalidation via discretionary/manual action.'
-        : 'Exited without invalidation via planned management rule.',
-    };
-  }
-
-  if (normalizedExitMode === 'manual' || normalizedExitMode === 'unknown') {
-    return {
-      thesisCorrect: false,
-      thesisInvalidationHit: null,
-      exitMode: normalizedExitMode,
-      emotionalExitFlag: true,
-      thesisEvaluationReason: 'Reduce-only exit lacked invalidation proof and appears discretionary.',
-    };
-  }
-
-  if (
-    normalizedExitMode === 'take_profit' ||
-    normalizedExitMode === 'time_exit' ||
-    normalizedExitMode === 'risk_reduction'
-  ) {
-    return {
-      thesisCorrect: true,
-      thesisInvalidationHit: false,
-      exitMode: normalizedExitMode,
-      emotionalExitFlag: false,
-      thesisEvaluationReason: 'Reduce-only exit matched a deterministic management rule.',
-    };
-  }
-
-  return {
-    thesisCorrect: null,
-    thesisInvalidationHit: null,
-    exitMode: normalizedExitMode,
-    emotionalExitFlag: null,
-    thesisEvaluationReason: null,
-  };
 }
 
 function getSystemToolPolicy(config: ThufirConfig): SystemToolPolicy {

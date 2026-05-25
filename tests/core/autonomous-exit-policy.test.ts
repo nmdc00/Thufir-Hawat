@@ -112,6 +112,28 @@ vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
   recordEntryGateDecision: vi.fn(),
 }));
 
+const executeToolCall = vi.fn(async (_toolName: string, input: Record<string, unknown>) => {
+  const executed = Boolean((input as { __executed?: boolean }).__executed ?? true);
+  if (executed && !input.reduce_only) {
+    upsertExitPolicy(
+      input.symbol,
+      input.side === 'buy' ? 'long' : 'short',
+      input.time_stop_at_ms ?? null,
+      input.invalidation_price ?? null,
+      null,
+      null
+    );
+  }
+  return {
+    success: true,
+    data: { executed, message: executed ? 'paper ok' : 'rejected' },
+  };
+});
+
+vi.mock('../../src/core/tool-executor.js', () => ({
+  executeToolCall,
+}));
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeApproveLlm() {
@@ -169,6 +191,7 @@ describe('autonomous exit policy — writes exit policy after execution', () => 
     const manager = new AutonomousManager(llm, llm, marketClient, executor, makeLimiter(), baseConfig);
     await manager.runScan();
 
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     expect(upsertExitPolicy).toHaveBeenCalledOnce();
     const [symbol, side, timeStopAtMs, invalidationPrice] = upsertExitPolicy.mock.calls[0]!;
     expect(symbol).toBe('BTC'); // symbol is normalized (stripped of /USDT)
@@ -198,6 +221,7 @@ describe('autonomous exit policy — writes exit policy after execution', () => 
     const manager = new AutonomousManager(llm, llm, marketClient, executor, makeLimiter(), baseConfig);
     await manager.runScan();
 
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     expect(upsertExitPolicy).toHaveBeenCalledOnce();
     const [, , timeStopAtMs] = upsertExitPolicy.mock.calls[0]!;
     const afterMs = Date.now();
@@ -209,6 +233,10 @@ describe('autonomous exit policy — writes exit policy after execution', () => 
   });
 
   it('does not write exit policy when trade fails to execute', async () => {
+    executeToolCall.mockResolvedValueOnce({
+      success: true,
+      data: { executed: false, message: 'rejected' },
+    });
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     const executor = {
       execute: vi.fn(async () => ({ executed: false, message: 'rejected' })),
@@ -221,6 +249,7 @@ describe('autonomous exit policy — writes exit policy after execution', () => 
     const manager = new AutonomousManager(llm, llm, marketClient, executor, makeLimiter(), baseConfig);
     await manager.runScan();
 
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     expect(upsertExitPolicy).not.toHaveBeenCalled();
   });
 });
