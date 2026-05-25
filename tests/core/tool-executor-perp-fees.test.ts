@@ -81,7 +81,7 @@ describe('tool-executor perp fee visibility', () => {
       }
     );
 
-    expect(res.success).toBe(true);
+    expect(res.success, JSON.stringify(res)).toBe(true);
     const fees = (res as any).data.fees;
     expect(fees.estimated_notional_usd).toBeCloseTo(500, 6);
     expect(fees.estimated_fee_rate).toBeCloseTo(0.00045, 8);
@@ -131,7 +131,7 @@ describe('tool-executor perp fee visibility', () => {
       }
     );
 
-    expect(res.success).toBe(true);
+    expect(res.success, JSON.stringify(res)).toBe(true);
     const fees = (res as any).data.fees;
     expect(fees.realized_fee_usd).toBeNull();
     expect(fees.realized_fill_count).toBe(0);

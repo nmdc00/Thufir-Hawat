@@ -22,6 +22,9 @@ export interface TradeResult {
   message: string;
   realizedPnlUsd?: number | null;
   feeUsd?: number | null;
+  feeToken?: string | null;
+  fillCount?: number | null;
+  fillTimeMs?: number | null;
   orderId?: string | null;
   tradeId?: number | null;
 }

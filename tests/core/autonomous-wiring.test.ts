@@ -430,6 +430,37 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(userPrompt).not.toContain('Edge: 10.00%');
   });
 
+  it('1c. enriched originator handoff passes selector, TA, and stop geometry into the gate prompt', async () => {
+    const { AutonomousManager } = await import('../../src/core/autonomous.js');
+    const complete = vi.fn(async () => ({
+      content: JSON.stringify({
+        verdict: 'reject',
+        reasoning: 'context inspected',
+        stopLevelPrice: null,
+        equityAtRiskPct: 2.5,
+        targetRR: 2.0,
+      }),
+      model: 'test',
+    }));
+    const llm = { complete } as any;
+    const executor = { execute: vi.fn(async () => ({ executed: true, message: 'paper ok' })) } as any;
+    const marketClient = { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: { maxLeverage: 10 } }) } as any;
+    const limiter = makeLimiter();
+
+    const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
+    await manager.runScan({ forceExecute: true });
+
+    const messages = complete.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    const userPrompt = messages.find((message) => message.role === 'user')?.content ?? '';
+    expect(userPrompt).toContain('Market Structure Context');
+    expect(userPrompt).toContain('Current mark price');
+    expect(userPrompt).toContain('Stop distance');
+    expect(userPrompt).toContain('Mechanical leverage ceiling');
+    expect(userPrompt).toContain('Liquidity bucket');
+    expect(userPrompt).toContain('Trigger reason');
+    expect(userPrompt).toContain('Alert reason');
+  });
+
   it('2. null proposal + cadence trigger → quant fallback runs', async () => {
     mocks.triggerShouldFire.mockReturnValue({ fire: true, reason: 'cadence', alertedSymbols: [] });
     mocks.originatorPropose.mockResolvedValue(null);
