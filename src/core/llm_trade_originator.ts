@@ -3,17 +3,9 @@ import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
 import type { BookEntry } from './position_book.js';
 import type { TaSnapshot } from './ta_surface.js';
-import type { DiscoveryCandidate } from '../discovery/market_selector.js';
-import type {
-  OpportunityComponentScores,
-  OpportunityHardFloorVerdict,
-  OpportunitySignalClass,
-  OpportunitySymbolClass,
-} from './opportunity_types.js';
-import { gatherMarketContext, type MarketContextDomain } from '../markets/context.js';
+import { gatherMarketContext } from '../markets/context.js';
 import { recordTradeProposal } from '../memory/llm_trade_proposals.js';
 import { Logger } from './logger.js';
-import { withExecutionContextIfMissing } from './llm_infra.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 
 export interface TradeProposal {
@@ -33,53 +25,11 @@ export interface TradeProposal {
 export interface OriginationInputBundle {
   book: BookEntry[];
   taSnapshots: TaSnapshot[];
-  rankedOpportunities?: RankedOpportunityContext[];
   marketContext: string;
   recentEvents: string;
   alertedSymbols: string[];
   performanceSummary?: string;
-  eventContext?: string;
-  contextDomain?: string;
   triggerReason?: 'cadence' | 'ta_alert' | 'event';
-}
-
-export interface RankedOpportunityContext {
-  symbol: string;
-  rank: number;
-  opportunityScore: number;
-  symbolClass: OpportunitySymbolClass;
-  signalClass: OpportunitySignalClass;
-  shortlistReason: string;
-  triggerReasons: string[];
-  componentScores: OpportunityComponentScores;
-  hardFloorVerdict: OpportunityHardFloorVerdict;
-  discovery: Pick<
-    DiscoveryCandidate,
-    | 'score'
-    | 'liquidityScore'
-    | 'executionScore'
-    | 'fundingScore'
-    | 'openInterestUsd'
-    | 'dayVolumeUsd'
-    | 'fundingRate'
-    | 'spreadProxyBps'
-    | 'markPx'
-    | 'oraclePx'
-  >;
-  ta: Pick<
-    TaSnapshot,
-    | 'price'
-    | 'priceVs24hHigh'
-    | 'priceVs24hLow'
-    | 'oiUsd'
-    | 'oiDelta1hPct'
-    | 'oiDelta4hPct'
-    | 'fundingRatePct'
-    | 'volumeVs24hAvgPct'
-    | 'priceVsEma20_1h'
-    | 'trendBias'
-    | 'rawFeatures'
-  >;
 }
 
 const ProposalSchema = z.object({
@@ -114,8 +64,6 @@ Default to NO TRADE unless you can state, concretely, all of the following:
 - why the payoff justifies the risk
 
 Null is not hesitation. Null is capital discipline. You are allowed to be inactive for long stretches if nothing is good enough.
-
-Some instruments are mixed cross-asset perps rather than pure crypto pairs. Use asset-aware wording. If the underlying reads like \`XYZ:TSLA\`, discuss the equity-linked or cross-asset driver directly instead of forcing a crypto-native narrative.
 
 ## Book concentration rule
 
@@ -164,35 +112,6 @@ Respond with ONLY valid JSON matching this schema OR the literal string "null":
 
 const logger = new Logger('info');
 
-function formatTriggerReasons(snapshot: TaSnapshot): string {
-  const triggerReasons = snapshot.triggerReasons ?? [];
-  if (triggerReasons.length > 0) {
-    return triggerReasons.join('; ');
-  }
-  return snapshot.alertReason ?? 'none';
-}
-
-function formatAssetLabel(symbolClass: RankedOpportunityContext['symbolClass']): string {
-  return symbolClass === 'xyz' ? 'cross-asset perp' : 'crypto perp';
-}
-
-function normalizeContextDomain(domain?: string | null): MarketContextDomain {
-  const normalized = String(domain ?? '').trim().toLowerCase();
-  switch (normalized) {
-    case 'crypto':
-    case 'energy':
-    case 'agri':
-    case 'metals':
-    case 'rates':
-    case 'fx':
-    case 'equity':
-    case 'macro':
-      return normalized;
-    default:
-      return 'crypto';
-  }
-}
-
 function formatBookLines(book: BookEntry[]): string {
   if (book.length === 0) return '(none)';
   return book
@@ -209,8 +128,7 @@ function formatTaLine(snap: TaSnapshot, alerted: boolean): string {
   const oiSign = snap.oiDelta1hPct >= 0 ? '+' : '';
   const emaSign = snap.priceVsEma20_1h >= 0 ? '+' : '';
   const volPct = snap.volumeVs24hAvgPct.toFixed(0);
-  const alertSummary = formatTriggerReasons(snap);
-  const alertSuffix = alerted && alertSummary !== 'none' ? `  [ALERT: ${alertSummary}]` : '';
+  const alertSuffix = alerted && snap.alertReason ? `  [ALERT: ${snap.alertReason}]` : '';
   return (
     `${snap.symbol.padEnd(6)}: price=$${snap.price.toFixed(2)}` +
     `  OI_delta_1h=${oiSign}${snap.oiDelta1hPct.toFixed(1)}%` +
@@ -222,34 +140,8 @@ function formatTaLine(snap: TaSnapshot, alerted: boolean): string {
   );
 }
 
-function formatRankedOpportunityLine(opportunity: RankedOpportunityContext): string {
-  const componentSummary = [
-    `attn=${opportunity.componentScores.attentionScore.toFixed(2)}`,
-    `edge=${opportunity.componentScores.structuralEdgeScore.toFixed(2)}`,
-    `crowd=${opportunity.componentScores.crowdingQualityScore.toFixed(2)}`,
-    `regime=${opportunity.componentScores.regimeFitScore.toFixed(2)}`,
-    `exec=${opportunity.componentScores.executionQualityScore.toFixed(2)}`,
-  ].join(' ');
-  const floorSummary =
-    opportunity.hardFloorVerdict.failedFloors.length > 0
-      ? ` floors=${opportunity.hardFloorVerdict.failedFloors.join(',')}`
-      : '';
-  return (
-    `#${opportunity.rank} ${opportunity.symbol} (${formatAssetLabel(opportunity.symbolClass)})` +
-    ` score=${opportunity.opportunityScore.toFixed(2)} ${componentSummary}` +
-    ` triggers=${opportunity.triggerReasons.join(', ') || 'none'}` +
-    ` signal=${opportunity.signalClass}` +
-    ` reason=${opportunity.shortlistReason}` +
-    floorSummary
-  );
-}
-
 function buildUserMessage(bundle: OriginationInputBundle): string {
   const bookSection = formatBookLines(bundle.book);
-  const shortlistSection =
-    bundle.rankedOpportunities && bundle.rankedOpportunities.length > 0
-      ? bundle.rankedOpportunities.map((opportunity) => formatRankedOpportunityLine(opportunity)).join('\n')
-      : '(none)';
 
   const alertedSet = new Set(bundle.alertedSymbols);
   const alertedSnaps = bundle.taSnapshots.filter((s) => alertedSet.has(s.symbol));
@@ -264,15 +156,10 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     : '(not available)';
 
   const eventsSection = bundle.recentEvents ? bundle.recentEvents.slice(0, 500) : '(none)';
-  const eventContextSection = bundle.eventContext ? bundle.eventContext.slice(0, 1000) : null;
-  const performanceSection = bundle.performanceSummary?.trim() || '(no history yet)';
 
-  const sections = [
+  return [
     '## Open Positions',
     bookSection,
-    '',
-    '## Ranked Opportunity Shortlist',
-    shortlistSection,
     '',
     '## Market Scan',
     scanSection,
@@ -283,21 +170,9 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     '## Recent Events (last 2h)',
     eventsSection,
     '',
-    '## Signal Class Track Record',
-    performanceSection,
-    '',
-  ];
-
-  if (eventContextSection) {
-    sections.push('## Event Intelligence', eventContextSection, '');
-  }
-
-  sections.push(
     '## Instruction',
-    'Find ONE compelling trade setup across ALL symbols above. Use the ranked shortlist as the strongest starting point, but validate it against the full scan. Prefer symbols with no current book exposure. If you propose a symbol already in the book, you must name a specific new catalyst in thesisText that justifies adding to that position. Use cross-asset wording when the instrument is not a pure crypto underlying. Return null if nothing clears the bar.'
-  );
-
-  return sections.join('\n');
+    'Find ONE trade only if it is genuinely worth deploying capital into right now. Prefer symbols with no current book exposure. If you propose a symbol already in the book, you must name a specific new catalyst in thesisText that justifies adding to that position. Return null if no setup is sufficiently asymmetric, timely, and cleanly invalidated.',
+  ].join('\n');
 }
 
 function buildFallbackUserMessage(bundle: OriginationInputBundle): string {
@@ -354,57 +229,6 @@ function parseProposal(raw: string): TradeProposal | null {
   }
 }
 
-function validateProposal(
-  proposal: TradeProposal | null,
-  bundle: OriginationInputBundle
-): TradeProposal | null {
-  if (proposal == null) return null;
-  const currentPrice =
-    bundle.taSnapshots.find((snapshot) => snapshot.symbol === proposal.symbol)?.price ?? null;
-  if (currentPrice != null && Number.isFinite(currentPrice) && currentPrice > 0) {
-    const invalidationOnWrongSide =
-      (proposal.side === 'long' && proposal.invalidationPrice >= currentPrice) ||
-      (proposal.side === 'short' && proposal.invalidationPrice <= currentPrice);
-    if (invalidationOnWrongSide) {
-      logger.warn('LlmTradeOriginator: invalidation_side_validation', {
-        symbol: proposal.symbol,
-        side: proposal.side,
-        invalidationPrice: proposal.invalidationPrice,
-        currentPrice,
-      });
-      return null;
-    }
-
-    const stopDistance = Math.abs(currentPrice - proposal.invalidationPrice) / currentPrice;
-    const tooWideStop =
-      (proposal.tradeType === 'scalp' && stopDistance > 0.08) ||
-      (proposal.tradeType === 'tactical' && stopDistance > 0.2);
-    if (tooWideStop) {
-      logger.warn('LlmTradeOriginator: stop_distance_validation', {
-        symbol: proposal.symbol,
-        tradeType: proposal.tradeType,
-        stopDistance,
-        reason: 'too_wide',
-      });
-      return null;
-    }
-  }
-
-  const maxTtlMinutes =
-    proposal.tradeType === 'scalp' ? 90 : proposal.tradeType === 'tactical' ? 360 : 4_320;
-  if (proposal.suggestedTtlMinutes > maxTtlMinutes) {
-    logger.warn('LlmTradeOriginator: ttl_validation', {
-      symbol: proposal.symbol,
-      tradeType: proposal.tradeType,
-      suggestedTtlMinutes: proposal.suggestedTtlMinutes,
-      maxTtlMinutes,
-    });
-    return null;
-  }
-
-  return proposal;
-}
-
 export class LlmTradeOriginator {
   private contextCache: { key: string; value: string; expiresAt: number } | null = null;
 
@@ -415,14 +239,13 @@ export class LlmTradeOriginator {
     private toolContext?: ToolExecutorContext,
   ) {}
 
-  private async getMarketContext(signalSymbols: string[] = [], contextDomain?: string): Promise<string> {
+  private async getMarketContext(signalSymbols: string[] = []): Promise<string> {
     const now = Date.now();
     const normalizedSymbols = signalSymbols
       .map((symbol) => String(symbol ?? '').trim().toUpperCase())
       .filter(Boolean)
       .slice(0, 3);
-    const domain = normalizeContextDomain(contextDomain);
-    const cacheKey = `${domain}:${normalizedSymbols.join(',') || 'default'}`;
+    const cacheKey = normalizedSymbols.join(',') || 'default';
     if (
       this.contextCache &&
       this.contextCache.key === cacheKey &&
@@ -441,9 +264,9 @@ export class LlmTradeOriginator {
         {
           message:
             normalizedSymbols.length > 0
-              ? `${domain} markets overview for ${normalizedSymbols.join(', ')}`
-              : `${domain} markets overview`,
-          domain,
+              ? `crypto perpetual markets overview for ${normalizedSymbols.join(', ')}`
+              : 'crypto perpetual markets overview',
+          domain: 'crypto',
           marketLimit: 20,
           signalSymbols: normalizedSymbols,
         },
@@ -475,8 +298,7 @@ export class LlmTradeOriginator {
       : {
           ...bundle,
           marketContext: await this.getMarketContext(
-            bundle.taSnapshots.map((snapshot) => snapshot.symbol),
-            bundle.contextDomain
+            bundle.taSnapshots.map((snapshot) => snapshot.symbol)
           ),
         };
 
@@ -486,23 +308,14 @@ export class LlmTradeOriginator {
 
     // Try main LLM
     try {
-      const response = await withExecutionContextIfMissing(
-        {
-          mode: 'LIGHT_REASONING',
-          critical: false,
-          reason: 'trade_originator_main',
-          source: 'autonomous',
-        },
-        () =>
-          this.mainLlm.complete(
-            [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: userMessage },
-            ],
-            { timeoutMs }
-          )
+      const response = await this.mainLlm.complete(
+        [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+        { timeoutMs }
       );
-      proposal = validateProposal(parseProposal(response.content) ?? null, effectiveBundle);
+      proposal = parseProposal(response.content);
     } catch (error) {
       logger.warn('LlmTradeOriginator: main LLM failed, trying fallback', {
         provider: this.mainLlm.meta?.provider ?? 'unknown',
@@ -514,23 +327,14 @@ export class LlmTradeOriginator {
       // Try fallback LLM with shorter message, 5s timeout
       try {
         const fallbackMessage = buildFallbackUserMessage(effectiveBundle);
-        const fallbackResponse = await withExecutionContextIfMissing(
-          {
-            mode: 'LIGHT_REASONING',
-            critical: false,
-            reason: 'trade_originator_fallback',
-            source: 'autonomous',
-          },
-          () =>
-            this.fallbackLlm.complete(
-              [
-                { role: 'system', content: SYSTEM_PROMPT },
-                { role: 'user', content: fallbackMessage },
-              ],
-              { timeoutMs: 5_000 }
-            )
+        const fallbackResponse = await this.fallbackLlm.complete(
+          [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: fallbackMessage },
+          ],
+          { timeoutMs: 5_000 }
         );
-        proposal = validateProposal(parseProposal(fallbackResponse.content) ?? null, effectiveBundle);
+        proposal = parseProposal(fallbackResponse.content);
       } catch (fallbackError) {
         logger.warn('LlmTradeOriginator: fallback LLM also failed, returning null', {
           provider: this.fallbackLlm.meta?.provider ?? 'unknown',

@@ -26,11 +26,12 @@ import {
 } from '../memory/perp_trades.js';
 import { createLearningCase } from '../memory/learning_cases.js';
 import { recordPerpTradeJournal, listPerpTradeJournals } from '../memory/perp_trade_journal.js';
-import { findOpenPerpPrediction, findOpenPerpPredictionById } from '../memory/predictions.js';
+import { createPrediction, findOpenPerpPrediction, findOpenPerpPredictionById } from '../memory/predictions.js';
 import { recordDecisionAudit } from '../memory/decision_audit.js';
 import { storeDecisionArtifact } from '../memory/decision_artifacts.js';
 import { listRecentAgentIncidents } from '../memory/incidents.js';
 import { getPlaybook, searchPlaybooks, upsertPlaybook } from '../memory/playbooks.js';
+import { getAutonomyPolicyState } from '../memory/autonomy_policy_state.js';
 import {
   getEventById,
   getLatestThought,
@@ -42,13 +43,13 @@ import { searchHistoricalCases } from '../events/casebase.js';
 import { getRpcUrl, getUsdcConfig, type EvmChain } from '../execution/evm/chains.js';
 import { getErc20Balance, transferErc20 } from '../execution/evm/erc20.js';
 import { cctpV1BridgeUsdc } from '../execution/evm/cctp_v1.js';
-import { evaluateGlobalTradeGate } from './autonomy_policy.js';
+import { evaluateGlobalTradeGate, type GlobalTradeGateResult } from './autonomy_policy.js';
 import { buildPaperPromotionReport } from './paper_promotion.js';
 import { resilientWebSearch } from '../intel/web_search_resilience.js';
 import { computeClosedTradeComponentScores } from './decision_component_scores.js';
 import { buildPerpExecutionLearningCase, toPerpExecutionLearningCaseInput } from './perp_lifecycle.js';
 import { materializeTradePolicyAdjustmentFromLearningCase } from './trade_policy_materialization.js';
-import { inferTradeSymbolClass } from './trade_similarity.js';
+import { inferTradeSymbolClass } from './trade_symbol_class.js';
 import {
   hydrateEntryTradeContract,
   normalizeReduceOnlyExitFsmInput,
@@ -134,16 +135,11 @@ type PerpOrderRealizedCloseSummary = PerpOrderRealizedFee & {
   net_realized_pnl_usd: number | null;
 };
 
-// TODO(v2.3.7-followup): remove legacy compatibility modes `take_profit` and
-// `time_exit` after downstream journal consumers and historical replay tools no
-// longer depend on them.
 type PerpExitMode =
   | 'thesis_invalidation'
   | 'take_profit'
   | 'time_exit'
-  | 'dynamic_profit_protection'
   | 'risk_reduction'
-  | 'emergency_risk'
   | 'manual'
   | 'unknown';
 
@@ -502,7 +498,7 @@ function invertSide(side: 'buy' | 'sell'): 'buy' | 'sell' {
   return side === 'buy' ? 'sell' : 'buy';
 }
 
-function toPerpDirection(side: 'buy' | 'sell'): 'long' | 'short' {
+function toPolicyDirection(side: 'buy' | 'sell'): 'long' | 'short' {
   return side === 'buy' ? 'long' : 'short';
 }
 
@@ -756,6 +752,158 @@ function persistExecutionLearningCase(params: {
     },
   });
   return stored;
+}
+
+type PredictionSignalTriplet = {
+  technical: number;
+  news: number;
+  onChain: number;
+};
+
+function parsePredictionSignalTriplet(input: unknown): PredictionSignalTriplet | null {
+  let candidate = input;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      return null;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+  const technical = Number((candidate as Record<string, unknown>).technical);
+  const news = Number((candidate as Record<string, unknown>).news);
+  const onChain = Number((candidate as Record<string, unknown>).onChain);
+  if (![technical, news, onChain].every((value) => Number.isFinite(value))) {
+    return null;
+  }
+  return { technical, news, onChain };
+}
+
+function maybeCreatePerpOpenPredictionArtifacts(params: {
+  toolInput: Record<string, unknown>;
+  symbol: string;
+  side: 'buy' | 'sell';
+  executionMode: PerpBookMode;
+  markPrice: number | null;
+  size: number;
+  signalClass: string | null;
+  marketRegime: string | null;
+}): string | null {
+  const explicitEnabled = params.toolInput.create_learning_prediction;
+  const signalScores = parsePredictionSignalTriplet(params.toolInput.prediction_signal_scores);
+  const signalWeightsSnapshot = parsePredictionSignalTriplet(params.toolInput.prediction_signal_weights);
+  const marketTitle =
+    typeof params.toolInput.prediction_market_title === 'string' &&
+    params.toolInput.prediction_market_title.trim().length > 0
+      ? params.toolInput.prediction_market_title.trim()
+      : `${params.symbol} ${params.side === 'buy' ? 'long' : 'short'}: perp trade`;
+  const reasoning =
+    typeof params.toolInput.prediction_reasoning === 'string' &&
+    params.toolInput.prediction_reasoning.trim().length > 0
+      ? params.toolInput.prediction_reasoning.trim()
+      : typeof params.toolInput.reasoning === 'string' && params.toolInput.reasoning.trim().length > 0
+        ? params.toolInput.reasoning.trim()
+        : null;
+  const modelProbability = toFiniteNumberOrNull(
+    params.toolInput.prediction_model_probability ?? params.toolInput.confidence
+  );
+  const marketProbability = toFiniteNumberOrNull(params.toolInput.prediction_market_probability);
+  const horizonMinutesRaw = Number(
+    params.toolInput.prediction_horizon_minutes ?? params.toolInput.horizon_minutes ?? NaN
+  );
+  const horizonMinutes =
+    Number.isFinite(horizonMinutesRaw) && horizonMinutesRaw > 0
+      ? Math.max(1, Math.round(horizonMinutesRaw))
+      : null;
+  const sessionTag =
+    typeof params.toolInput.prediction_session_tag === 'string' &&
+    params.toolInput.prediction_session_tag.trim().length > 0
+      ? params.toolInput.prediction_session_tag.trim()
+      : null;
+  const regimeTag =
+    typeof params.toolInput.prediction_regime_tag === 'string' &&
+    params.toolInput.prediction_regime_tag.trim().length > 0
+      ? params.toolInput.prediction_regime_tag.trim()
+      : params.marketRegime;
+  const strategyClass =
+    typeof params.toolInput.prediction_strategy_class === 'string' &&
+    params.toolInput.prediction_strategy_class.trim().length > 0
+      ? params.toolInput.prediction_strategy_class.trim()
+      : params.signalClass;
+  const learningComparable =
+    typeof params.toolInput.prediction_learning_comparable === 'boolean'
+      ? params.toolInput.prediction_learning_comparable
+      : false;
+  const shouldCreate =
+    explicitEnabled === true ||
+    signalScores != null ||
+    signalWeightsSnapshot != null ||
+    modelProbability != null ||
+    horizonMinutes != null;
+  if (!shouldCreate) {
+    return null;
+  }
+
+  const predictedOutcome = params.side === 'buy' ? 'YES' : 'NO';
+  const predictionId = createPrediction({
+    marketId: `perp:${params.symbol}`,
+    marketTitle,
+    predictedOutcome,
+    predictedProbability: modelProbability ?? undefined,
+    modelProbability: modelProbability ?? undefined,
+    marketProbability: marketProbability ?? undefined,
+    signalScores: signalScores ?? undefined,
+    signalWeightsSnapshot: signalWeightsSnapshot ?? undefined,
+    sessionTag: sessionTag ?? undefined,
+    regimeTag: regimeTag ?? undefined,
+    strategyClass: strategyClass ?? undefined,
+    symbol: params.symbol,
+    domain: 'perp',
+    learningComparable,
+    horizonMinutes: horizonMinutes ?? undefined,
+    reasoning: reasoning ?? undefined,
+    executed: true,
+    executionPrice: params.markPrice ?? undefined,
+    positionSize: params.size,
+  });
+  try {
+    createLearningCase({
+      caseType: 'comparable_forecast',
+      domain: 'perp',
+      entityType: 'symbol',
+      entityId: params.symbol,
+      comparable: learningComparable,
+      comparatorKind: learningComparable ? 'market_price' : null,
+      exclusionReason: learningComparable ? null : 'missing_comparator',
+      sourcePredictionId: predictionId,
+      belief: {
+        modelProbability,
+        predictedOutcome,
+      },
+      baseline: {
+        marketProbability,
+      },
+      context: {
+        horizonMinutes,
+        mode: params.executionMode,
+        strategyClass,
+        regimeTag,
+        sessionTag,
+      },
+      action: {
+        side: params.side,
+        executed: true,
+        executionPrice: params.markPrice ?? null,
+        positionSize: params.size,
+      },
+    });
+  } catch {
+    // Preserve the prediction linkage even when auxiliary learning writes fail.
+  }
+
+  return predictionId;
 }
 
 type ReduceOnlyPositionSnapshot = {
@@ -1015,9 +1163,7 @@ export function normalizeExitMode(input: unknown): PerpExitMode | null {
     value === 'thesis_invalidation' ||
     value === 'take_profit' ||
     value === 'time_exit' ||
-    value === 'dynamic_profit_protection' ||
     value === 'risk_reduction' ||
-    value === 'emergency_risk' ||
     value === 'manual' ||
     value === 'unknown'
   ) {
@@ -1064,7 +1210,7 @@ function validatePerpOrderContract(input: {
     return 'thesis_invalidation exit_mode requires thesis_invalidation_hit=true';
   }
   if (enforceReduceOnlyExitMode && thesisInvalidationHit !== true && exitMode == null) {
-    return 'reduce-only exit requires exit_mode (thesis_invalidation|dynamic_profit_protection|risk_reduction|emergency_risk|take_profit|time_exit|manual|unknown)';
+    return 'reduce-only exit requires exit_mode (thesis_invalidation|take_profit|time_exit|risk_reduction|manual|unknown)';
   }
   return null;
 }
@@ -1793,6 +1939,7 @@ export async function executeToolCall(
         const price = toolInput.price !== undefined ? Number(toolInput.price) : undefined;
         const leverage = toolInput.leverage !== undefined ? Number(toolInput.leverage) : undefined;
         const reduceOnly = Boolean(toolInput.reduce_only ?? false);
+        const skipPolicyGate = Boolean(toolInput.skip_policy_gate ?? false);
         const hypothesisId =
           typeof toolInput.hypothesis_id === 'string' && toolInput.hypothesis_id.trim().length > 0
             ? toolInput.hypothesis_id.trim()
@@ -1899,9 +2046,9 @@ export async function executeToolCall(
           marketRegimeRaw === 'low_vol_compression'
             ? marketRegimeRaw
             : null;
-        const defaultLearningDirection = reduceOnly
-          ? toPerpDirection(invertSide(side as 'buy' | 'sell'))
-          : toPerpDirection(side as 'buy' | 'sell');
+        const defaultLearningDirection = toPolicyDirection(
+          reduceOnly ? invertSide(side as 'buy' | 'sell') : (side as 'buy' | 'sell')
+        );
         const defaultTriggerReason = inferPerpTriggerReason(planContext, entryTrigger);
         const defaultSession = inferPerpSession(planContext);
         const defaultStrategySource = inferPerpStrategySource(planContext, hypothesisId);
@@ -2069,21 +2216,37 @@ export async function executeToolCall(
           inputPrice: price,
           markPrice: market.markPrice ?? null,
         });
-        const policyGate = evaluateGlobalTradeGate(ctx.config, {
-          symbol,
-          direction: defaultLearningDirection,
-          strategySource: defaultStrategySource,
-          triggerReason: defaultTriggerReason,
-          signalClass,
-          symbolClass: defaultSymbolClass,
-          session: defaultSession,
-          marketRegime,
-          volatilityBucket,
-          liquidityBucket,
-          expectedEdge,
-          requestedLeverage: leverage ?? null,
-          confirmationSatisfied: true,
-        });
+        const policyGate: GlobalTradeGateResult = skipPolicyGate
+          ? {
+              allowed: true,
+              sizeMultiplier: 1,
+              leverageCap: null,
+              activeAdjustmentIds: [],
+              activePolicies: [],
+              sizeHaircuts: [],
+              leverageCaps: [],
+              confirmationRequirements: [],
+              triggeredCooldowns: [],
+              adaptationChangedOutcome: false,
+              reasonCode: undefined,
+              reason: undefined,
+              policyState: getAutonomyPolicyState(),
+            }
+          : evaluateGlobalTradeGate(ctx.config, {
+              symbol,
+              direction: defaultLearningDirection,
+              strategySource: defaultStrategySource,
+              triggerReason: defaultTriggerReason,
+              signalClass,
+              symbolClass: defaultSymbolClass,
+              session: defaultSession,
+              marketRegime,
+              volatilityBucket,
+              liquidityBucket,
+              expectedEdge,
+              requestedLeverage: leverage ?? null,
+              confirmationSatisfied: true,
+            });
         if (!policyGate.allowed) {
           const blockedSnapshot = buildPerpTradeSnapshot({
             capturedAtMs: Date.now(),
@@ -2279,6 +2442,15 @@ export async function executeToolCall(
           }
           return { success: false, error: riskCheck.reason ?? 'perp risk limits exceeded' };
         }
+        const limiterAmountUsd = (() => {
+          const notionalFromMark =
+            market.markPrice != null && Number.isFinite(market.markPrice)
+              ? Math.abs(size) * Number(market.markPrice)
+              : null;
+          const notionalFromLimitPrice =
+            price != null && Number.isFinite(price) ? Math.abs(size) * Number(price) : null;
+          return notionalFromMark ?? notionalFromLimitPrice ?? Math.abs(size);
+        })();
         // Reduce-only orders are strictly risk-reducing; do not block them on spending limits.
         // This is critical for safety loops (heartbeat/trade-management) that must be able to flatten.
         if (!reduceOnly) {
@@ -2302,7 +2474,7 @@ export async function executeToolCall(
               // Best-effort: don't block on equity check failure.
             }
           }
-          const limitCheck = await ctx.limiter.checkAndReserve(size);
+          const limitCheck = await ctx.limiter.checkAndReserve(limiterAmountUsd);
           if (!limitCheck.allowed) {
             const blockedSnapshot = buildPerpTradeSnapshot({
               capturedAtMs: Date.now(),
@@ -2400,6 +2572,14 @@ export async function executeToolCall(
           leverage,
           reduceOnly,
           confidence: 'medium' as const,
+          modelProbability:
+            toolInput.confidence != null && Number.isFinite(Number(toolInput.confidence))
+              ? Number(toolInput.confidence)
+              : undefined,
+          reasoning:
+            typeof toolInput.reasoning === 'string' && toolInput.reasoning.trim().length > 0
+              ? toolInput.reasoning.trim()
+              : undefined,
         };
         const paperInitialCashUsdc = ctx.config.paper?.initialCashUsdc ?? 200;
         const positionBefore = await getPerpPositionSnapshotForLifecycle({
@@ -2425,7 +2605,7 @@ export async function executeToolCall(
         });
         const result = execution.result;
         if (!result.executed) {
-          ctx.limiter.release(size);
+          ctx.limiter.release(limiterAmountUsd);
           const retrySummary =
             execution.attempts.length > 1
               ? ` Retry attempts=${execution.attempts.length}; slippage_bps=[${execution.attempts
@@ -2558,7 +2738,9 @@ export async function executeToolCall(
               `(before_size=${paperReduceOnlyPostcondition.before_size}, after_size=${paperReduceOnlyPostcondition.after_size}).`,
           };
         }
-        ctx.limiter.confirm(size);
+        if (!reduceOnly) {
+          ctx.limiter.confirm(limiterAmountUsd);
+        }
         const positionAfter = await getPerpPositionSnapshotForLifecycle({
           config: ctx.config,
           symbol,
@@ -2580,6 +2762,23 @@ export async function executeToolCall(
           });
         } catch {
           lifecycleTradeId = null;
+        }
+        if (lifecycleTradeId == null && !reduceOnly) {
+          try {
+            lifecycleTradeId = recordPerpTrade({
+              hypothesisId,
+              symbol,
+              side: side as 'buy' | 'sell',
+              size,
+              executionMode: bookMode,
+              price: market.markPrice ?? null,
+              leverage: leverage ?? null,
+              orderType,
+              status: 'executed',
+            });
+          } catch {
+            lifecycleTradeId = null;
+          }
         }
         const inferredOrderId = parseOrderIdFromResultMessage(result.message);
         const realizedFee = await fetchRealizedPerpFee(ctx, {
@@ -2839,6 +3038,23 @@ export async function executeToolCall(
             });
           } catch { }
         }
+        let predictionId: string | null = null;
+        if (!reduceOnly) {
+          try {
+            predictionId = maybeCreatePerpOpenPredictionArtifacts({
+              toolInput,
+              symbol,
+              side: side as 'buy' | 'sell',
+              executionMode: bookMode,
+              markPrice: market.markPrice ?? null,
+              size,
+              signalClass: effectiveSignalClass,
+              marketRegime,
+            });
+          } catch {
+            predictionId = null;
+          }
+        }
         // Maintain per-position exit policy for heartbeat.
         const activeExitPolicy = reduceOnly ? getPositionExitPolicy(symbol) : null;
         if (!reduceOnly) {
@@ -2851,7 +3067,8 @@ export async function executeToolCall(
                 (side as string) === 'buy' ? 'long' : 'short',
                 effectiveTimeStopAtMs ?? null,
                 effectiveInvalidationPrice ?? null,
-                policyNotes
+                policyNotes,
+                predictionId
               );
             } catch { }
           }
@@ -2878,6 +3095,8 @@ export async function executeToolCall(
           data: {
             ...result,
             mode: bookMode,
+            trade_id: lifecycleTradeId,
+            prediction_id: predictionId,
             reduce_only_postcondition: paperReduceOnlyPostcondition,
             policy: {
               reason_code: policyGate.reasonCode ?? null,

@@ -3,16 +3,11 @@ export type TradeArchetype = 'scalp' | 'intraday' | 'swing';
 export type InvalidationType = 'price_level' | 'structure_break';
 
 export type TrailMode = 'none' | 'atr' | 'structure';
-// TODO(v2.3.7-followup): remove legacy compatibility modes `take_profit` and
-// `time_exit` once all journaling, analytics, and older callers have migrated
-// to the redesigned authority model.
 export type ExitReasonCode =
   | 'thesis_invalidation'
   | 'take_profit'
   | 'time_exit'
-  | 'dynamic_profit_protection'
   | 'risk_reduction'
-  | 'emergency_risk'
   | 'manual'
   | 'unknown';
 
@@ -91,7 +86,9 @@ export function hydrateEntryTradeContract(params: {
     normalizeInvalidationType(params.input.invalidationType) ??
     (toFiniteOrNull(params.markPrice) != null ? 'price_level' : 'structure_break');
   const trailMode = normalizeTrailMode(params.input.trailMode) ?? 'structure';
-  const takeProfitR = toFiniteOrNull(params.input.takeProfitR);
+  const takeProfitR =
+    toFiniteOrNull(params.input.takeProfitR) ??
+    (trailMode === 'none' ? 2 : null);
   const timeStopAtMs =
     toFiniteOrNull(params.input.timeStopAtMs) ??
     nowMs + DEFAULT_HOLD_MS_BY_ARCHETYPE[archetype];
@@ -163,13 +160,19 @@ export function validateEntryTradeContract(params: {
     }
   }
 
+  const takeProfitRRaw = params.input.takeProfitR;
+  const takeProfitR =
+    takeProfitRRaw != null && Number.isFinite(Number(takeProfitRRaw)) ? Number(takeProfitRRaw) : null;
   const trailMode = normalizeTrailMode(params.input.trailMode ?? null);
   if (trailMode == null) {
     return { valid: false, error: 'Missing/invalid trail_mode (none|atr|structure)' };
   }
-  const takeProfitRRaw = params.input.takeProfitR;
-  const takeProfitR =
-    takeProfitRRaw != null && Number.isFinite(Number(takeProfitRRaw)) ? Number(takeProfitRRaw) : null;
+  if (takeProfitR == null && trailMode === 'none') {
+    return {
+      valid: false,
+      error: 'Trade contract requires take_profit_r or trail_mode!=none',
+    };
+  }
   if (takeProfitR != null && takeProfitR <= 0) {
     return { valid: false, error: 'take_profit_r must be > 0 when provided' };
   }
@@ -208,12 +211,12 @@ export function validateReduceOnlyExitFsm(params: {
     return { valid: true };
   }
   if (!params.exitMode) {
-      return {
-        valid: false,
-        error:
-          'reduce-only exit requires exit_mode (thesis_invalidation|dynamic_profit_protection|risk_reduction|emergency_risk|take_profit|time_exit) when exit FSM is enabled',
-      };
-    }
+    return {
+      valid: false,
+      error:
+        'reduce-only exit requires exit_mode (thesis_invalidation|take_profit|time_exit|risk_reduction) when exit FSM is enabled',
+    };
+  }
   if (params.exitMode === 'manual' || params.exitMode === 'unknown') {
     return {
       valid: false,
@@ -227,7 +230,12 @@ export function validateReduceOnlyExitFsm(params: {
       error: 'exit_mode=thesis_invalidation requires thesis_invalidation_hit=true',
     };
   }
-  if (params.exitMode !== 'thesis_invalidation' && params.thesisInvalidationHit === true) {
+  if (
+    (params.exitMode === 'take_profit' ||
+      params.exitMode === 'time_exit' ||
+      params.exitMode === 'risk_reduction') &&
+    params.thesisInvalidationHit === true
+  ) {
     return {
       valid: false,
       error: 'thesis_invalidation_hit=true conflicts with non-invalidation exit_mode',
@@ -260,7 +268,10 @@ export function normalizeReduceOnlyExitFsmInput(params: {
     thesisInvalidationHit = true;
   }
 
-  if (exitMode !== 'thesis_invalidation' && thesisInvalidationHit === true) {
+  if (
+    (exitMode === 'take_profit' || exitMode === 'time_exit' || exitMode === 'risk_reduction') &&
+    thesisInvalidationHit === true
+  ) {
     thesisInvalidationHit = false;
   }
 

@@ -22,7 +22,7 @@ describe('tool-executor calibration risk policy hook', () => {
     const { executeToolCall } = await import('../../src/core/tool-executor.js');
 
     let executedSize = 0;
-    let reservedSize = 0;
+    let reservedUsd = 0;
 
     const marketClient = {
       getMarket: async (symbol: string) => ({
@@ -48,8 +48,8 @@ describe('tool-executor calibration risk policy hook', () => {
       cancelOrder: async () => {},
     };
     const limiter = {
-      checkAndReserve: async (size: number) => {
-        reservedSize = size;
+      checkAndReserve: async (amountUsd: number) => {
+        reservedUsd = amountUsd;
         return { allowed: true };
       },
       confirm: () => {},
@@ -64,7 +64,7 @@ describe('tool-executor calibration risk policy hook', () => {
 
     expect(res.success).toBe(true);
     expect(executedSize).toBe(0.5);
-    expect(reservedSize).toBe(0.5);
+    expect(reservedUsd).toBe(25000);
     expect((res.data as any).policy?.size_multiplier).toBe(0.5);
     expect((res.data as any).policy?.requested_size).toBe(1);
     expect((res.data as any).policy?.effective_size).toBe(0.5);

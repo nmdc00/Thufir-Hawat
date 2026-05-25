@@ -63,7 +63,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
   computeFractionalKellyFraction: () => 0.25,
   evaluateGlobalTradeGate: () => ({ allowed: true, policyState: {} }),
   evaluateNewsEntryGate: () => ({ allowed: true }),
-  inferBroadMarketPosture: () => 'neutral',
   isSignalClassAllowedForRegime: () => true,
   resolveLiquidityBucket: () => 'normal',
   resolveVolatilityBucket: () => 'medium',
@@ -71,7 +70,6 @@ vi.mock('../../src/core/autonomy_policy.js', () => ({
 
 vi.mock('../../src/core/signal_performance.js', () => ({
   summarizeSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
-  summarizeComparableSignalPerformance: () => ({ sampleCount: 0, expectancy: 0.5, variance: 0.5 }),
 }));
 
 vi.mock('../../src/memory/autonomy_policy_state.js', () => ({
@@ -141,7 +139,7 @@ describe('AutonomousManager scan snapshot reuse', () => {
 
     const gateLlm = {
       complete: vi.fn(async () => ({
-        content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }),
+        content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: 68000, equityAtRiskPct: 2.5, targetRR: 2.0 }),
         model: 'test',
       })),
     } as any;
