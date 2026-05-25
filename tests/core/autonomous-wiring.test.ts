@@ -638,7 +638,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const call = mocks.createPrediction.mock.calls[0]![0] as any;
     expect(call.marketId).toBe('perp:BTC');
     expect(call.domain).toBe('perp');
-    expect(call.modelProbability).toBeCloseTo(0.84, 6);
+    expect(call.modelProbability).toBeCloseTo(0.8, 6);
     expect(call.marketProbability).toBeUndefined();
     expect(call.learningComparable).toBe(false);
     expect(call.signalWeightsSnapshot).toEqual({

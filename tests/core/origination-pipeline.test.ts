@@ -60,39 +60,9 @@ vi.mock('../../src/markets/context.js', () => ({
 }));
 
 const mockRecordEntryGateDecision = vi.fn();
-const mockListPerpTradeJournals = vi.fn(() => []);
-const mockSummarizeSignalPerformance = vi.fn(() => ({
-  signalClass: 'momentum_breakout',
-  sampleCount: 0,
-  observedCount: 0,
-  blockedCount: 0,
-  unresolvedCount: 0,
-  wins: 0,
-  losses: 0,
-  thesisCorrectRate: 0,
-  expectancy: 0,
-  variance: 0,
-  sharpeLike: 0,
-  maeProxy: 0,
-  mfeProxy: 0,
-}));
-const mockComputeRollingWindowMetrics = vi.fn(() => []);
 
 vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
   recordEntryGateDecision: (...args: unknown[]) => mockRecordEntryGateDecision(...args),
-}));
-
-vi.mock('../../src/memory/perp_trade_journal.js', () => ({
-  listPerpTradeJournals: (...args: unknown[]) => mockListPerpTradeJournals(...args),
-}));
-
-vi.mock('../../src/core/signal_performance.js', () => ({
-  summarizeSignalPerformance: (...args: unknown[]) => mockSummarizeSignalPerformance(...args),
-  summarizeComparableSignalPerformance: (...args: unknown[]) => mockSummarizeSignalPerformance(...args),
-}));
-
-vi.mock('../../src/memory/learning_metrics.js', () => ({
-  computeRollingWindowMetrics: (...args: unknown[]) => mockComputeRollingWindowMetrics(...args),
 }));
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
@@ -110,9 +80,11 @@ import type { PositionBook, BookEntry } from '../../src/core/position_book.js';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeSnapshot(symbol: string, alertReason?: string): TaSnapshot {
+  const price =
+    symbol === 'BTC' ? 65_000 : symbol === 'ETH' ? 3_000 : symbol === 'SOL' ? 150 : 100;
   return {
     symbol,
-    price: 100,
+    price,
     priceVs24hHigh: 0,
     priceVs24hLow: 0,
     oiUsd: 1_000_000,
@@ -148,13 +120,11 @@ function makeBundle(overrides?: Partial<OriginationInputBundle>): OriginationInp
 function makeBook(opts?: {
   hasConflict?: boolean;
   hasPosition?: boolean;
-  oppositeSideLosers?: Array<{ symbol: string; side: 'long' | 'short'; unrealizedPnlUsd: number }>;
   entries?: BookEntry[];
 }): PositionBook {
   return {
     hasConflict: vi.fn().mockReturnValue(opts?.hasConflict ?? false),
     hasPosition: vi.fn().mockReturnValue(opts?.hasPosition ?? false),
-    findOppositeSideLosers: vi.fn().mockReturnValue(opts?.oppositeSideLosers ?? []),
     getAll: vi.fn().mockReturnValue(opts?.entries ?? []),
     get: vi.fn(),
     refresh: vi.fn(),
@@ -414,7 +384,7 @@ describe('Section 3: LlmTradeOriginator → EntryGate handoff shape', () => {
 
   it('gate approve: executor called with correct symbol', async () => {
     const book = makeBook();
-    const gateMainLlm = makeLlmClient(JSON.stringify({ verdict: 'approve', reasoning: 'strong setup', stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }));
+    const gateMainLlm = makeLlmClient(JSON.stringify({ verdict: 'approve', reasoning: 'strong setup', stopLevelPrice: 64000, equityAtRiskPct: 2.5, targetRR: 2.0 }));
     const gate = new LlmEntryGate(gateMainLlm, makeLlmClient(null), vi.fn().mockResolvedValue(undefined), book, dummyConfig);
     const mockExecute = vi.fn().mockResolvedValue({ success: true });
 
