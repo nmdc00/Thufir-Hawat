@@ -122,7 +122,7 @@ function makeApproveLlm(overrides?: Partial<{ stopLevelPrice: number | null; sug
       content: JSON.stringify({
         verdict: 'approve',
         reasoning: 'ok',
-        stopLevelPrice: overrides?.stopLevelPrice ?? null,
+        stopLevelPrice: overrides?.stopLevelPrice ?? 60000,
         equityAtRiskPct: 2.5,
         targetRR: 2.0,
         ...(overrides?.suggestedLeverage != null ? { suggestedLeverage: overrides.suggestedLeverage } : {}),
@@ -186,7 +186,7 @@ describe('autonomous exit policy — writes exit policy after execution', () => 
     expect(timeStopAtMs).toBeGreaterThan(Date.now()); // should be in the future
     // Default TTL is 120 minutes
     expect(timeStopAtMs).toBeLessThanOrEqual(Date.now() + 120 * 60_000 + 5000);
-    expect(invalidationPrice).toBeNull();
+    expect(invalidationPrice).toBe(60000);
   });
 
   it('timeStopAtMs is within expected default TTL window (120 min from now)', async () => {

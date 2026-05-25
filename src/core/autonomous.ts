@@ -81,8 +81,47 @@ function clampSignedScore(value: number): number {
   return Math.max(-1, Math.min(1, value));
 }
 
+function toFiniteNumberOrNull(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function toPolicyDirection(side: 'buy' | 'sell'): 'long' | 'short' {
   return side === 'buy' ? 'long' : 'short';
+}
+
+function parseTextPriceLevel(raw: string): number | null {
+  const normalized = raw.trim().toLowerCase().replace(/,/g, '');
+  const match = normalized.match(/(\d+(?:\.\d+)?)([kmb])?/);
+  if (!match) return null;
+  const base = Number(match[1]);
+  if (!Number.isFinite(base) || base <= 0) return null;
+  const suffix = match[2];
+  const multiplier =
+    suffix === 'k' ? 1_000 :
+    suffix === 'm' ? 1_000_000 :
+    suffix === 'b' ? 1_000_000_000 :
+    1;
+  return base * multiplier;
+}
+
+function resolveExpressionInvalidationPrice(
+  invalidation: string | null | undefined,
+  side: 'buy' | 'sell',
+  markPrice: number | null
+): number | null {
+  if (typeof invalidation === 'string' && invalidation.trim().length > 0) {
+    const parsed = parseTextPriceLevel(invalidation);
+    if (parsed != null) {
+      return parsed;
+    }
+  }
+  const price = toFiniteNumberOrNull(markPrice);
+  if (price == null || price <= 0) return null;
+  const defaultStopBufferPct = 0.015;
+  return side === 'buy'
+    ? price * (1 - defaultStopBufferPct)
+    : price * (1 + defaultStopBufferPct);
 }
 
 function resolvePredictionSignalWeights(config: ThufirConfig): SignalWeights {
@@ -1595,6 +1634,11 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       let size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
       let targetLeverage =
         globalGate.leverageCap != null ? Math.min(expr.leverage, globalGate.leverageCap) : expr.leverage;
+      const expressionInvalidationPrice = resolveExpressionInvalidationPrice(
+        expr.invalidation,
+        expr.side,
+        markPrice || null
+      );
 
       const riskCheck = await checkPerpRiskLimits({
         config: this.thufirConfig,
@@ -1640,11 +1684,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         regime,
         session: sessionContext.session,
         entryReasoning: expr.expectedMove ?? '',
+        invalidationPrice: expressionInvalidationPrice,
         mechanicalMinEdge: adaptiveMinEdge,
         mechanicalMinConfidence: this.config.requireHighConfidence ? 0.7 : 0,
       };
       let entryGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
       let entryGateReasonCode: string | null = null;
+      let finalInvalidationPrice = expressionInvalidationPrice;
       if (this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false) {
         const gateDecision = await this.entryGate.evaluate(gateCandidate, markPrice);
         entryGateVerdict = gateDecision.verdict;
@@ -1691,6 +1737,44 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         if (gateDecision.suggestedLeverage != null) {
           targetLeverage = gateDecision.suggestedLeverage;
         }
+        finalInvalidationPrice =
+          toFiniteNumberOrNull(gateDecision.stopLevelPrice) ?? finalInvalidationPrice;
+      }
+
+      if (finalInvalidationPrice == null) {
+        try {
+          recordPerpTradeJournal({
+            kind: 'perp_trade_journal',
+            execution_mode: this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper',
+            tradeId: null,
+            hypothesisId: expr.hypothesisId ?? null,
+            symbol,
+            side: expr.side,
+            size,
+            leverage: targetLeverage ?? null,
+            orderType: expr.orderType ?? null,
+            reduceOnly: false,
+            markPrice: markPrice || null,
+            confidence: String(confidenceWeighted),
+            reasoning: `Blocked: missing machine-readable invalidation price${policyReasoning ? ` | ${policyReasoning}` : ''}`,
+            signalClass,
+            symbolClass,
+            marketRegime: regime,
+            volatilityBucket,
+            liquidityBucket,
+            expectedEdge: expr.expectedEdge,
+            policyReasonCode: globalGate.reasonCode ?? null,
+            policyReason: globalGate.reason ?? null,
+            policySizeMultiplier: policySizeMultiplier < 1 ? policySizeMultiplier : null,
+            entryGateVerdict,
+            entryGateReasonCode: entryGateReasonCode ?? 'invalidation_missing',
+            outcome: 'blocked',
+            error: 'Missing machine-readable invalidation price',
+          });
+        } catch { /* best-effort */ }
+        outputs.push(`${symbol}: Blocked (missing machine-readable invalidation price)`);
+        this.limiter.release(probeUsd);
+        continue;
       }
       // gate approved or was disabled; fall through to executor.execute()
 
@@ -1795,12 +1879,13 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             thesis: decision.reasoning ?? `${symbol} ${side} thesis`,
             side,
             tradeType: expr.newsTrigger?.enabled ? 'structural' : 'tactical',
+            invalidationPrice: finalInvalidationPrice,
           });
           upsertPositionExitPolicy(
             symbol,
             side,
             timeStopAtMs,
-            null,
+            finalInvalidationPrice,
             serializeExitContract(exitContract),
             predictionId
           );
