@@ -117,6 +117,15 @@ vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
   recordEntryGateDecision: vi.fn(),
 }));
 
+const executeToolCall = vi.fn(async () => ({
+  success: true,
+  data: { executed: true, message: 'paper ok' },
+}));
+
+vi.mock('../../src/core/tool-executor.js', () => ({
+  executeToolCall,
+}));
+
 const baseConfig = {
   autonomy: {
     enabled: true,
@@ -156,6 +165,7 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     // Exactly 1 LLM call: the entry gate. Discovery/filter/evaluate pipeline is deterministic.
     // No enrichment (asyncEnrichment disabled by default), so no additional calls.
     expect(llmComplete).toHaveBeenCalledTimes(1);
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
   });
 
   it('calls LLM exactly twice for gate + async enrichment when asyncEnrichment is enabled', async () => {
@@ -202,6 +212,7 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     // 2 LLM calls: 1 for entry gate (approve), 1 for async enrichment synthesis
     // Not 3+ (no orchestrator plan+execute pattern)
     expect(llmComplete).toHaveBeenCalledTimes(2);
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     // The enrichment call (2nd) is a simple role-based message, not a plan payload
     const [messages] = llmComplete.mock.calls[1]!;
     expect(messages[0]).toMatchObject({ role: 'system' });
@@ -209,6 +220,10 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
   });
 
   it('stops before executor execution when the shared lifecycle limiter blocks after entry review', async () => {
+    executeToolCall.mockResolvedValueOnce({
+      success: false,
+      error: 'test limit',
+    });
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     const llmComplete = vi.fn(async () => ({
       content: JSON.stringify({
@@ -237,6 +252,7 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
 
     expect(result).toBeTruthy();
     expect(llmComplete).toHaveBeenCalledTimes(1);
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
@@ -267,7 +283,8 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     await manager.runScan();
 
     expect(llmComplete).not.toHaveBeenCalled();
-    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
+    expect(executor.execute).not.toHaveBeenCalled();
   });
 
   it('equity guard: blocks new entries when free cash is zero (ignores unrealized PnL)', async () => {
@@ -298,6 +315,7 @@ describe('autonomous scan bypass — LLM not called for discovery/filter/evaluat
     await manager.runScan();
 
     // Free cash = 0, so remaining = 0, so probeUsd < minOrder, so trade is skipped
+    expect(executeToolCall).not.toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
 
     // Restore for other tests

@@ -193,6 +193,58 @@ vi.mock('../../src/core/position_book.js', () => {
   return { PositionBook };
 });
 
+const executeToolCall = vi.hoisted(() =>
+  vi.fn(async (_toolName: string, input: Record<string, unknown>) => {
+    let predictionId: string | null = null;
+    if (input.create_learning_prediction === true && input.reduce_only !== true) {
+      predictionId = mocks.createPrediction({
+        marketId: `perp:${String(input.symbol)}`,
+        marketTitle: String(input.prediction_market_title ?? `${String(input.symbol)} perp trade`),
+        predictedOutcome: input.side === 'buy' ? 'YES' : 'NO',
+        predictedProbability: input.prediction_model_probability,
+        modelProbability: input.prediction_model_probability,
+        marketProbability: input.prediction_market_probability,
+        signalScores: input.prediction_signal_scores,
+        signalWeightsSnapshot: input.prediction_signal_weights,
+        sessionTag: input.prediction_session_tag,
+        regimeTag: input.prediction_regime_tag,
+        strategyClass: input.prediction_strategy_class,
+        symbol: input.symbol,
+        domain: 'perp',
+        learningComparable: false,
+        horizonMinutes: input.prediction_horizon_minutes,
+        reasoning: input.prediction_reasoning ?? input.reasoning,
+        executed: true,
+        executionPrice: 70000,
+        positionSize: input.size,
+      }) as string;
+    }
+    if (input.reduce_only !== true) {
+      mocks.upsertExitPolicy(
+        input.symbol,
+        input.side === 'buy' ? 'long' : 'short',
+        input.time_stop_at_ms ?? null,
+        input.invalidation_price ?? null,
+        null,
+        predictionId
+      );
+    }
+    return {
+      success: true,
+      data: {
+        executed: true,
+        message: 'paper ok',
+        positionSize: input.size,
+        executionPrice: 70000,
+      },
+    };
+  })
+);
+
+vi.mock('../../src/core/tool-executor.js', () => ({
+  executeToolCall,
+}));
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeGateLlm(verdict: 'approve' | 'reject' | 'resize', adjustedSizeUsd?: number) {
@@ -305,11 +357,12 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
     const result = await manager.runScan({ forceExecute: true });
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    const decision = executor.execute.mock.calls[0]![1];
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
+    expect(executor.execute).not.toHaveBeenCalled();
+    const decision = executeToolCall.mock.calls[0]![1];
     expect(decision.symbol).toBe('BTC');
     expect(decision.side).toBe('buy');
-    expect(decision.modelProbability).toBe(0.72);
+    expect(decision.prediction_model_probability).toBe(0.72);
 
     // Exit policy: invalidationPrice = 68000, TTL = 45 min
     expect(mocks.upsertExitPolicy).toHaveBeenCalledTimes(1);
@@ -501,8 +554,9 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
     await manager.runScan({ forceExecute: true });
 
-    expect(executor.execute).toHaveBeenCalledTimes(1);
-    const decision = executor.execute.mock.calls[0]![1];
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
+    expect(executor.execute).not.toHaveBeenCalled();
+    const decision = executeToolCall.mock.calls[0]![1];
     // size = adjustedSizeUsd / markPrice = 15 / 70000
     expect(decision.size).toBeCloseTo(15 / 70000, 6);
   });
@@ -543,6 +597,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     await manager.runScan({ forceExecute: true });
     const after = Date.now();
 
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     expect(mocks.upsertExitPolicy).toHaveBeenCalledTimes(1);
     const [, , timeStop] = mocks.upsertExitPolicy.mock.calls[0]!;
     const expectedMin = before + 45 * 60 * 1000;
@@ -561,6 +616,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
     await manager.runScan({ forceExecute: true });
 
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     expect(mocks.createPrediction).toHaveBeenCalledTimes(1);
     const call = mocks.createPrediction.mock.calls[0]![0] as any;
     expect(call.symbol).toBe('BTC');
@@ -617,6 +673,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
     await manager.runScan({ forceExecute: true });
 
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
     expect(mocks.createPrediction).toHaveBeenCalledTimes(1);
     const call = mocks.createPrediction.mock.calls[0]![0] as any;
     expect(call.marketId).toBe('perp:BTC');
