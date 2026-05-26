@@ -1054,6 +1054,10 @@ const ConfigSchema = z.object({
         .object({
           enabled: z.boolean().default(false),
           intervalMinutes: z.number().default(30),
+          timeoutMs: z.number().default(10000),
+          degradedMode: z.enum(['ok', 'silent', 'notify']).default('ok'),
+          storeHistory: z.boolean().default(false),
+          includeProactiveSummary: z.boolean().default(true),
           suppressLlmDuringActiveChatSeconds: z.number().default(90),
           channels: z.array(z.string()).default([]),
           target: z.string().default('last'),

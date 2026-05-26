@@ -240,6 +240,10 @@ export class ThufirAgent {
       return this.buildAccessReport();
     }
 
+    if (sender === '__heartbeat__') {
+      return this.handleHeartbeat(trimmed);
+    }
+
     // Natural language "enable full auto" should not go through the LLM/tool loop.
     // This prevents "allowed number of steps" failures on vague confirmations like "Go for it."
     const nlFullAutoOn =
@@ -707,6 +711,40 @@ Just type naturally to chat about markets, risks, or positioning.
 
   generateBriefing(): string {
     return buildBriefing(10);
+  }
+
+  async handleHeartbeat(text: string): Promise<string> {
+    const timeoutMs = Math.max(
+      500,
+      Number(this.config.notifications?.heartbeat?.timeoutMs ?? 10_000) || 10_000
+    );
+    const degradedMode = this.config.notifications?.heartbeat?.degradedMode ?? 'ok';
+    const storeHistory = this.config.notifications?.heartbeat?.storeHistory ?? false;
+    try {
+      return await this.conversation.chat(
+        '__heartbeat__',
+        text,
+        undefined,
+        {
+          mode: 'heartbeat',
+          timeoutMs,
+          storeHistory,
+        }
+      );
+    } catch (error) {
+      this.logger.error('Heartbeat conversation error', error);
+      if (degradedMode === 'silent') {
+        return '';
+      }
+      if (degradedMode === 'notify') {
+        const reason =
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message.trim()
+            : 'heartbeat degraded';
+        return `HEARTBEAT_DEGRADED: ${reason}`;
+      }
+      return 'HEARTBEAT_OK';
+    }
   }
 
   private async autonomousScan(): Promise<string> {
