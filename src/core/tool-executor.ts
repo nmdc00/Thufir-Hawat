@@ -30,7 +30,12 @@ import {
   listPerpTradeJournals,
   type PerpTradeJournalEntry,
 } from '../memory/perp_trade_journal.js';
-import { createPrediction, findOpenPerpPrediction, findOpenPerpPredictionById } from '../memory/predictions.js';
+import {
+  createPrediction,
+  findOpenPerpPrediction,
+  findOpenPerpPredictionById,
+  normalizeLearningComparableInput,
+} from '../memory/predictions.js';
 import { recordDecisionAudit } from '../memory/decision_audit.js';
 import { storeDecisionArtifact } from '../memory/decision_artifacts.js';
 import { listRecentAgentIncidents } from '../memory/incidents.js';
@@ -609,7 +614,7 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
     params.toolInput.prediction_strategy_class.trim().length > 0
       ? params.toolInput.prediction_strategy_class.trim()
       : params.signalClass;
-  const learningComparable =
+  const learningComparableRequested =
     typeof params.toolInput.prediction_learning_comparable === 'boolean'
       ? params.toolInput.prediction_learning_comparable
       : false;
@@ -624,6 +629,13 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
   }
 
   const predictedOutcome = params.side === 'buy' ? 'YES' : 'NO';
+  const learningComparable = normalizeLearningComparableInput({
+    domain: 'perp',
+    predictedOutcome,
+    modelProbability: modelProbability ?? undefined,
+    marketProbability: marketProbability ?? undefined,
+    learningComparable: learningComparableRequested,
+  });
   const predictionId = createPrediction({
     marketId: `perp:${params.symbol}`,
     marketTitle,
@@ -2716,6 +2728,9 @@ export async function executeToolCall(
             } catch { }
           }
         }
+        const responsePredictionId = reduceOnly
+          ? activeExitPolicy?.predictionId ?? findOpenPerpPrediction(symbol)?.id ?? null
+          : predictionId;
         try {
           await maybeResolvePerpPredictionFromClose({
             ctx,
@@ -2746,7 +2761,7 @@ export async function executeToolCall(
             ...result,
             mode: bookMode,
             trade_id: lifecycleTradeId,
-            prediction_id: predictionId,
+            prediction_id: responsePredictionId,
             reduce_only_postcondition: paperReduceOnlyPostcondition,
             policy: {
               reason_code: policyGate.reasonCode ?? null,
