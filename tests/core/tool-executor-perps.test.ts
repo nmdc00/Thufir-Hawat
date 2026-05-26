@@ -1360,6 +1360,109 @@ describe('tool-executor perps', () => {
     }
   });
 
+  it('does not admit synthetic perp comparable learning cases from perp_place_order', async () => {
+    const executor = new PaperExecutor({ initialCashUsdc: 200 });
+    const limiter = {
+      checkAndReserve: async () => ({ allowed: true }),
+      confirm: () => {},
+      release: () => {},
+    };
+    const ctx = {
+      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
+      marketClient,
+      executor,
+      limiter,
+    };
+
+    const result = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCOMP',
+        side: 'buy',
+        size: 0.01,
+        mode: 'paper',
+        create_learning_prediction: true,
+        prediction_model_probability: 0.74,
+        prediction_market_probability: 0.5,
+        prediction_learning_comparable: true,
+      },
+      ctx
+    );
+
+    expect(result.success).toBe(true);
+
+    const prediction = listLearningCases({
+      caseType: 'comparable_forecast',
+      entityType: 'symbol',
+      entityId: 'BTCCOMP',
+      limit: 1,
+    })[0];
+    expect(prediction).toBeTruthy();
+    expect(prediction.sourcePredictionId).toBeTruthy();
+
+    const storedPrediction = getPrediction(String(prediction.sourcePredictionId));
+    expect(storedPrediction?.learningComparable).toBe(false);
+    expect(storedPrediction?.marketProbability).toBe(0.5);
+
+    expect(prediction.comparable).toBe(false);
+    expect(prediction.comparatorKind).toBeNull();
+    expect(prediction.exclusionReason).toBe('missing_comparator');
+    expect(prediction.baseline?.marketProbability).toBe(0.5);
+  });
+
+  it('returns the linked prediction id on reduce-only close responses', async () => {
+    const executor = new PaperExecutor({ initialCashUsdc: 200 });
+    const limiter = {
+      checkAndReserve: async () => ({ allowed: true }),
+      confirm: () => {},
+      release: () => {},
+    };
+    const ctx = {
+      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
+      marketClient,
+      executor,
+      limiter,
+    };
+
+    const openResult = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCLOSEID',
+        side: 'buy',
+        size: 0.01,
+        mode: 'paper',
+        create_learning_prediction: true,
+        prediction_model_probability: 0.74,
+        prediction_market_probability: 0.5,
+        prediction_learning_comparable: true,
+      },
+      ctx
+    );
+    expect(openResult.success).toBe(true);
+    const openPredictionId = (openResult.data as { prediction_id?: string | null }).prediction_id;
+    expect(openPredictionId).toBeTruthy();
+
+    const closeResult = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCLOSEID',
+        side: 'sell',
+        size: 0.01,
+        reduce_only: true,
+        mode: 'paper',
+        exit_mode: 'manual',
+        emergency_override: true,
+        emergency_reason: 'test close response prediction id',
+      },
+      ctx
+    );
+    expect(closeResult.success).toBe(true);
+    expect((closeResult.data as { prediction_id?: string | null }).prediction_id).toBe(openPredictionId);
+
+    const storedPrediction = getPrediction(String(openPredictionId));
+    expect(storedPrediction?.outcomeBasis).toBe('final');
+  });
+
   it('get_fills paper mode returns fill history with realized PnL after open+close', async () => {
     const executor = new PaperExecutor({ initialCashUsdc: 200 });
     const limiter = {
