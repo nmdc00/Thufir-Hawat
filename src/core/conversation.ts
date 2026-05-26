@@ -62,6 +62,12 @@ export interface ConversationContext {
   conversationHistory: ChatMessage[];
 }
 
+export interface ConversationChatOptions {
+  mode?: 'default' | 'heartbeat';
+  timeoutMs?: number;
+  storeHistory?: boolean;
+}
+
 // Base system prompt is minimal - identity comes from workspace files
 const SYSTEM_PROMPT_BASE = `## Operating Rules
 
@@ -365,14 +371,25 @@ export class ConversationHandler {
   async chat(
     userId: string,
     message: string,
-    onProgress?: (message: string) => Promise<void> | void
+    onProgress?: (message: string) => Promise<void> | void,
+    options?: ConversationChatOptions
   ): Promise<string> {
+    const chatMode = options?.mode ?? 'default';
+    const isHeartbeatMode = chatMode === 'heartbeat';
+    const shouldStoreHistory = options?.storeHistory ?? !isHeartbeatMode;
     return withExecutionContext(
-      { mode: 'FULL_AGENT', critical: false, reason: 'chat', source: 'conversation' },
+      {
+        mode: isHeartbeatMode ? 'LIGHT_REASONING' : 'FULL_AGENT',
+        critical: false,
+        reason: isHeartbeatMode ? 'heartbeat' : 'chat',
+        source: 'conversation',
+      },
       async () => {
-        const alertResponse = await this.handleIntelAlertSetup(userId, message);
-        if (alertResponse) {
-          return alertResponse;
+        if (!isHeartbeatMode) {
+          const alertResponse = await this.handleIntelAlertSetup(userId, message);
+          if (alertResponse) {
+            return alertResponse;
+          }
         }
 
         const timeContext = await this.buildCurrentTimeContext();
@@ -535,6 +552,124 @@ export class ConversationHandler {
           }
           response = appendProactiveAttribution(response, proactiveSnapshot ?? null);
 
+          if (shouldStoreHistory) {
+            this.sessions.appendEntry(userId, {
+              type: 'message',
+              role: 'user',
+              content: message,
+              timestamp: new Date().toISOString(),
+            });
+            this.sessions.appendEntry(userId, {
+              type: 'message',
+              role: 'assistant',
+              content: response,
+              timestamp: new Date().toISOString(),
+            });
+
+            const sessionId = this.sessions.getSessionId(userId);
+            const userMessageId = storeChatMessage({
+              sessionId,
+              role: 'user',
+              content: message,
+            });
+            const assistantMessageId = storeChatMessage({
+              sessionId,
+              role: 'assistant',
+              content: response,
+            });
+
+            await this.chatVectorStore.add({
+              id: userMessageId,
+              text: message,
+            });
+            await this.chatVectorStore.add({
+              id: assistantMessageId,
+              text: response,
+            });
+          }
+
+          return response;
+        }
+
+        const toolFirstContext = proactiveContext ? '' : await this.runToolFirstGuard(message);
+        const messages: ChatMessage[] = [];
+        if (isHeartbeatMode) {
+          const contextBlock = [
+            timeContext,
+            liveAccountSnapshot,
+            proactiveContext,
+            toolFirstContext,
+          ]
+            .filter(Boolean)
+            .join('\n');
+          const systemMessage = contextBlock
+            ? `${this.getSystemPrompt(userId)}\n\n---\n\n${contextBlock}`
+            : this.getSystemPrompt(userId);
+          messages.push(
+            { role: 'system', content: systemMessage },
+            { role: 'user', content: message }
+          );
+        } else {
+          const summary = this.sessions.getSummary(userId);
+          const maxHistory = this.config.memory?.maxHistoryMessages ?? 50;
+          const compactAfterTokens = this.config.memory?.compactAfterTokens ?? 12000;
+          const keepRecent = this.config.memory?.keepRecentMessages ?? 12;
+
+          await this.sessions.compactIfNeeded({
+            userId,
+            llm: this.infoLlm ?? this.llm,
+            maxMessages: maxHistory,
+            compactAfterTokens,
+            keepRecent,
+          });
+
+          const history = this.sessions.buildContextMessages(userId, maxHistory);
+
+          const userContext = buildUserContext(userId, this.config);
+          const intelContext = buildIntelContext();
+          const semanticIntelContext = await buildSemanticIntelContext(message, this.config);
+          const semanticChatContext = await this.buildSemanticChatContext(message, userId);
+
+          const contextBlock = [
+            userContext,
+            timeContext,
+            liveAccountSnapshot,
+            proactiveContext,
+            toolFirstContext,
+            summary ? `## Conversation Summary\n${summary}` : '',
+            intelContext,
+            semanticIntelContext,
+            semanticChatContext,
+          ]
+            .filter(Boolean)
+            .join('\n');
+
+          const systemMessage = await this.buildPlannerSystemMessage({
+            basePrompt: this.getSystemPrompt(userId),
+            contextBlock,
+            userMessage: message,
+          });
+          messages.push(
+            { role: 'system', content: systemMessage },
+            ...history,
+            { role: 'user', content: message }
+          );
+        }
+
+        const response = await this.completeWithFallback(messages, {
+          temperature: isHeartbeatMode ? 0.3 : 0.7,
+          timeoutMs: options?.timeoutMs,
+        });
+
+        // Don't store empty responses (prevents history corruption from failed calls)
+        if (!response.content || response.content.trim() === '') {
+          throw new Error('LLM returned empty response');
+        }
+
+        const userEntry: ChatMessage = { role: 'user', content: message };
+        const assistantEntry: ChatMessage = { role: 'assistant', content: response.content };
+
+        if (shouldStoreHistory) {
           this.sessions.appendEntry(userId, {
             type: 'message',
             role: 'user',
@@ -544,7 +679,7 @@ export class ConversationHandler {
           this.sessions.appendEntry(userId, {
             type: 'message',
             role: 'assistant',
-            content: response,
+            content: response.content,
             timestamp: new Date().toISOString(),
           });
 
@@ -557,121 +692,26 @@ export class ConversationHandler {
           const assistantMessageId = storeChatMessage({
             sessionId,
             role: 'assistant',
-            content: response,
+            content: response.content,
           });
 
           await this.chatVectorStore.add({
             id: userMessageId,
-            text: message,
+            text: userEntry.content,
           });
           await this.chatVectorStore.add({
             id: assistantMessageId,
-            text: response,
+            text: assistantEntry.content,
           });
-
-          return response;
         }
-
-        const toolFirstContext = proactiveContext ? '' : await this.runToolFirstGuard(message);
-        const summary = this.sessions.getSummary(userId);
-        const maxHistory = this.config.memory?.maxHistoryMessages ?? 50;
-        const compactAfterTokens = this.config.memory?.compactAfterTokens ?? 12000;
-        const keepRecent = this.config.memory?.keepRecentMessages ?? 12;
-
-        await this.sessions.compactIfNeeded({
-          userId,
-          llm: this.infoLlm ?? this.llm,
-          maxMessages: maxHistory,
-          compactAfterTokens,
-          keepRecent,
-        });
-
-        const history = this.sessions.buildContextMessages(userId, maxHistory);
-
-        // Build context
-        const userContext = buildUserContext(userId, this.config);
-        const intelContext = buildIntelContext();
-        const semanticIntelContext = await buildSemanticIntelContext(message, this.config);
-        const semanticChatContext = await this.buildSemanticChatContext(message, userId);
-
-        // Build the full context for this turn
-        const contextBlock = [
-          userContext,
-          timeContext,
-          liveAccountSnapshot,
-          proactiveContext,
-          toolFirstContext,
-          summary ? `## Conversation Summary\n${summary}` : '',
-          intelContext,
-          semanticIntelContext,
-          semanticChatContext,
-        ]
-          .filter(Boolean)
-          .join('\n');
-
-        const systemMessage = await this.buildPlannerSystemMessage({
-          basePrompt: this.getSystemPrompt(userId),
-          contextBlock,
-          userMessage: message,
-        });
-
-        // Build messages array
-        const messages: ChatMessage[] = [
-          { role: 'system', content: systemMessage },
-          ...history,
-          { role: 'user', content: message },
-        ];
-
-        // Call LLM
-        const response = await this.completeWithFallback(messages, { temperature: 0.7 });
-
-        // Don't store empty responses (prevents history corruption from failed calls)
-        if (!response.content || response.content.trim() === '') {
-          throw new Error('LLM returned empty response');
-        }
-
-        const userEntry: ChatMessage = { role: 'user', content: message };
-        const assistantEntry: ChatMessage = { role: 'assistant', content: response.content };
-
-        this.sessions.appendEntry(userId, {
-          type: 'message',
-          role: 'user',
-          content: message,
-          timestamp: new Date().toISOString(),
-        });
-        this.sessions.appendEntry(userId, {
-          type: 'message',
-          role: 'assistant',
-          content: response.content,
-          timestamp: new Date().toISOString(),
-        });
-
-        const sessionId = this.sessions.getSessionId(userId);
-        const userMessageId = storeChatMessage({
-          sessionId,
-          role: 'user',
-          content: message,
-        });
-        const assistantMessageId = storeChatMessage({
-          sessionId,
-          role: 'assistant',
-          content: response.content,
-        });
-
-        await this.chatVectorStore.add({
-          id: userMessageId,
-          text: userEntry.content,
-        });
-        await this.chatVectorStore.add({
-          id: assistantMessageId,
-          text: assistantEntry.content,
-        });
 
         let reply = response.content;
         reply = appendProactiveAttribution(reply, proactiveSnapshot ?? null);
-        const prompt = this.maybePromptIntelAlerts(userId);
-        if (prompt) {
-          reply = `${reply}\n\n${prompt}`;
+        if (!isHeartbeatMode) {
+          const prompt = this.maybePromptIntelAlerts(userId);
+          if (prompt) {
+            reply = `${reply}\n\n${prompt}`;
+          }
         }
 
         return reply;
@@ -1084,7 +1124,7 @@ ${contextBlock}`.trim();
 
   private async completeWithFallback(
     messages: ChatMessage[],
-    options: { temperature?: number }
+    options: { temperature?: number; timeoutMs?: number }
   ): Promise<{ content: string; model: string }> {
     try {
       return await (this.agenticLlm ?? this.llm).complete(messages, options);
