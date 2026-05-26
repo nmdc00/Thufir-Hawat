@@ -238,15 +238,15 @@ autonomy:
   eventDrivenMinItems: 1
   eventDrivenHeartbeat: true
   strategy: discovery
-  probeRiskFraction: 0.005
+  probeRiskFraction: 0.15
 
   # Full autonomous mode (auto-executes trades)
   fullAuto: false              # Master toggle for auto-execution
-  minEdge: 0.02                # Minimum edge to trade (2%) — LLM entry gate is the real quality bar
-  requireHighConfidence: false # Only trade high-confidence opportunities
+  minEdge: 0.05                # Minimum edge to trade (5%) — weak setups should not reach execution
+  requireHighConfidence: true  # Require both edge and conviction, not just one
   pauseOnLossStreak: 3         # Pause after N consecutive losses
   dailyReportTime: "20:00"     # Time to send daily P&L report
-  maxTradesPerScan: 3          # Max trades per scan cycle
+  maxTradesPerScan: 1          # Concentrate on the single best setup per scan
   tradeContract:
     enabled: false             # Enforce entry trade contract (archetype/invalidation/time stop)
     enforceExitFsm: false      # Require reason-coded reduce-only exits (manual needs emergency override)
@@ -411,6 +411,10 @@ notifications:
   heartbeat:
     enabled: false
     intervalMinutes: 30
+    timeoutMs: 10000
+    degradedMode: ok
+    storeHistory: false
+    includeProactiveSummary: true
     channels: []
     target: last
   intelAlerts:

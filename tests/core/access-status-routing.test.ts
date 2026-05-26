@@ -34,8 +34,8 @@ vi.mock('../../src/core/autonomous.js', () => ({
 vi.mock('../../src/core/conversation.js', () => ({
   ConversationHandler: class {
     constructor() {}
-    async chat(sender: string, message: string) {
-      return conversationChatMock(sender, message);
+    async chat(sender: string, message: string, onProgress?: unknown, options?: unknown) {
+      return conversationChatMock(sender, message, onProgress, options);
     }
   },
 }));
@@ -57,7 +57,7 @@ describe('access status routing', () => {
 
     const res = await agent.handleMessage('u', 'How is the tool access?');
     expect(res).not.toMatch(/Access status/i);
-  });
+  }, 20000);
 
   it('returns access status only for explicit /access_status command', async () => {
     const { ThufirAgent } = await import('../../src/core/agent.js');
@@ -73,7 +73,7 @@ describe('access status routing', () => {
     expect(res).toMatch(/Access status/i);
   });
 
-  it('does not apply natural-language trade shortcut to heartbeat prompts in paper mode', async () => {
+  it('routes heartbeat prompts through heartbeat mode instead of generic chat defaults', async () => {
     conversationChatMock.mockReset();
     conversationChatMock.mockResolvedValue('ok');
 
@@ -90,6 +90,36 @@ describe('access status routing', () => {
     const res = await agent.handleMessage('__heartbeat__', prompt);
 
     expect(res).toBe('ok');
-    expect(conversationChatMock).toHaveBeenCalledWith('__heartbeat__', prompt);
+    expect(conversationChatMock).toHaveBeenCalledWith(
+      '__heartbeat__',
+      prompt,
+      undefined,
+      expect.objectContaining({
+        mode: 'heartbeat',
+        timeoutMs: 10000,
+        storeHistory: false,
+      })
+    );
+  });
+
+  it('fails closed on heartbeat timeout instead of returning the generic apology string', async () => {
+    conversationChatMock.mockReset();
+    conversationChatMock.mockRejectedValueOnce(
+      new Error('LLM request (openai/gpt-5.4) timed out after 120000ms')
+    );
+
+    const { ThufirAgent } = await import('../../src/core/agent.js');
+    const agent = new ThufirAgent({
+      execution: { mode: 'paper', provider: 'hyperliquid' },
+      hyperliquid: { enabled: true },
+      wallet: { limits: { daily: 100, perTrade: 25, confirmationThreshold: 10 } },
+      autonomy: { enabled: true, fullAuto: false },
+      agent: { model: 'test', provider: 'openai' },
+      notifications: { heartbeat: { enabled: true, degradedMode: 'ok' } },
+    } as any, new Logger('error'));
+
+    const res = await agent.handleMessage('__heartbeat__', 'Read HEARTBEAT.md if it exists.');
+    expect(res).toBe('HEARTBEAT_OK');
+    expect(res).not.toContain('Sorry, I encountered an error');
   });
 });

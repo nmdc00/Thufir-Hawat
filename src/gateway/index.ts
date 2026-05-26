@@ -53,7 +53,6 @@ import { formatProactiveSummary, runProactiveSearch } from '../core/proactive_se
 import { buildAgentPeerSessionKey, resolveThreadSessionKeys } from './session_keys.js';
 import { createAgentRegistry } from './agent_router.js';
 import { createLlmClient } from '../core/llm.js';
-import { withExecutionContextIfMissing } from '../core/llm_infra.js';
 import { installConsoleFileMirror } from '../core/unified-logging.js';
 import { PositionHeartbeatService } from '../core/position_heartbeat.js';
 import { resolveOutcomes } from '../core/resolver.js';
@@ -89,6 +88,11 @@ import { enrichEscalationMessage } from './alert_enrichment.js';
 import { EventScanTriggerCoordinator } from '../core/event_scan_trigger.js';
 import { handleDashboardPageRequest } from './dashboard_page.js';
 import { handleDashboardApiRequest } from './dashboard_api.js';
+import {
+  buildScheduledHeartbeatPrompt,
+  classifyHeartbeatResponse,
+  shouldDeliverHeartbeatResponse,
+} from './heartbeat.js';
 
 const config = loadConfig();
 try {
@@ -642,7 +646,6 @@ if (proactiveConfig?.enabled && proactiveConfig.mode !== 'heartbeat') {
 const heartbeatConfig = config.notifications?.heartbeat;
 if (heartbeatConfig?.enabled) {
   const intervalMs = Math.max(1, heartbeatConfig.intervalMinutes ?? 30) * 60 * 1000;
-  const heartbeatUserId = '__heartbeat__';
   const heartbeatPrompt =
     'Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. ' +
     'Do not infer or repeat old tasks from prior chats. ' +
@@ -722,21 +725,28 @@ if (heartbeatConfig?.enabled) {
     if (isHeartbeatEmpty(content)) {
       return;
     }
-    const prompt = proactiveSummary
-      ? `${heartbeatPrompt}\n\n${proactiveSummary}`
-      : heartbeatPrompt;
+    const prompt = buildScheduledHeartbeatPrompt(
+      heartbeatPrompt,
+      proactiveSummary,
+      heartbeatConfig.includeProactiveSummary !== false
+    );
     if (suppressHeartbeatLlm) {
       logger.info('Heartbeat LLM message generation suppressed due to active chat window');
       return;
     }
-    const response = await primaryAgent.handleMessage(heartbeatUserId, prompt);
+    const response = await primaryAgent.handleHeartbeat(prompt);
     if (!response || response.trim().length === 0) {
       return;
     }
     const summary = response.replace(/\s+/g, ' ').trim().slice(0, 240);
     logger.info(`Heartbeat response summary: ${summary}`);
-    const normalized = response.trim().toUpperCase();
-    if (normalized.startsWith('HEARTBEAT_OK')) {
+    const classification = classifyHeartbeatResponse(response);
+    if (!shouldDeliverHeartbeatResponse(response)) {
+      if (classification === 'info') {
+        logger.warn('Heartbeat non-action response suppressed from channel delivery', {
+          summary,
+        });
+      }
       return;
     }
 
@@ -1180,22 +1190,13 @@ if (config.channels?.telegram?.monitor?.enabled) {
       const infoLlm = primaryAgent.getInfoLlm() ?? primaryAgent.getLlm();
       let relevant = false;
       try {
-        const screen = await withExecutionContextIfMissing(
+        const screen = await infoLlm.complete([
           {
-            mode: 'LIGHT_REASONING',
-            critical: false,
-            reason: 'telegram_monitor_relevance',
-            source: 'gateway',
+            role: 'user',
+            content:
+              `Relevance filter for a trading system. Does this news have a direct, immediate impact on tradeable assets (crypto perps, oil, gold, FX)?\n\nNews: ${text.slice(0, 500)}\n\nReply YES or NO only.`,
           },
-          () =>
-            infoLlm.complete([
-              {
-                role: 'user',
-                content:
-                  `Relevance filter for a trading system. Does this news have a direct, immediate impact on tradeable assets (crypto perps, oil, gold, FX)?\n\nNews: ${text.slice(0, 500)}\n\nReply YES or NO only.`,
-              },
-            ], { temperature: 0 })
-        );
+        ], { temperature: 0 });
         relevant = screen.content.trim().toUpperCase().startsWith('YES');
       } catch {
         return;
