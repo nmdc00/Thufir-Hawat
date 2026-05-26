@@ -216,6 +216,12 @@ export const OPEN_SYNTHETIC_PERP_COMPARABLE_WHERE_SQL = `domain = 'perp'
   AND market_probability = 0.5
   AND learning_comparable = 1`;
 
+export const SYNTHETIC_PERP_COMPARABLE_LEARNING_CASE_WHERE_SQL = `case_type = 'comparable_forecast'
+  AND domain = 'perp'
+  AND comparable = 1
+  AND comparator_kind = 'market_price'
+  AND json_extract(baseline_payload, '$.marketProbability') = 0.5`;
+
 function hasPredictionColumns(db: Database.Database, columnNames: string[]): boolean {
   const hasPredictionsTable = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'predictions' LIMIT 1")
@@ -247,6 +253,7 @@ export function ensureLearningSchema(db: Database.Database): void {
   repairActiveTradePolicyAdjustmentScopeMismatches(db);
 
   cleanupSyntheticPerpComparableRows(db);
+  cleanupSyntheticPerpComparableLearningCases(db);
 
   // Recreate views explicitly so older definitions do not survive forever.
   db.exec('DROP VIEW IF EXISTS learning_examples;');
@@ -490,6 +497,26 @@ export function cleanupSyntheticPerpComparableRows(db: Database.Database): numbe
       `UPDATE predictions
        SET learning_comparable = 0
        WHERE ${OPEN_SYNTHETIC_PERP_COMPARABLE_WHERE_SQL}`
+    )
+    .run();
+  return result.changes;
+}
+
+export function cleanupSyntheticPerpComparableLearningCases(db: Database.Database): number {
+  const hasLearningCasesTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_cases' LIMIT 1")
+    .get();
+  if (!hasLearningCasesTable) {
+    return 0;
+  }
+  const result = db
+    .prepare(
+      `UPDATE learning_cases
+       SET comparable = 0,
+           comparator_kind = NULL,
+           exclusion_reason = 'missing_comparator',
+           updated_at = datetime('now')
+       WHERE ${SYNTHETIC_PERP_COMPARABLE_LEARNING_CASE_WHERE_SQL}`
     )
     .run();
   return result.changes;
