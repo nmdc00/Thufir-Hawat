@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { loadConfig, resolveResolverNotificationConfig } from '../../src/core/config.js';
+import { loadConfig } from '../../src/core/config.js';
 
 vi.mock('../../src/core/llm.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/llm.js')>();
@@ -79,26 +79,10 @@ memory: {}
     expect(config.heartbeat.llmExitConsult.roeThresholds).toEqual([3, 7, 15]);
     expect(config.heartbeat.llmExitConsult.approachTtlMinutes).toBe(15);
     expect(config.heartbeat.llmExitConsult.timeoutMs).toBe(8000);
-    expect(config.notifications.resolver.enabled).toBe(true);
-    expect(config.notifications.resolver.intervalSeconds).toBe(900);
-    expect(config.notifications.resolver.limit).toBe(50);
-  });
-
-  it('enables the forecast resolver when notifications.resolver is omitted', () => {
-    const { path } = writeTempConfig(`
-agent:
-  model: claude-3-5-sonnet-20241022
-memory: {}
-notifications:
-  briefing:
-    enabled: false
-`);
-
-    const config = loadConfig(path);
-
-    expect(config.notifications.resolver.enabled).toBe(true);
-    expect(config.notifications.resolver.intervalSeconds).toBe(900);
-    expect(config.notifications.resolver.limit).toBe(50);
+    expect(config.notifications.heartbeat.timeoutMs).toBe(10000);
+    expect(config.notifications.heartbeat.degradedMode).toBe('ok');
+    expect(config.notifications.heartbeat.storeHistory).toBe(false);
+    expect(config.notifications.heartbeat.includeProactiveSummary).toBe(true);
   });
 
   it('rejects invalid enum values', () => {
@@ -122,36 +106,6 @@ memory: {}
 
     const config = loadConfig(path);
     expect(config.gateway.port).toBe(19001);
-  });
-});
-
-describe('resolveResolverNotificationConfig', () => {
-  it('defaults the resolver scheduler on raw configs that omit notifications.resolver', () => {
-    expect(
-      resolveResolverNotificationConfig({
-        notifications: {
-          briefing: { enabled: false, time: '08:00', channels: [] },
-        } as any,
-      } as any)
-    ).toEqual({
-      enabled: true,
-      intervalSeconds: 900,
-      limit: 50,
-    });
-  });
-
-  it('preserves explicit resolver disablement', () => {
-    expect(
-      resolveResolverNotificationConfig({
-        notifications: {
-          resolver: { enabled: false, intervalSeconds: 120, limit: 7 },
-        },
-      } as any)
-    ).toEqual({
-      enabled: false,
-      intervalSeconds: 120,
-      limit: 7,
-    });
   });
 });
 

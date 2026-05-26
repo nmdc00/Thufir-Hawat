@@ -10,6 +10,11 @@ const runOrchestratorMock = vi.fn(async () => ({
   },
   summary: { fragility: null },
 }));
+const appendEntryMock = vi.hoisted(() => vi.fn());
+const compactIfNeededMock = vi.hoisted(() => vi.fn(async () => undefined));
+const buildContextMessagesMock = vi.hoisted(() => vi.fn(() => []));
+const storeChatMessageMock = vi.hoisted(() => vi.fn(() => 'm1'));
+const chatVectorAddMock = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock('../../src/intel/vectorstore.js', () => ({
   IntelVectorStore: class {
@@ -42,11 +47,15 @@ vi.mock('../../src/memory/session_store.js', () => ({
     getSummary() {
       return null;
     }
-    async compactIfNeeded() {}
-    buildContextMessages() {
-      return [];
+    async compactIfNeeded(...args: unknown[]) {
+      return compactIfNeededMock(...args);
     }
-    appendEntry() {}
+    buildContextMessages(...args: unknown[]) {
+      return buildContextMessagesMock(...args);
+    }
+    appendEntry(...args: unknown[]) {
+      return appendEntryMock(...args);
+    }
     getSessionId() {
       return 's1';
     }
@@ -60,7 +69,7 @@ vi.mock('../../src/memory/session_store.js', () => ({
 }));
 
 vi.mock('../../src/memory/chat.js', () => ({
-  storeChatMessage: () => 'm1',
+  storeChatMessage: (...args: unknown[]) => storeChatMessageMock(...args),
   listChatMessagesByIds: () => [],
   clearChatMessages: () => undefined,
   pruneChatMessages: () => 0,
@@ -68,7 +77,9 @@ vi.mock('../../src/memory/chat.js', () => ({
 
 vi.mock('../../src/memory/chat_vectorstore.js', () => ({
   ChatVectorStore: class {
-    async add() {}
+    async add(...args: unknown[]) {
+      return chatVectorAddMock(...args);
+    }
     async query() {
       return [];
     }
@@ -320,5 +331,68 @@ describe('ConversationHandler cooldown fallback', () => {
     const handler = new ConversationHandler(llm, marketClient, config);
     const reply = await handler.chat('__heartbeat__', 'Read HEARTBEAT.md if it exists.');
     expect(reply.startsWith('HEARTBEAT_ACTION:')).toBe(true);
+  });
+
+  it('passes the heartbeat timeout through to the LLM call', async () => {
+    appendEntryMock.mockClear();
+    compactIfNeededMock.mockClear();
+    buildContextMessagesMock.mockClear();
+    storeChatMessageMock.mockClear();
+    chatVectorAddMock.mockClear();
+
+    const { ConversationHandler } = await import('../../src/core/conversation.js');
+    const llm = {
+      complete: vi.fn(async () => ({ content: 'HEARTBEAT_OK', model: 'test' })),
+    } as any;
+    const marketClient = { searchMarkets: vi.fn(async () => []) } as any;
+    const config = {
+      execution: { mode: 'paper', provider: 'hyperliquid' },
+      agent: { useOrchestrator: false, alwaysIncludeTime: false },
+      notifications: { heartbeat: { storeHistory: false } },
+    } as any;
+
+    const handler = new ConversationHandler(llm, marketClient, config);
+    await handler.chat(
+      '__heartbeat__',
+      'Read HEARTBEAT.md if it exists.',
+      undefined,
+      { mode: 'heartbeat', timeoutMs: 4321, storeHistory: false }
+    );
+
+    expect(llm.complete).toHaveBeenCalledTimes(1);
+    expect(llm.complete.mock.calls[0]?.[1]).toMatchObject({ timeoutMs: 4321 });
+    expect(compactIfNeededMock).not.toHaveBeenCalled();
+    expect(buildContextMessagesMock).not.toHaveBeenCalled();
+  });
+
+  it('does not persist heartbeat chat history when storeHistory is false', async () => {
+    appendEntryMock.mockClear();
+    compactIfNeededMock.mockClear();
+    buildContextMessagesMock.mockClear();
+    storeChatMessageMock.mockClear();
+    chatVectorAddMock.mockClear();
+
+    const { ConversationHandler } = await import('../../src/core/conversation.js');
+    const llm = {
+      complete: vi.fn(async () => ({ content: 'HEARTBEAT_OK', model: 'test' })),
+    } as any;
+    const marketClient = { searchMarkets: vi.fn(async () => []) } as any;
+    const config = {
+      execution: { mode: 'paper', provider: 'hyperliquid' },
+      agent: { useOrchestrator: false, alwaysIncludeTime: false },
+      notifications: { heartbeat: { storeHistory: false } },
+    } as any;
+
+    const handler = new ConversationHandler(llm, marketClient, config);
+    await handler.chat(
+      '__heartbeat__',
+      'Read HEARTBEAT.md if it exists.',
+      undefined,
+      { mode: 'heartbeat', storeHistory: false }
+    );
+
+    expect(appendEntryMock).not.toHaveBeenCalled();
+    expect(storeChatMessageMock).not.toHaveBeenCalled();
+    expect(chatVectorAddMock).not.toHaveBeenCalled();
   });
 });
