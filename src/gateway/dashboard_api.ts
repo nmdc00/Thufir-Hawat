@@ -87,6 +87,53 @@ export type LogsResponse = {
   total: number;
 };
 
+type GateAttributionSection = {
+  config: {
+    minEdge: number | null;
+    requireHighConfidence: boolean;
+    maxTradesPerScan: number | null;
+    llmEntryGateEnabled: boolean;
+    tradeQualityEnabled: boolean;
+    calibrationRiskEnabled: boolean;
+    signalPerformanceMinSharpe: number | null;
+    signalPerformanceMinSamples: number | null;
+  };
+  policyState: {
+    observationMode: boolean;
+    minEdgeOverride: number | null;
+    maxTradesPerScanOverride: number | null;
+    leverageCapOverride: number | null;
+    reason: string | null;
+    updatedAt: string | null;
+  };
+  entryGate: {
+    verdictCounts: { approve: number; reject: number; resize: number };
+    reasonCounts: Array<{ reasonCode: string; count: number }>;
+    recentDecisions: Array<{
+      createdAt: string;
+      symbol: string;
+      verdict: string;
+      reasonCode: string | null;
+      adjustedSizeUsd: number | null;
+      suggestedLeverage: number | null;
+      reasoning: string;
+    }>;
+  };
+  journal: {
+    outcomeCounts: { executed: number; failed: number; blocked: number };
+    blockedReasons: Array<{ reason: string; count: number }>;
+    recentPolicyAdjustments: Array<{
+      createdAt: string;
+      symbol: string;
+      policyReasonCode: string | null;
+      policySizeMultiplier: number | null;
+      entryGateVerdict: string | null;
+      entryGateReasonCode: string | null;
+      reasoning: string | null;
+    }>;
+  };
+};
+
 type TimeRange = {
   fromMs: number | null;
   toMs: number | null;
@@ -125,6 +172,74 @@ type EquityCurveSection = {
     endEquity: number | null;
     returnPct: number | null;
     maxDrawdownPct: number | null;
+  };
+};
+
+type LearnedWeightRow = {
+  domain: string;
+  weights: {
+    technical: number | null;
+    news: number | null;
+    onChain: number | null;
+  };
+  samples: number;
+  updatedAt: string | null;
+};
+
+type PredictionAccuracyWindow = {
+  windowSize: number;
+  sampleCount: number;
+  accuracy: number | null;
+  brierModel: number | null;
+  brierMarket: number | null;
+  brierDelta: number | null;
+  avgEdge: number | null;
+  totalPnl: number | null;
+};
+
+type LearningAuditSection = {
+  comparable: {
+    totalCaseCount: number;
+    byDomain: Array<{ domain: string; count: number }>;
+  };
+  exclusions: {
+    totalCaseCount: number;
+    byReason: Array<{ reason: string; count: number }>;
+  };
+  execution: {
+    totalCaseCount: number;
+    byDomain: Array<{ domain: string; count: number }>;
+  };
+};
+
+type CloseLearningSection = {
+  finalizer: {
+    totalJobs: number;
+    pending: number;
+    running: number;
+    finalized: number;
+    failedRetryable: number;
+    failedTerminal: number;
+    delayed: number;
+  };
+  closeEvents: {
+    partialReduces: number;
+    fullCloses: number;
+  };
+  tradeCloses: {
+    total: number;
+    recent: Array<Record<string, unknown>>;
+  };
+  reflections: {
+    total: number;
+  };
+  regretCases: {
+    total: number;
+    byType: Array<{ type: string; count: number }>;
+  };
+  policyLearning: {
+    activeAdjustments: Array<Record<string, unknown>>;
+    promotionEvents: Array<Record<string, unknown>>;
   };
 };
 
@@ -1031,6 +1146,7 @@ type TradeLogRow = {
   side: 'buy' | 'sell' | null;
   signalClass: string | null;
   outcome: 'executed' | 'failed' | 'blocked' | 'unknown';
+  realizedPnlUsd: number | null;
   directionScore: number | null;
   timingScore: number | null;
   sizingScore: number | null;
@@ -1179,6 +1295,8 @@ function listTradeLogRows(
     const timingScore = toOptionalScore(payload.timingScore ?? payload.timing_score);
     const sizingScore = toOptionalScore(payload.sizingScore ?? payload.sizing_score);
     const exitScore = toOptionalScore(payload.exitScore ?? payload.exit_score);
+    const realizedPnlRaw = Number(payload.realizedPnlUsd ?? payload.realized_pnl_usd);
+    const realizedPnlUsd = Number.isFinite(realizedPnlRaw) ? realizedPnlRaw : null;
     const rCapturedRaw = Number(payload.capturedR ?? payload.captured_r);
     const rCaptured = Number.isFinite(rCapturedRaw) ? rCapturedRaw : null;
     const sideRaw = String(payload.side ?? '').trim().toLowerCase();
@@ -1210,6 +1328,7 @@ function listTradeLogRows(
       side,
       signalClass,
       outcome: outcomeRaw as 'executed' | 'failed',
+      realizedPnlUsd,
       directionScore,
       timingScore,
       sizingScore,
@@ -1285,6 +1404,7 @@ function listTradeLogRowsFromPerpTrades(
       side,
       signalClass: null,
       outcome,
+      realizedPnlUsd: null,
       directionScore: null,
       timingScore: null,
       sizingScore: null,
@@ -1445,67 +1565,6 @@ type PerformanceBreakdownRow = {
   winRate: number;
   expectancyR: number;
   sampleCount: number;
-};
-
-type GateAttributionSection = {
-  config: {
-    minEdge: number | null;
-    requireHighConfidence: boolean;
-    maxTradesPerScan: number | null;
-    llmEntryGateEnabled: boolean;
-    tradeQualityEnabled: boolean;
-    calibrationRiskEnabled: boolean;
-    signalPerformanceMinSharpe: number | null;
-    signalPerformanceMinSamples: number | null;
-  };
-  policyState: {
-    observationMode: boolean;
-    minEdgeOverride: number | null;
-    maxTradesPerScanOverride: number | null;
-    leverageCapOverride: number | null;
-    reason: string | null;
-    updatedAt: string | null;
-  };
-  entryGate: {
-    verdictCounts: {
-      approve: number;
-      reject: number;
-      resize: number;
-    };
-    reasonCounts: Array<{
-      reasonCode: string;
-      count: number;
-    }>;
-    recentDecisions: Array<{
-      createdAt: string;
-      symbol: string;
-      verdict: string;
-      reasonCode: string | null;
-      adjustedSizeUsd: number | null;
-      suggestedLeverage: number | null;
-      reasoning: string;
-    }>;
-  };
-  journal: {
-    outcomeCounts: {
-      executed: number;
-      failed: number;
-      blocked: number;
-    };
-    blockedReasons: Array<{
-      reason: string;
-      count: number;
-    }>;
-    recentPolicyAdjustments: Array<{
-      createdAt: string;
-      symbol: string;
-      policyReasonCode: string | null;
-      policySizeMultiplier: number | null;
-      entryGateVerdict: string | null;
-      entryGateReasonCode: string | null;
-      reasoning: string | null;
-    }>;
-  };
 };
 
 function resolveJournalOutcome(payload: Record<string, unknown>): 'executed' | 'failed' | 'blocked' | 'unknown' {
@@ -1939,24 +1998,351 @@ function buildPolicyStateSection(db: Database.Database): {
   };
 }
 
-function buildGateAttributionSection(db: Database.Database): GateAttributionSection {
-  let config: ThufirConfig | null = null;
-  try {
-    config = loadConfig();
-  } catch {
-    config = null;
+function normalizeWeightPayload(value: unknown): LearnedWeightRow['weights'] {
+  const parsed = parseJson<Record<string, unknown>>(value);
+  const technical = Number(parsed?.technical);
+  const news = Number(parsed?.news);
+  const onChain = Number(parsed?.onChain);
+  return {
+    technical: Number.isFinite(technical) ? technical : null,
+    news: Number.isFinite(news) ? news : null,
+    onChain: Number.isFinite(onChain) ? onChain : null,
+  };
+}
+
+function listActiveLearnedWeights(db: Database.Database): LearnedWeightRow[] {
+  if (!tableExists(db, 'signal_weights')) {
+    return [];
+  }
+  const rows = db
+    .prepare(
+      `
+        SELECT domain, weights, samples, updated_at AS updatedAt
+        FROM signal_weights
+        ORDER BY datetime(updated_at) DESC, domain ASC
+        LIMIT 25
+      `
+    )
+    .all() as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    domain: String(row.domain ?? 'global'),
+    weights: normalizeWeightPayload(row.weights),
+    samples: Number(row.samples ?? 0) || 0,
+    updatedAt: row.updatedAt == null ? null : String(row.updatedAt),
+  }));
+}
+
+function buildPredictionAccuracySection(db: Database.Database): {
+  totalFinalPredictions: number;
+  global: PredictionAccuracyWindow[];
+} {
+  if (!tableExists(db, 'learning_examples')) {
+    return { totalFinalPredictions: 0, global: [] };
   }
 
-  const empty: GateAttributionSection = {
+  const totalFinalPredictions = safeCount(db, 'SELECT COUNT(*) AS c FROM learning_examples');
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          id,
+          CASE
+            WHEN model_probability >= 0.5 AND outcome_value = 1 THEN 1
+            WHEN model_probability < 0.5 AND outcome_value = 0 THEN 1
+            ELSE 0
+          END AS correct,
+          brier_model AS brierModel,
+          brier_market AS brierMarket,
+          (brier_market - brier_model) AS brierDelta,
+          (model_probability - market_probability) AS edge,
+          pnl
+        FROM learning_examples
+        ORDER BY datetime(resolved_at) DESC, datetime(created_at) DESC, id DESC
+        LIMIT 500
+      `
+    )
+    .all() as Array<Record<string, unknown>>;
+
+  const windows = [25, 50, 100, 250].filter(
+    (windowSize) => rows.length >= windowSize || (windowSize === 25 && rows.length > 0)
+  );
+
+  return {
+    totalFinalPredictions,
+    global: windows.map((windowSize) => {
+      const slice = rows.slice(0, Math.min(windowSize, rows.length));
+      const sampleCount = slice.length;
+      const avg = (field: string): number | null => {
+        const values = slice
+          .map((row) => Number(row[field]))
+          .filter((value) => Number.isFinite(value));
+        if (values.length === 0) return null;
+        return values.reduce((sum, value) => sum + value, 0) / values.length;
+      };
+      const total = (field: string): number | null => {
+        const values = slice
+          .map((row) => Number(row[field]))
+          .filter((value) => Number.isFinite(value));
+        if (values.length === 0) return null;
+        return values.reduce((sum, value) => sum + value, 0);
+      };
+      return {
+        windowSize,
+        sampleCount,
+        accuracy: avg('correct'),
+        brierModel: avg('brierModel'),
+        brierMarket: avg('brierMarket'),
+        brierDelta: avg('brierDelta'),
+        avgEdge: avg('edge'),
+        totalPnl: total('pnl'),
+      };
+    }),
+  };
+}
+
+function buildLearningAuditSection(db: Database.Database): LearningAuditSection {
+  const empty: LearningAuditSection = {
+    comparable: { totalCaseCount: 0, byDomain: [] },
+    exclusions: { totalCaseCount: 0, byReason: [] },
+    execution: { totalCaseCount: 0, byDomain: [] },
+  };
+  if (!tableExists(db, 'learning_cases')) {
+    return empty;
+  }
+
+  const comparableCount = safeCount(
+    db,
+    "SELECT COUNT(*) AS c FROM learning_cases WHERE case_type = 'comparable_forecast' AND comparable = 1"
+  );
+  const excludedCount = safeCount(
+    db,
+    "SELECT COUNT(*) AS c FROM learning_cases WHERE case_type = 'comparable_forecast' AND comparable = 0"
+  );
+  const executionCount = safeCount(
+    db,
+    "SELECT COUNT(*) AS c FROM learning_cases WHERE case_type = 'execution_quality'"
+  );
+  const comparableByDomain = db
+    .prepare(
+      `
+        SELECT COALESCE(domain, 'unknown') AS domain, COUNT(*) AS count
+        FROM learning_cases
+        WHERE case_type = 'comparable_forecast'
+          AND comparable = 1
+        GROUP BY COALESCE(domain, 'unknown')
+        ORDER BY count DESC, domain ASC
+        LIMIT 20
+      `
+    )
+    .all() as Array<{ domain: string; count: number }>;
+  const exclusionsByReason = db
+    .prepare(
+      `
+        SELECT COALESCE(exclusion_reason, 'unspecified') AS reason, COUNT(*) AS count
+        FROM learning_cases
+        WHERE case_type = 'comparable_forecast'
+          AND comparable = 0
+        GROUP BY COALESCE(exclusion_reason, 'unspecified')
+        ORDER BY count DESC, reason ASC
+        LIMIT 20
+      `
+    )
+    .all() as Array<{ reason: string; count: number }>;
+  const executionByDomain = db
+    .prepare(
+      `
+        SELECT COALESCE(domain, 'unknown') AS domain, COUNT(*) AS count
+        FROM learning_cases
+        WHERE case_type = 'execution_quality'
+        GROUP BY COALESCE(domain, 'unknown')
+        ORDER BY count DESC, domain ASC
+        LIMIT 20
+      `
+    )
+    .all() as Array<{ domain: string; count: number }>;
+
+  return {
+    comparable: {
+      totalCaseCount: comparableCount,
+      byDomain: comparableByDomain.map((row) => ({
+        domain: String(row.domain),
+        count: Number(row.count ?? 0),
+      })),
+    },
+    exclusions: {
+      totalCaseCount: excludedCount,
+      byReason: exclusionsByReason.map((row) => ({
+        reason: String(row.reason),
+        count: Number(row.count ?? 0),
+      })),
+    },
+    execution: {
+      totalCaseCount: executionCount,
+      byDomain: executionByDomain.map((row) => ({
+        domain: String(row.domain),
+        count: Number(row.count ?? 0),
+      })),
+    },
+  };
+}
+
+function buildLearningObservabilitySection(db: Database.Database): {
+  runtimeContext: {
+    runId: string;
+    policyVersion: string;
+    source: string | null;
+    updatedAt: string | null;
+  };
+  totalShadowAudits: number;
+  activeWeights: LearnedWeightRow[];
+  runSummaries: unknown[];
+  recentAudits: unknown[];
+} {
+  const activeWeights = listActiveLearnedWeights(db);
+  return {
+    runtimeContext: {
+      runId: 'default',
+      policyVersion: 'default',
+      source: activeWeights.length > 0 ? 'signal_weights' : null,
+      updatedAt: activeWeights[0]?.updatedAt ?? null,
+    },
+    totalShadowAudits: tableExists(db, 'learning_signal_audits')
+      ? safeCount(db, 'SELECT COUNT(*) AS c FROM learning_signal_audits')
+      : 0,
+    activeWeights,
+    runSummaries: [],
+    recentAudits: [],
+  };
+}
+
+function buildCloseLearningSection(db: Database.Database): CloseLearningSection {
+  const count = (sql: string) => safeCount(db, sql);
+  const finalizer = tableExists(db, 'close_finalization_jobs')
+    ? {
+        totalJobs: count('SELECT COUNT(*) AS c FROM close_finalization_jobs'),
+        pending: count("SELECT COUNT(*) AS c FROM close_finalization_jobs WHERE status = 'pending'"),
+        running: count("SELECT COUNT(*) AS c FROM close_finalization_jobs WHERE status = 'running'"),
+        finalized: count("SELECT COUNT(*) AS c FROM close_finalization_jobs WHERE status = 'finalized'"),
+        failedRetryable: count("SELECT COUNT(*) AS c FROM close_finalization_jobs WHERE status = 'failed_retryable'"),
+        failedTerminal: count("SELECT COUNT(*) AS c FROM close_finalization_jobs WHERE status = 'failed_terminal'"),
+        delayed: count(
+          "SELECT COUNT(*) AS c FROM close_finalization_jobs WHERE status != 'finalized' AND created_at <= datetime('now', '-30 seconds')"
+        ),
+      }
+    : { totalJobs: 0, pending: 0, running: 0, finalized: 0, failedRetryable: 0, failedTerminal: 0, delayed: 0 };
+
+  const recentCloses = tableExists(db, 'trade_closes')
+    ? (db
+        .prepare(
+          `
+            SELECT id, close_event_id AS closeEventId, symbol, closed_side AS closedSide,
+                   execution_mode AS executionMode, closed_at AS closedAt,
+                   net_realized_pnl_usd AS netRealizedPnlUsd, captured_r AS capturedR,
+                   thesis_correct AS thesisCorrect, composite_score AS compositeScore,
+                   source_learning_case_id AS sourceLearningCaseId,
+                   deterministic_status AS deterministicStatus,
+                   llm_reflection_status AS llmReflectionStatus
+            FROM trade_closes
+            ORDER BY datetime(closed_at) DESC, id DESC
+            LIMIT 20
+          `
+        )
+        .all() as Array<Record<string, unknown>>)
+    : [];
+  const regretByType = tableExists(db, 'regret_learning_cases')
+    ? (db
+        .prepare(
+          `
+            SELECT regret_type AS type, COUNT(*) AS count
+            FROM regret_learning_cases
+            GROUP BY regret_type
+            ORDER BY count DESC, type ASC
+            LIMIT 20
+          `
+        )
+        .all() as Array<{ type: string; count: number }>)
+    : [];
+  const activeAdjustments = tableExists(db, 'trade_policy_adjustments')
+    ? (db
+        .prepare(
+          `
+            SELECT id, scope_key AS scopeKey, symbol, direction, signal_class AS signalClass,
+                   market_regime AS marketRegime, trigger_reason AS triggerReason,
+                   action, size_multiplier AS sizeMultiplier, leverage_cap AS leverageCap,
+                   confidence, sample_count AS sampleCount,
+                   source_trade_close_id AS sourceTradeCloseId,
+                   source_learning_case_id AS sourceLearningCaseId,
+                   reason, expires_at AS expiresAt, created_at AS createdAt
+            FROM trade_policy_adjustments
+            WHERE active = 1
+            ORDER BY datetime(created_at) DESC
+            LIMIT 25
+          `
+        )
+        .all() as Array<Record<string, unknown>>)
+    : [];
+  const promotionEvents = tableExists(db, 'policy_promotion_events')
+    ? (db
+        .prepare(
+          `
+            SELECT id, adjustment_id AS adjustmentId, trade_close_id AS tradeCloseId,
+                   learning_case_id AS learningCaseId, scope_key AS scopeKey,
+                   action, sample_count AS sampleCount, reason, created_at AS createdAt
+            FROM policy_promotion_events
+            ORDER BY datetime(created_at) DESC
+            LIMIT 25
+          `
+        )
+        .all() as Array<Record<string, unknown>>)
+    : [];
+
+  return {
+    finalizer,
+    closeEvents: {
+      partialReduces: tableExists(db, 'trade_close_events')
+        ? count("SELECT COUNT(*) AS c FROM trade_close_events WHERE close_kind = 'partial_reduce'")
+        : 0,
+      fullCloses: tableExists(db, 'trade_close_events')
+        ? count("SELECT COUNT(*) AS c FROM trade_close_events WHERE close_kind = 'full_close'")
+        : 0,
+    },
+    tradeCloses: {
+      total: tableExists(db, 'trade_closes') ? count('SELECT COUNT(*) AS c FROM trade_closes') : 0,
+      recent: recentCloses,
+    },
+    reflections: {
+      total: tableExists(db, 'trade_reflections') ? count('SELECT COUNT(*) AS c FROM trade_reflections') : 0,
+    },
+    regretCases: {
+      total: tableExists(db, 'regret_learning_cases') ? count('SELECT COUNT(*) AS c FROM regret_learning_cases') : 0,
+      byType: regretByType.map((row) => ({ type: String(row.type), count: Number(row.count ?? 0) })),
+    },
+    policyLearning: {
+      activeAdjustments,
+      promotionEvents,
+    },
+  };
+}
+
+function buildGateAttributionSection(db: Database.Database): GateAttributionSection {
+  const config = getDashboardConfig();
+  const section: GateAttributionSection = {
     config: {
-      minEdge: null,
-      requireHighConfidence: false,
-      maxTradesPerScan: null,
-      llmEntryGateEnabled: false,
-      tradeQualityEnabled: false,
-      calibrationRiskEnabled: false,
-      signalPerformanceMinSharpe: null,
-      signalPerformanceMinSamples: null,
+      minEdge: Number.isFinite(Number(config?.autonomy?.minEdge)) ? Number(config?.autonomy?.minEdge) : null,
+      requireHighConfidence: Boolean(config?.autonomy?.requireHighConfidence),
+      maxTradesPerScan: Number.isFinite(Number((config?.autonomy as Record<string, unknown> | undefined)?.maxTradesPerScan))
+        ? Number((config?.autonomy as Record<string, unknown>).maxTradesPerScan)
+        : null,
+      llmEntryGateEnabled: (config?.autonomy as { llmEntryGate?: { enabled?: boolean } } | undefined)?.llmEntryGate?.enabled !== false,
+      tradeQualityEnabled: Boolean((config?.autonomy as { tradeQuality?: { enabled?: boolean } } | undefined)?.tradeQuality?.enabled),
+      calibrationRiskEnabled: (config?.autonomy as { calibrationRisk?: { enabled?: boolean } } | undefined)?.calibrationRisk?.enabled !== false,
+      signalPerformanceMinSharpe: Number.isFinite(Number((config?.autonomy as { signalPerformance?: { minSharpe?: unknown } } | undefined)?.signalPerformance?.minSharpe))
+        ? Number((config?.autonomy as { signalPerformance?: { minSharpe?: unknown } }).signalPerformance?.minSharpe)
+        : null,
+      signalPerformanceMinSamples: Number.isFinite(Number((config?.autonomy as { signalPerformance?: { minSamples?: unknown } } | undefined)?.signalPerformance?.minSamples))
+        ? Number((config?.autonomy as { signalPerformance?: { minSamples?: unknown } }).signalPerformance?.minSamples)
+        : null,
     },
     policyState: {
       observationMode: false,
@@ -1967,100 +2353,57 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
       updatedAt: null,
     },
     entryGate: {
-      verdictCounts: {
-        approve: 0,
-        reject: 0,
-        resize: 0,
-      },
+      verdictCounts: { approve: 0, reject: 0, resize: 0 },
       reasonCounts: [],
       recentDecisions: [],
     },
     journal: {
-      outcomeCounts: {
-        executed: 0,
-        failed: 0,
-        blocked: 0,
-      },
+      outcomeCounts: { executed: 0, failed: 0, blocked: 0 },
       blockedReasons: [],
       recentPolicyAdjustments: [],
     },
   };
 
-  if (config) {
-    empty.config = {
-      minEdge: Number.isFinite(Number((config.autonomy as any)?.minEdge))
-        ? Number((config.autonomy as any)?.minEdge)
-        : null,
-      requireHighConfidence: Boolean((config.autonomy as any)?.requireHighConfidence),
-      maxTradesPerScan: Number.isFinite(Number((config.autonomy as any)?.maxTradesPerScan))
-        ? Number((config.autonomy as any)?.maxTradesPerScan)
-        : null,
-      llmEntryGateEnabled: (config.autonomy as any)?.llmEntryGate?.enabled !== false,
-      tradeQualityEnabled: Boolean((config.autonomy as any)?.tradeQuality?.enabled),
-      calibrationRiskEnabled: (config.autonomy as any)?.calibrationRisk?.enabled !== false,
-      signalPerformanceMinSharpe: Number.isFinite(Number((config.autonomy as any)?.signalPerformance?.minSharpe))
-        ? Number((config.autonomy as any)?.signalPerformance?.minSharpe)
-        : null,
-      signalPerformanceMinSamples: Number.isFinite(Number((config.autonomy as any)?.signalPerformance?.minSamples))
-        ? Number((config.autonomy as any)?.signalPerformance?.minSamples)
-        : null,
-    };
-  }
-
   if (tableExists(db, 'autonomy_policy_state')) {
     try {
-      const row = db.prepare(
-        `
-          SELECT payload, updated_at
-          FROM autonomy_policy_state
-          WHERE id = 1
-        `
-      ).get() as { payload?: string | null; updated_at?: string | null } | undefined;
+      const row = db.prepare('SELECT payload, updated_at FROM autonomy_policy_state WHERE id = 1').get() as
+        | { payload?: string | null; updated_at?: string | null }
+        | undefined;
       if (row?.payload) {
         const payload = JSON.parse(row.payload) as Record<string, unknown>;
         const observationOnlyUntilMs = Number(payload.observationOnlyUntilMs ?? NaN);
-        empty.policyState = {
+        section.policyState = {
           observationMode: Number.isFinite(observationOnlyUntilMs) && observationOnlyUntilMs > Date.now(),
-          minEdgeOverride: Number.isFinite(Number(payload.minEdgeOverride))
-            ? Number(payload.minEdgeOverride)
-            : null,
+          minEdgeOverride: Number.isFinite(Number(payload.minEdgeOverride)) ? Number(payload.minEdgeOverride) : null,
           maxTradesPerScanOverride: Number.isFinite(Number(payload.maxTradesPerScanOverride))
             ? Number(payload.maxTradesPerScanOverride)
             : null,
           leverageCapOverride: Number.isFinite(Number(payload.leverageCapOverride))
             ? Number(payload.leverageCapOverride)
             : null,
-          reason: typeof payload.reason === 'string' && payload.reason.trim().length > 0
-            ? payload.reason
-            : null,
+          reason: typeof payload.reason === 'string' && payload.reason.trim().length > 0 ? payload.reason : null,
           updatedAt: row.updated_at ? String(row.updated_at) : null,
         };
       }
     } catch {
-      // keep empty policy state
+      // Keep defaults.
     }
   }
 
   if (tableExists(db, 'llm_entry_gate_log')) {
     try {
-      const verdictRows = db.prepare(
-        `
-          SELECT verdict, COUNT(*) AS count
-          FROM llm_entry_gate_log
-          GROUP BY verdict
-        `
-      ).all() as Array<{ verdict?: string | null; count?: number | null }>;
+      const verdictRows = db.prepare('SELECT verdict, COUNT(*) AS count FROM llm_entry_gate_log GROUP BY verdict').all() as
+        Array<{ verdict?: string | null; count?: number | null }>;
       for (const row of verdictRows) {
         const verdict = String(row.verdict ?? '').trim().toLowerCase();
-        const count = Number(row.count ?? 0);
         if (verdict === 'approve' || verdict === 'reject' || verdict === 'resize') {
-          empty.entryGate.verdictCounts[verdict] = count;
+          section.entryGate.verdictCounts[verdict] = Number(row.count ?? 0);
         }
       }
 
       const hasReasonCode = tableHasColumn(db, 'llm_entry_gate_log', 'reason_code');
       if (hasReasonCode) {
-        empty.entryGate.reasonCounts = (db.prepare(
+        section.entryGate.reasonCounts = (db.prepare(
           `
             SELECT COALESCE(NULLIF(TRIM(reason_code), ''), 'unknown') AS reasonCode,
                    COUNT(*) AS count
@@ -2075,28 +2418,16 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
         }));
       }
 
-      const recentSql = hasReasonCode
-        ? `
-            SELECT created_at, symbol, verdict, reason_code, adjusted_size_usd, suggested_leverage, reasoning
-            FROM llm_entry_gate_log
-            ORDER BY id DESC
-            LIMIT 15
-          `
-        : `
-            SELECT created_at, symbol, verdict, NULL AS reason_code, adjusted_size_usd, suggested_leverage, reasoning
-            FROM llm_entry_gate_log
-            ORDER BY id DESC
-            LIMIT 15
-          `;
-      empty.entryGate.recentDecisions = (db.prepare(recentSql).all() as Array<{
-        created_at?: string | null;
-        symbol?: string | null;
-        verdict?: string | null;
-        reason_code?: string | null;
-        adjusted_size_usd?: number | null;
-        suggested_leverage?: number | null;
-        reasoning?: string | null;
-      }>).map((row) => ({
+      section.entryGate.recentDecisions = (db.prepare(
+        `
+          SELECT created_at, symbol, verdict,
+                 ${hasReasonCode ? 'reason_code' : 'NULL'} AS reason_code,
+                 adjusted_size_usd, suggested_leverage, reasoning
+          FROM llm_entry_gate_log
+          ORDER BY id DESC
+          LIMIT 15
+        `
+      ).all() as Array<Record<string, unknown>>).map((row) => ({
         createdAt: String(row.created_at ?? ''),
         symbol: String(row.symbol ?? ''),
         verdict: String(row.verdict ?? ''),
@@ -2106,12 +2437,12 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
         reasoning: String(row.reasoning ?? ''),
       }));
     } catch {
-      // keep empty gate data
+      // Keep defaults.
     }
   }
 
   if (!tableExists(db, 'decision_artifacts')) {
-    return empty;
+    return section;
   }
 
   try {
@@ -2124,10 +2455,7 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
         LIMIT 2000
       `
     ).all() as Array<{ payload?: string | null; created_at?: string | null }>;
-
     const blockedReasonCounts = new Map<string, number>();
-    const recentPolicyAdjustments: GateAttributionSection['journal']['recentPolicyAdjustments'] = [];
-
     for (const row of rows) {
       if (!row.payload) continue;
       let payload: Record<string, unknown>;
@@ -2136,23 +2464,17 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
       } catch {
         continue;
       }
-
       const outcome = resolveJournalOutcome(payload);
       if (outcome === 'executed' || outcome === 'failed' || outcome === 'blocked') {
-        empty.journal.outcomeCounts[outcome] += 1;
+        section.journal.outcomeCounts[outcome] += 1;
       }
-
       if (outcome === 'blocked') {
-        const reason = String(payload.reasoning ?? payload.error ?? 'unknown')
-          .trim()
-          .slice(0, 120) || 'unknown';
+        const reason = String(payload.reasoning ?? payload.error ?? 'unknown').trim().slice(0, 120) || 'unknown';
         blockedReasonCounts.set(reason, (blockedReasonCounts.get(reason) ?? 0) + 1);
       }
-
       const policySizeMultiplier = Number(payload.policySizeMultiplier ?? NaN);
-      const hasPolicyAdjustment = Number.isFinite(policySizeMultiplier) && policySizeMultiplier < 1;
-      if (hasPolicyAdjustment && recentPolicyAdjustments.length < 12) {
-        recentPolicyAdjustments.push({
+      if (Number.isFinite(policySizeMultiplier) && policySizeMultiplier < 1 && section.journal.recentPolicyAdjustments.length < 12) {
+        section.journal.recentPolicyAdjustments.push({
           createdAt: row.created_at ? String(row.created_at) : '',
           symbol: typeof payload.symbol === 'string' ? payload.symbol : '',
           policyReasonCode:
@@ -2175,17 +2497,15 @@ function buildGateAttributionSection(db: Database.Database): GateAttributionSect
         });
       }
     }
-
-    empty.journal.blockedReasons = [...blockedReasonCounts.entries()]
+    section.journal.blockedReasons = [...blockedReasonCounts.entries()]
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
       .slice(0, 12);
-    empty.journal.recentPolicyAdjustments = recentPolicyAdjustments;
   } catch {
-    return empty;
+    return section;
   }
 
-  return empty;
+  return section;
 }
 
 export function buildDashboardApiPayload(params?: {
@@ -2244,6 +2564,24 @@ export function buildDashboardApiPayload(params?: {
       byRegime: unknown[];
       bySession: unknown[];
     };
+    predictionAccuracy: {
+      totalFinalPredictions: number;
+      global: PredictionAccuracyWindow[];
+    };
+    learningAudit: LearningAuditSection;
+    learningObservability: {
+      runtimeContext: {
+        runId: string;
+        policyVersion: string;
+        source: string | null;
+        updatedAt: string | null;
+      };
+      totalShadowAudits: number;
+      activeWeights: LearnedWeightRow[];
+      runSummaries: unknown[];
+      recentAudits: unknown[];
+    };
+    closeLearning: CloseLearningSection;
     gateAttribution: GateAttributionSection;
   };
 } {
@@ -2280,6 +2618,10 @@ export function buildDashboardApiPayload(params?: {
   const promotionGateRows = listPromotionGateRows(db, filters);
   const policyState = buildPolicyStateSection(db);
   const performanceBreakdown = listPerformanceBreakdown(db, filters);
+  const predictionAccuracy = buildPredictionAccuracySection(db);
+  const learningAudit = buildLearningAuditSection(db);
+  const learningObservability = buildLearningObservabilitySection(db);
+  const closeLearning = buildCloseLearningSection(db);
   const gateAttribution = buildGateAttributionSection(db);
 
   return {
@@ -2326,6 +2668,10 @@ export function buildDashboardApiPayload(params?: {
         byRegime: performanceBreakdown.byRegime,
         bySession: performanceBreakdown.bySession,
       },
+      predictionAccuracy,
+      learningAudit,
+      learningObservability,
+      closeLearning,
       gateAttribution,
     },
   };

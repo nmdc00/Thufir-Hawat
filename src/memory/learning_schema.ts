@@ -139,6 +139,157 @@ const TRADE_POLICY_ADJUSTMENTS_INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_trade_policy_adjustments_signal ON trade_policy_adjustments(signal_class, trigger_reason, symbol_class, market_regime, session_tag, strategy_source, direction);',
 ];
 
+export const CLOSE_TRADE_FINALIZER_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS trade_close_events (
+    id TEXT PRIMARY KEY,
+    lifecycle_id TEXT NOT NULL,
+    trade_id INTEGER,
+    symbol TEXT NOT NULL,
+    execution_mode TEXT CHECK(execution_mode IN ('paper', 'live')),
+    side TEXT CHECK(side IN ('buy', 'sell')),
+    close_kind TEXT NOT NULL CHECK(close_kind IN ('partial_reduce', 'full_close')),
+    size_reduced REAL,
+    remaining_size REAL,
+    realized_pnl_usd REAL,
+    net_realized_pnl_usd REAL,
+    realized_fee_usd REAL,
+    exit_price REAL,
+    exit_mode TEXT,
+    thesis_invalidation_hit INTEGER CHECK(thesis_invalidation_hit IN (0, 1) OR thesis_invalidation_hit IS NULL),
+    source_authority TEXT,
+    entry_journal_payload TEXT,
+    close_journal_payload TEXT,
+    snapshot_payload TEXT,
+    bootstrap_quality TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_close_events_trade_kind
+ON trade_close_events(trade_id, close_kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_trade_close_events_symbol ON trade_close_events(symbol);
+CREATE INDEX IF NOT EXISTS idx_trade_close_events_kind ON trade_close_events(close_kind);
+CREATE INDEX IF NOT EXISTS idx_trade_close_events_mode ON trade_close_events(execution_mode);
+CREATE INDEX IF NOT EXISTS idx_trade_close_events_created ON trade_close_events(created_at);
+
+CREATE TABLE IF NOT EXISTS close_finalization_jobs (
+    id TEXT PRIMARY KEY,
+    close_event_id TEXT NOT NULL UNIQUE,
+    lifecycle_id TEXT NOT NULL,
+    trade_id INTEGER,
+    symbol TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'finalized', 'failed_retryable', 'failed_terminal')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    last_error TEXT,
+    next_attempt_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    finalized_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_close_finalization_jobs_status ON close_finalization_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_close_finalization_jobs_symbol ON close_finalization_jobs(symbol);
+CREATE INDEX IF NOT EXISTS idx_close_finalization_jobs_next_attempt ON close_finalization_jobs(next_attempt_at);
+
+CREATE TABLE IF NOT EXISTS trade_closes (
+    id TEXT PRIMARY KEY,
+    close_event_id TEXT NOT NULL UNIQUE,
+    lifecycle_id TEXT NOT NULL,
+    trade_id INTEGER,
+    symbol TEXT NOT NULL,
+    closed_side TEXT CHECK(closed_side IN ('long', 'short')),
+    execution_mode TEXT CHECK(execution_mode IN ('paper', 'live')),
+    opened_at TEXT,
+    closed_at TEXT NOT NULL,
+    hold_seconds INTEGER,
+    entry_price REAL,
+    exit_price REAL,
+    total_opened_size REAL,
+    total_reduced_size REAL,
+    final_close_size REAL,
+    gross_realized_pnl_usd REAL,
+    fees_usd REAL,
+    net_realized_pnl_usd REAL,
+    captured_r REAL,
+    left_on_table_r REAL,
+    exit_mode TEXT,
+    thesis_invalidation_hit INTEGER CHECK(thesis_invalidation_hit IN (0, 1) OR thesis_invalidation_hit IS NULL),
+    thesis_correct INTEGER CHECK(thesis_correct IN (0, 1) OR thesis_correct IS NULL),
+    direction_score REAL,
+    timing_score REAL,
+    sizing_score REAL,
+    exit_score REAL,
+    composite_score REAL,
+    linked_prediction_id TEXT,
+    source_learning_case_id TEXT,
+    source_authority TEXT,
+    bootstrap_quality TEXT,
+    deterministic_status TEXT NOT NULL DEFAULT 'finalized',
+    llm_reflection_status TEXT NOT NULL DEFAULT 'not_requested',
+    facts_payload TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_closes_symbol ON trade_closes(symbol);
+CREATE INDEX IF NOT EXISTS idx_trade_closes_trade ON trade_closes(trade_id);
+CREATE INDEX IF NOT EXISTS idx_trade_closes_mode ON trade_closes(execution_mode);
+CREATE INDEX IF NOT EXISTS idx_trade_closes_closed_at ON trade_closes(closed_at);
+
+CREATE TABLE IF NOT EXISTS trade_reflections (
+    id TEXT PRIMARY KEY,
+    trade_close_id TEXT NOT NULL UNIQUE,
+    thesis_correct INTEGER CHECK(thesis_correct IN (0, 1) OR thesis_correct IS NULL),
+    timing_correct INTEGER CHECK(timing_correct IN (0, 1) OR timing_correct IS NULL),
+    exit_reason_appropriate INTEGER CHECK(exit_reason_appropriate IN (0, 1) OR exit_reason_appropriate IS NULL),
+    what_worked TEXT,
+    what_failed TEXT,
+    lesson_for_next_trade TEXT,
+    source_facts TEXT,
+    confidence REAL,
+    llm_status TEXT NOT NULL DEFAULT 'not_requested',
+    llm_payload TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_reflections_close ON trade_reflections(trade_close_id);
+
+CREATE TABLE IF NOT EXISTS regret_learning_cases (
+    id TEXT PRIMARY KEY,
+    trade_close_id TEXT NOT NULL,
+    lifecycle_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    regret_type TEXT NOT NULL,
+    severity REAL,
+    evidence_payload TEXT,
+    policy_evidence_payload TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_regret_learning_cases_close ON regret_learning_cases(trade_close_id);
+CREATE INDEX IF NOT EXISTS idx_regret_learning_cases_symbol ON regret_learning_cases(symbol);
+CREATE INDEX IF NOT EXISTS idx_regret_learning_cases_type ON regret_learning_cases(regret_type);
+
+CREATE TABLE IF NOT EXISTS policy_promotion_events (
+    id TEXT PRIMARY KEY,
+    adjustment_id TEXT,
+    trade_close_id TEXT,
+    learning_case_id TEXT,
+    scope_key TEXT NOT NULL,
+    action TEXT NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    payload TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_policy_promotion_events_scope ON policy_promotion_events(scope_key);
+CREATE INDEX IF NOT EXISTS idx_policy_promotion_events_created ON policy_promotion_events(created_at);
+`;
+
 const CANONICAL_TRADE_POLICY_SYMBOL_CLASS_SQL = `CASE
   WHEN symbol IS NULL OR TRIM(symbol) = '' THEN NULL
   WHEN UPPER(TRIM(symbol)) = 'BTC' OR UPPER(TRIM(symbol)) LIKE '%BTC' THEN 'major'
@@ -245,6 +396,7 @@ export function ensureLearningSchema(db: Database.Database): void {
   for (const statement of LEARNING_SIGNAL_AUDITS_INDEX_SQL) {
     db.exec(statement);
   }
+  db.exec(CLOSE_TRADE_FINALIZER_SCHEMA_SQL);
   db.exec(TRADE_POLICY_ADJUSTMENTS_TABLE_SQL);
   ensureTradePolicyAdjustmentColumns(db);
   for (const statement of TRADE_POLICY_ADJUSTMENTS_INDEX_SQL) {
@@ -532,6 +684,12 @@ export type LearningSchemaSummary = {
   executionLearningCasesCount: number;
   learningSignalAuditsCount: number;
   tradePolicyAdjustmentsCount: number;
+  tradeCloseEventsCount: number;
+  closeFinalizationJobsCount: number;
+  tradeClosesCount: number;
+  tradeReflectionsCount: number;
+  regretLearningCasesCount: number;
+  policyPromotionEventsCount: number;
 };
 
 function countIfTableExists(db: Database.Database, tableName: string): number {
@@ -579,5 +737,11 @@ export function summarizeLearningSchema(db: Database.Database): LearningSchemaSu
     executionLearningCasesCount: countIfViewExists(db, 'execution_learning_cases'),
     learningSignalAuditsCount: countIfTableExists(db, 'learning_signal_audits'),
     tradePolicyAdjustmentsCount: countIfTableExists(db, 'trade_policy_adjustments'),
+    tradeCloseEventsCount: countIfTableExists(db, 'trade_close_events'),
+    closeFinalizationJobsCount: countIfTableExists(db, 'close_finalization_jobs'),
+    tradeClosesCount: countIfTableExists(db, 'trade_closes'),
+    tradeReflectionsCount: countIfTableExists(db, 'trade_reflections'),
+    regretLearningCasesCount: countIfTableExists(db, 'regret_learning_cases'),
+    policyPromotionEventsCount: countIfTableExists(db, 'policy_promotion_events'),
   };
 }

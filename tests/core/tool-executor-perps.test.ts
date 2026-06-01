@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { executeToolCall } from '../../src/core/tool-executor.js';
+import { runDueCloseFinalizationJobs } from '../../src/core/close_trade_finalizer.js';
 import { HyperliquidClient } from '../../src/execution/hyperliquid/client.js';
 import { PaperExecutor } from '../../src/execution/modes/paper.js';
 import { countFinalPredictions } from '../../src/memory/calibration.js';
@@ -1550,6 +1551,180 @@ describe('tool-executor perps', () => {
     expect(learningCase.outcome?.exitMode).toBe('take_profit');
     expect(learningCase.outcome?.thesisCorrect).toBe(true);
     expect(typeof learningCase.qualityScores?.compositeScore).toBe('number');
+  });
+
+  it('records partial reduce events and finalizes only full close artifacts asynchronously', async () => {
+    const executor = new PaperExecutor({ initialCashUsdc: 200 });
+    const limiter = {
+      checkAndReserve: async () => ({ allowed: true }),
+      confirm: () => {},
+      release: () => {},
+    };
+    const config = {
+      execution: { provider: 'hyperliquid', mode: 'paper' },
+      autonomy: { closePolicyLearning: { enabled: true, minSamples: 1 } },
+    } as any;
+    const ctx = { config, marketClient, executor, limiter };
+
+    await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCLOSELEARN',
+        side: 'buy',
+        size: 0.02,
+        mode: 'paper',
+        signal_class: 'momentum_breakout',
+        trade_archetype: 'intraday',
+      },
+      ctx
+    );
+    await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCLOSELEARN',
+        side: 'sell',
+        size: 0.01,
+        reduce_only: true,
+        mode: 'paper',
+        thesis_invalidation_hit: false,
+        exit_mode: 'risk_reduction',
+      },
+      ctx
+    );
+
+    const db = openDatabase();
+    expect(
+      (db.prepare("SELECT COUNT(*) AS c FROM trade_close_events WHERE close_kind = 'partial_reduce'").get() as { c: number }).c
+    ).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM close_finalization_jobs').get() as { c: number }).c).toBe(0);
+
+    await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCLOSELEARN',
+        side: 'sell',
+        size: 0.01,
+        reduce_only: true,
+        mode: 'paper',
+        thesis_invalidation_hit: true,
+        exit_mode: 'thesis_invalidation',
+      },
+      ctx
+    );
+
+    expect(
+      (db.prepare("SELECT COUNT(*) AS c FROM trade_close_events WHERE close_kind = 'full_close'").get() as { c: number }).c
+    ).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM close_finalization_jobs').get() as { c: number }).c).toBe(1);
+
+    const result = runDueCloseFinalizationJobs({ config, workerId: 'test-finalizer', limit: 5 });
+    expect(result.finalized).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM trade_closes').get() as { c: number }).c).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM trade_reflections').get() as { c: number }).c).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM trade_policy_adjustments').get() as { c: number }).c).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not admit synthetic perp comparable learning cases from perp_place_order', async () => {
+    const executor = new PaperExecutor({ initialCashUsdc: 200 });
+    const limiter = {
+      checkAndReserve: async () => ({ allowed: true }),
+      confirm: () => {},
+      release: () => {},
+    };
+    const ctx = {
+      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
+      marketClient,
+      executor,
+      limiter,
+    };
+
+    const result = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCOMP',
+        side: 'buy',
+        size: 0.01,
+        mode: 'paper',
+        create_learning_prediction: true,
+        prediction_model_probability: 0.74,
+        prediction_market_probability: 0.5,
+        prediction_learning_comparable: true,
+      },
+      ctx
+    );
+
+    expect(result.success).toBe(true);
+
+    const prediction = listLearningCases({
+      caseType: 'comparable_forecast',
+      entityType: 'symbol',
+      entityId: 'BTCCOMP',
+      limit: 1,
+    })[0];
+    expect(prediction).toBeTruthy();
+    expect(prediction.sourcePredictionId).toBeTruthy();
+
+    const storedPrediction = getPrediction(String(prediction.sourcePredictionId));
+    expect(storedPrediction?.learningComparable).toBe(false);
+    expect(storedPrediction?.marketProbability).toBe(0.5);
+
+    expect(prediction.comparable).toBe(false);
+    expect(prediction.comparatorKind).toBeNull();
+    expect(prediction.exclusionReason).toBe('missing_comparator');
+    expect(prediction.baseline?.marketProbability).toBe(0.5);
+  });
+
+  it('returns the linked prediction id on reduce-only close responses', async () => {
+    const executor = new PaperExecutor({ initialCashUsdc: 200 });
+    const limiter = {
+      checkAndReserve: async () => ({ allowed: true }),
+      confirm: () => {},
+      release: () => {},
+    };
+    const ctx = {
+      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
+      marketClient,
+      executor,
+      limiter,
+    };
+
+    const openResult = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCLOSEID',
+        side: 'buy',
+        size: 0.01,
+        mode: 'paper',
+        create_learning_prediction: true,
+        prediction_model_probability: 0.74,
+        prediction_market_probability: 0.5,
+        prediction_learning_comparable: true,
+      },
+      ctx
+    );
+    expect(openResult.success).toBe(true);
+    const openPredictionId = (openResult.data as { prediction_id?: string | null }).prediction_id;
+    expect(openPredictionId).toBeTruthy();
+
+    const closeResult = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCLOSEID',
+        side: 'sell',
+        size: 0.01,
+        reduce_only: true,
+        mode: 'paper',
+        exit_mode: 'manual',
+        emergency_override: true,
+        emergency_reason: 'test close response prediction id',
+      },
+      ctx
+    );
+    expect(closeResult.success).toBe(true);
+    expect((closeResult.data as { prediction_id?: string | null }).prediction_id).toBe(openPredictionId);
+
+    const storedPrediction = getPrediction(String(openPredictionId));
+    expect(storedPrediction?.outcomeBasis).toBe('final');
   });
 
   it('get_fills live mode returns mapped fills from Hyperliquid API', async () => {

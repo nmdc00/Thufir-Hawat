@@ -30,6 +30,7 @@ import {
   listPerpTradeJournals,
   type PerpTradeJournalEntry,
 } from '../memory/perp_trade_journal.js';
+import { enqueueCloseFinalizationJob, recordTradeCloseEvent } from '../memory/close_trade_finalizer.js';
 import {
   createPrediction,
   findOpenPerpPrediction,
@@ -2610,12 +2611,7 @@ export async function executeToolCall(
               side: side as 'buy' | 'sell',
               size,
               leverage: leverage ?? null,
-              direction: learningScopeContext.direction === 'buy' ? 'long' : learningScopeContext.direction === 'sell' ? 'short' : null,
               signalClass: effectiveSignalClass,
-              triggerReason: learningScopeContext.triggerReason,
-              symbolClass: learningScopeContext.symbolClass,
-              session: learningScopeContext.session,
-              strategySource: learningScopeContext.strategySource,
               marketRegime,
               volatilityBucket,
               liquidityBucket,
@@ -2657,14 +2653,69 @@ export async function executeToolCall(
               learningCase,
               signalClass: effectiveSignalClass,
             });
-            if (positionBefore != null && (positionAfter == null || (positionAfter.size ?? 0) === 0)) {
+            const fullClose = positionBefore != null && (positionAfter == null || (positionAfter.size ?? 0) === 0);
+            const closeEvent = recordTradeCloseEvent({
+              lifecycleId:
+                lifecycleTradeId != null && lifecycleTradeId > 0
+                  ? `perp:${symbol}:${lifecycleTradeId}`
+                  : `perp:${symbol}:bootstrap:${executionStartMs}`,
+              tradeId: lifecycleTradeId,
+              symbol,
+              executionMode: bookMode,
+              side: side as 'buy' | 'sell',
+              closeKind: fullClose ? 'full_close' : 'partial_reduce',
+              sizeReduced: size,
+              remainingSize: positionAfter?.size ?? 0,
+              realizedPnlUsd: result.realizedPnlUsd ?? null,
+              netRealizedPnlUsd:
+                typeof result.realizedPnlUsd === 'number'
+                  ? result.realizedPnlUsd - (realizedFee.realized_fee_usd ?? 0)
+                  : null,
+              realizedFeeUsd: realizedFee.realized_fee_usd,
+              exitPrice: market.markPrice ?? null,
+              exitMode: exitAssessment.exitMode,
+              thesisInvalidationHit: exitAssessment.thesisInvalidationHit,
+              sourceAuthority: 'perp_place_order',
+              entryJournalPayload: closeReference as unknown as Record<string, unknown> | null,
+              closeJournalPayload: {
+                symbol,
+                side,
+                size,
+                signalClass: effectiveSignalClass,
+                marketRegime,
+                volatilityBucket,
+                liquidityBucket,
+                expectedEdge,
+                entryTrigger: learningScopeContext.entryTrigger,
+                thesisCorrect: exitAssessment.thesisCorrect,
+                thesisInvalidationHit: exitAssessment.thesisInvalidationHit,
+                exitMode: exitAssessment.exitMode,
+                directionScore: componentScores?.directionScore ?? null,
+                timingScore: componentScores?.timingScore ?? null,
+                sizingScore: componentScores?.sizingScore ?? null,
+                exitScore: componentScores?.exitScore ?? null,
+                capturedR: componentScores?.capturedR ?? null,
+                leftOnTableR: componentScores?.leftOnTableR ?? null,
+                realizedPnlUsd: result.realizedPnlUsd ?? null,
+                realizedFeeUsd: realizedFee.realized_fee_usd,
+                learningCaseId: persistedLearningCase.id,
+              },
+              snapshotPayload: {
+                ...executedSnapshot,
+                predictionId: null,
+              },
+              bootstrapQuality: lifecycleTradeId != null ? 'linked_lifecycle' : 'snapshot_only',
+            });
+            if (fullClose) {
               try {
-                materializeTradePolicyAdjustmentFromLearningCase({
-                  config: ctx.config,
-                  learningCase: persistedLearningCase,
+                enqueueCloseFinalizationJob({
+                  closeEventId: closeEvent.id,
+                  lifecycleId: closeEvent.lifecycleId,
+                  tradeId: closeEvent.tradeId,
+                  symbol: closeEvent.symbol,
                 });
               } catch {
-                // Best-effort adaptive persistence: never block trade finalization.
+                // Best-effort durable handoff: failures remain visible via missing finalizer rows.
               }
             }
           }
