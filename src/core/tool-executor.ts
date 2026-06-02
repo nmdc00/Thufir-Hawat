@@ -93,6 +93,7 @@ import {
   getPaperPositionSnapshot,
   resolvePaperMids,
 } from './tool_executor_paper.js';
+import { resolvePerpPredictionBaseline } from './perp_prediction_baselines.js';
 
 /** Minimal interface for spending limit enforcement used in tool execution */
 export interface ToolSpendingLimiter {
@@ -542,50 +543,6 @@ type PredictionSignalTriplet = {
   onChain: number;
 };
 
-type PerpPredictionBaselineInput = {
-  symbol: string;
-  side: 'buy' | 'sell';
-  signalClass: string | null;
-  marketRegime: string | null;
-  triggerReason: string | null;
-  symbolClass: string | null;
-  session: string | null;
-  volatilityBucket: string | null;
-  liquidityBucket: string | null;
-  forecastTarget?: 'positive_net_pnl_before_ttl_or_invalidation';
-};
-
-type PerpPredictionBaseline = {
-  probability: number | null;
-  comparable: boolean;
-  source: 'segment_history_blended' | 'global_prior' | 'missing';
-  fallbackLevel: string | null;
-  sampleCount: number;
-  wins: number;
-  priorProbability: number | null;
-  priorStrength: number;
-  segmentKey: string | null;
-  exclusionReason: null | 'missing_comparator' | 'insufficient_samples' | 'synthetic_comparator';
-};
-
-type PerpPredictionBaselineResolver = (
-  config: ThufirConfig,
-  input: PerpPredictionBaselineInput
-) => PerpPredictionBaseline;
-
-const MISSING_PERP_PREDICTION_BASELINE: PerpPredictionBaseline = {
-  probability: null,
-  comparable: false,
-  source: 'missing',
-  fallbackLevel: null,
-  sampleCount: 0,
-  wins: 0,
-  priorProbability: null,
-  priorStrength: 0,
-  segmentKey: null,
-  exclusionReason: 'missing_comparator',
-};
-
 function isProbabilityInRange(value: number | null): value is number {
   return value != null && value >= 0.01 && value <= 0.99;
 }
@@ -621,32 +578,6 @@ function isAuditableExplicitComparator(params: {
   );
 }
 
-async function resolvePerpPredictionBaselineForExecutor(
-  config: ThufirConfig,
-  input: PerpPredictionBaselineInput
-): Promise<PerpPredictionBaseline> {
-  try {
-    // @ts-ignore Agent A owns this module on the release branch; runtime import is best-effort here.
-    const mod = (await import('./perp_prediction_baselines.js')) as {
-      resolvePerpPredictionBaseline?: PerpPredictionBaselineResolver;
-    };
-    if (typeof mod.resolvePerpPredictionBaseline === 'function') {
-      return mod.resolvePerpPredictionBaseline(config, input);
-    }
-  } catch {
-    // Agent A owns the resolver module; missing module or resolver failures keep forecasts non-comparable.
-  }
-  if (process.env.VITEST) {
-    const testResolver = (globalThis as {
-      __thufirResolvePerpPredictionBaseline?: PerpPredictionBaselineResolver;
-    }).__thufirResolvePerpPredictionBaseline;
-    if (typeof testResolver === 'function') {
-      return testResolver(config, input);
-    }
-  }
-  return MISSING_PERP_PREDICTION_BASELINE;
-}
-
 function parsePredictionSignalTriplet(input: unknown): PredictionSignalTriplet | null {
   let candidate = input;
   if (typeof candidate === 'string') {
@@ -668,7 +599,7 @@ function parsePredictionSignalTriplet(input: unknown): PredictionSignalTriplet |
   return { technical, news, onChain };
 }
 
-async function maybeCreatePerpOpenPredictionArtifacts(params: {
+function maybeCreatePerpOpenPredictionArtifacts(params: {
   config: ThufirConfig;
   toolInput: Record<string, unknown>;
   symbol: string;
@@ -683,7 +614,7 @@ async function maybeCreatePerpOpenPredictionArtifacts(params: {
   session: string | null;
   volatilityBucket: string | null;
   liquidityBucket: string | null;
-}): Promise<string | null> {
+}): string | null {
   const explicitEnabled = params.toolInput.create_learning_prediction;
   const signalScores = parsePredictionSignalTriplet(params.toolInput.prediction_signal_scores);
   const signalWeightsSnapshot = parsePredictionSignalTriplet(params.toolInput.prediction_signal_weights);
@@ -737,7 +668,7 @@ async function maybeCreatePerpOpenPredictionArtifacts(params: {
     : null;
   const baseline =
     explicitComparator == null
-      ? await resolvePerpPredictionBaselineForExecutor(params.config, {
+      ? resolvePerpPredictionBaseline(params.config, {
           symbol: params.symbol,
           side: params.side,
           signalClass: params.signalClass,
@@ -2916,7 +2847,7 @@ export async function executeToolCall(
         let predictionId: string | null = null;
         if (!reduceOnly) {
           try {
-            predictionId = await maybeCreatePerpOpenPredictionArtifacts({
+            predictionId = maybeCreatePerpOpenPredictionArtifacts({
               config: ctx.config,
               toolInput,
               symbol,

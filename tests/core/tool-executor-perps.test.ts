@@ -14,9 +14,9 @@ import { listLearningCases } from '../../src/memory/learning_cases.js';
 import { listLearningSignalAudits } from '../../src/memory/learning_observability.js';
 import { createPrediction, getPrediction } from '../../src/memory/predictions.js';
 import { listTradePolicyAdjustments } from '../../src/memory/trade_policy_adjustments.js';
+import * as perpPredictionBaselines from '../../src/core/perp_prediction_baselines.js';
 
 describe('tool-executor perps', () => {
-  const baselineModulePath = '../../src/core/perp_prediction_baselines.js';
   const originalDbPath = process.env.THUFIR_DB_PATH;
   let currentMarkPrice = 50000;
 
@@ -27,9 +27,6 @@ describe('tool-executor perps', () => {
   });
 
   afterEach(() => {
-    vi.doUnmock(baselineModulePath);
-    delete (globalThis as { __thufirResolvePerpPredictionBaseline?: unknown })
-      .__thufirResolvePerpPredictionBaseline;
     vi.restoreAllMocks();
     if (process.env.THUFIR_DB_PATH) {
       rmSync(process.env.THUFIR_DB_PATH, { force: true });
@@ -74,9 +71,7 @@ describe('tool-executor perps', () => {
   }
 
   function mockPerpPredictionBaseline(baseline: Record<string, unknown>) {
-    (globalThis as {
-      __thufirResolvePerpPredictionBaseline?: () => Record<string, unknown>;
-    }).__thufirResolvePerpPredictionBaseline = vi.fn(() => baseline);
+    vi.spyOn(perpPredictionBaselines, 'resolvePerpPredictionBaseline').mockReturnValue(baseline as any);
   }
 
   it('perp_place_order routes to executor', async () => {
