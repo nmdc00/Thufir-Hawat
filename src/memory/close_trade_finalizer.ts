@@ -125,10 +125,24 @@ function num(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function tableColumns(tableName: string): Set<string> {
+type TableColumnInfo = { name: string; type: string; pk: number };
+
+function tableInfo(tableName: string): TableColumnInfo[] {
   const db = openDatabase();
-  const rows = db.prepare(`PRAGMA table_info('${tableName}')`).all() as Array<{ name?: string }>;
-  return new Set(rows.map((row) => String(row.name ?? '')));
+  const rows = db.prepare(`PRAGMA table_info('${tableName}')`).all() as Array<{
+    name?: string;
+    type?: string;
+    pk?: number;
+  }>;
+  return rows.map((row) => ({
+    name: String(row.name ?? ''),
+    type: String(row.type ?? ''),
+    pk: Number(row.pk ?? 0),
+  }));
+}
+
+function tableColumns(tableName: string): Set<string> {
+  return new Set(tableInfo(tableName).map((row) => row.name));
 }
 
 function closePnlPct(input: Omit<TradeClose, 'createdAt' | 'updatedAt'>): number {
@@ -530,31 +544,13 @@ export function insertTradeReflection(input: {
   confidence: number | null;
 }): void {
   const db = openDatabase();
-  db.prepare(
-    `
-      INSERT INTO trade_reflections (
-        id, trade_close_id, thesis_correct, timing_correct, exit_reason_appropriate,
-        what_worked, what_failed, lesson_for_next_trade, source_facts, confidence,
-        llm_status, updated_at
-      ) VALUES (
-        @id, @tradeCloseId, @thesisCorrect, @timingCorrect, @exitReasonAppropriate,
-        @whatWorked, @whatFailed, @lessonForNextTrade, @sourceFacts, @confidence,
-        'not_requested', datetime('now')
-      )
-      ON CONFLICT(trade_close_id) DO UPDATE SET
-        thesis_correct = excluded.thesis_correct,
-        timing_correct = excluded.timing_correct,
-        exit_reason_appropriate = excluded.exit_reason_appropriate,
-        what_worked = excluded.what_worked,
-        what_failed = excluded.what_failed,
-        lesson_for_next_trade = excluded.lesson_for_next_trade,
-        source_facts = excluded.source_facts,
-        confidence = excluded.confidence,
-        updated_at = datetime('now')
-    `
-  ).run({
+  const info = tableInfo('trade_reflections');
+  const columns = new Set(info.map((row) => row.name));
+  const idInfo = info.find((row) => row.name === 'id');
+  const values: Record<string, unknown> = {
     id: randomUUID(),
     tradeCloseId: input.tradeCloseId,
+    tradeId: input.tradeCloseId,
     thesisCorrect: boolToDb(input.thesisCorrect),
     timingCorrect: boolToDb(input.timingCorrect),
     exitReasonAppropriate: boolToDb(input.exitReasonAppropriate),
@@ -563,7 +559,44 @@ export function insertTradeReflection(input: {
     lessonForNextTrade: JSON.stringify(input.lessonForNextTrade),
     sourceFacts: JSON.stringify(input.sourceFacts),
     confidence: input.confidence,
-  });
+  };
+  const insertColumns: Array<{ column: string; param: string; sql?: string }> = [
+    ...(idInfo && idInfo.type.toUpperCase() !== 'INTEGER' ? [{ column: 'id', param: 'id' }] : []),
+    { column: 'trade_close_id', param: 'tradeCloseId' },
+    { column: 'trade_id', param: 'tradeId' },
+    { column: 'thesis_correct', param: 'thesisCorrect' },
+    { column: 'timing_correct', param: 'timingCorrect' },
+    { column: 'exit_reason_appropriate', param: 'exitReasonAppropriate' },
+    { column: 'what_worked', param: 'whatWorked' },
+    { column: 'what_failed', param: 'whatFailed' },
+    { column: 'lesson_for_next_trade', param: 'lessonForNextTrade' },
+    { column: 'what_worked_payload', param: 'whatWorked' },
+    { column: 'what_failed_payload', param: 'whatFailed' },
+    { column: 'lesson_for_next_trade_payload', param: 'lessonForNextTrade' },
+    { column: 'source_facts', param: 'sourceFacts' },
+    { column: 'source_facts_payload', param: 'sourceFacts' },
+    { column: 'confidence', param: 'confidence' },
+    { column: 'llm_status', param: 'llmStatus', sql: "'not_requested'" },
+    { column: 'updated_at', param: 'updatedAt', sql: "datetime('now')" },
+  ].filter((column) => columns.has(column.column));
+  db.prepare(
+    `
+      INSERT INTO trade_reflections (
+        ${insertColumns.map((column) => column.column).join(', ')}
+      ) VALUES (
+        ${insertColumns.map((column) => column.sql ?? `@${column.param}`).join(', ')}
+      )
+      ON CONFLICT(trade_close_id) DO UPDATE SET
+        thesis_correct = excluded.thesis_correct,
+        timing_correct = excluded.timing_correct,
+        exit_reason_appropriate = excluded.exit_reason_appropriate,
+        what_worked = COALESCE(excluded.what_worked, trade_reflections.what_worked),
+        what_failed = COALESCE(excluded.what_failed, trade_reflections.what_failed),
+        lesson_for_next_trade = COALESCE(excluded.lesson_for_next_trade, trade_reflections.lesson_for_next_trade),
+        confidence = excluded.confidence,
+        updated_at = datetime('now')
+    `
+  ).run(values);
 }
 
 export function insertRegretLearningCase(input: {
