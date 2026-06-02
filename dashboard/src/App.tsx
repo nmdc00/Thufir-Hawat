@@ -36,6 +36,12 @@ function numberText(value: number | null | undefined, digits = 2): string {
   return Number(value).toFixed(digits);
 }
 
+function numericField(row: Record<string, unknown> | null | undefined, key: string): number | null {
+  if (!row || row[key] == null) return null;
+  const value = Number(row[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
 function formatHeld(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   if (h < 24) return `${h}h`;
@@ -376,6 +382,13 @@ export default function App() {
   const policy = payload?.sections.policyState;
   const performance = payload?.sections.performanceBreakdown;
   const closeLearning = payload?.sections.closeLearning;
+  const predictionAccuracy = payload?.sections.predictionAccuracy ?? {};
+  const accuracyWindows = Array.isArray(predictionAccuracy.global)
+    ? predictionAccuracy.global as Array<Record<string, unknown>>
+    : [];
+  const accuracyDiagnostics = predictionAccuracy.diagnostics && typeof predictionAccuracy.diagnostics === 'object'
+    ? predictionAccuracy.diagnostics as Record<string, unknown>
+    : {};
 
   return (
     <main className="app-shell">
@@ -451,7 +464,41 @@ export default function App() {
       )}
 
       {tab === 'learning' && (
-        <section className="content-grid">
+        <section className="learning-stack">
+          <article className="panel">
+            <div className="panel-head"><h2>Comparable Prediction Accuracy</h2><p>Rolling calibration windows for final comparable predictions.</p></div>
+            <div className="panel-body">
+              <div className="subgrid compact-grid">
+                <div className="subpanel"><h3>Final Comparable</h3><div className="mono">{numberText(numericField(predictionAccuracy, 'totalFinalPredictions'), 0)}</div></div>
+                <div className="subpanel"><h3>Total Considered</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'totalPredictionsConsidered'), 0)}</div></div>
+                <div className="subpanel"><h3>Final Outcomes</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'finalOutcomePredictions'), 0)}</div></div>
+                <div className="subpanel"><h3>Comparable Eligible</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'comparableEligible'), 0)}</div></div>
+                <div className="subpanel"><h3>Missing Comparator</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'missingComparator'), 0)}</div></div>
+                <div className="subpanel"><h3>Synthetic Blocked</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'syntheticComparatorBlocked'), 0)}</div></div>
+                <div className="subpanel"><h3>Insufficient Samples</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'insufficientSamples'), 0)}</div></div>
+              </div>
+              <DataTable
+                headers={['Window', 'Samples', 'Accuracy', 'Brier Δ', 'Model', 'Market', 'Avg Edge', 'PnL']}
+                empty="No prediction-accuracy windows yet."
+                rows={accuracyWindows.map((row) => [
+                  <span className="mono">{numberText(numericField(row, 'windowSize'), 0)}</span>,
+                  <span className="mono">{numberText(numericField(row, 'sampleCount'), 0)}</span>,
+                  <span className="mono">{percent(numericField(row, 'accuracy') == null ? null : Number(numericField(row, 'accuracy')) * 100)}</span>,
+                  <span className="mono">{numberText(numericField(row, 'brierDelta'), 4)}</span>,
+                  <span className="mono">{numberText(numericField(row, 'brierModel'), 4)}</span>,
+                  <span className="mono">{numberText(numericField(row, 'brierMarket'), 4)}</span>,
+                  <span className="mono">{numberText(numericField(row, 'avgEdge'), 4)}</span>,
+                  <span className="mono">{money(numericField(row, 'totalPnl'))}</span>,
+                ])}
+              />
+              {accuracyWindows.length === 0 && (
+                <div className="learning-note">
+                  No final comparable predictions are available yet. Current exclusions are missing comparator, synthetic comparator, or insufficient historical baseline samples.
+                </div>
+              )}
+            </div>
+          </article>
+          <section className="content-grid">
           <article className="panel">
             <div className="panel-head"><h2>Close Finalizer</h2><p>Durable close-learning queue and canonical lifecycle output.</p></div>
             <div className="panel-body">
@@ -476,6 +523,7 @@ export default function App() {
               <DataTable headers={['Action', 'Symbol', 'Signal', 'Samples', 'Reason']} empty="No active learned policy adjustments." rows={(closeLearning?.policyLearning?.activeAdjustments ?? []).map((row) => [<span className={badgeClass(row.action === 'block' ? 'poor' : 'mixed')}>{String(row.action ?? '-')}</span>, String(row.symbol ?? 'any'), String(row.signalClass ?? 'any'), <span className="mono">{numberText(Number(row.sampleCount ?? 0), 0)}</span>, String(row.reason ?? '-')])} />
             </div>
           </article>
+          </section>
         </section>
       )}
 
