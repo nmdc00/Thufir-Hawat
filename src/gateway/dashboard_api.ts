@@ -197,6 +197,15 @@ type PredictionAccuracyWindow = {
   totalPnl: number | null;
 };
 
+type PredictionAccuracyDiagnostics = {
+  totalPredictionsConsidered: number;
+  finalOutcomePredictions: number;
+  comparableEligible: number;
+  missingComparator: number;
+  syntheticComparatorBlocked: number;
+  insufficientSamples: number;
+};
+
 type LearningAuditSection = {
   comparable: {
     totalCaseCount: number;
@@ -398,6 +407,13 @@ function tableExists(db: Database.Database, tableName: string): boolean {
   const row = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
     .get(tableName) as { name?: string } | undefined;
+  return Boolean(row?.name);
+}
+
+function relationExists(db: Database.Database, relationName: string): boolean {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1")
+    .get(relationName) as { name?: string } | undefined;
   return Boolean(row?.name);
 }
 
@@ -2035,13 +2051,19 @@ function listActiveLearnedWeights(db: Database.Database): LearnedWeightRow[] {
 
 function buildPredictionAccuracySection(db: Database.Database): {
   totalFinalPredictions: number;
+  diagnostics: PredictionAccuracyDiagnostics;
   global: PredictionAccuracyWindow[];
 } {
-  if (!tableExists(db, 'learning_examples')) {
-    return { totalFinalPredictions: 0, global: [] };
+  const diagnostics = buildPredictionAccuracyDiagnostics(db);
+  if (!relationExists(db, 'learning_examples')) {
+    return { totalFinalPredictions: 0, diagnostics, global: [] };
   }
 
   const totalFinalPredictions = safeCount(db, 'SELECT COUNT(*) AS c FROM learning_examples');
+  diagnostics.comparableEligible = safeCount(
+    db,
+    "SELECT COUNT(*) AS c FROM learning_examples WHERE COALESCE(domain, '') = 'perp'"
+  );
   const rows = db
     .prepare(
       `
@@ -2070,6 +2092,7 @@ function buildPredictionAccuracySection(db: Database.Database): {
 
   return {
     totalFinalPredictions,
+    diagnostics,
     global: windows.map((windowSize) => {
       const slice = rows.slice(0, Math.min(windowSize, rows.length));
       const sampleCount = slice.length;
@@ -2098,6 +2121,128 @@ function buildPredictionAccuracySection(db: Database.Database): {
         totalPnl: total('pnl'),
       };
     }),
+  };
+}
+
+function buildPredictionAccuracyDiagnostics(db: Database.Database): PredictionAccuracyDiagnostics {
+  const empty: PredictionAccuracyDiagnostics = {
+    totalPredictionsConsidered: 0,
+    finalOutcomePredictions: 0,
+    comparableEligible: 0,
+    missingComparator: 0,
+    syntheticComparatorBlocked: 0,
+    insufficientSamples: 0,
+  };
+
+  if (!tableExists(db, 'predictions')) {
+    return empty;
+  }
+
+  const hasRequiredPredictionColumns = [
+    'domain',
+    'model_probability',
+    'market_probability',
+    'learning_comparable',
+    'outcome_basis',
+    'outcome',
+  ].every((columnName) => tableHasColumn(db, 'predictions', columnName));
+  if (!hasRequiredPredictionColumns) {
+    return empty;
+  }
+
+  const totalPredictionsConsidered = safeCount(
+    db,
+    "SELECT COUNT(*) AS c FROM predictions WHERE COALESCE(domain, '') = 'perp' AND model_probability IS NOT NULL"
+  );
+  const finalOutcomePredictions = safeCount(
+    db,
+    `
+      SELECT COUNT(*) AS c
+      FROM predictions
+      WHERE COALESCE(domain, '') = 'perp'
+        AND model_probability IS NOT NULL
+        AND outcome_basis = 'final'
+        AND outcome IS NOT NULL
+    `
+  );
+  const comparableEligible = safeCount(
+    db,
+    `
+      SELECT COUNT(*) AS c
+      FROM predictions
+      WHERE COALESCE(domain, '') = 'perp'
+        AND model_probability IS NOT NULL
+        AND learning_comparable = 1
+    `
+  );
+  const missingComparatorFromPredictions = safeCount(
+    db,
+    `
+      SELECT COUNT(*) AS c
+      FROM predictions
+      WHERE COALESCE(domain, '') = 'perp'
+        AND model_probability IS NOT NULL
+        AND market_probability IS NULL
+        AND learning_comparable = 0
+    `
+  );
+  const syntheticComparatorBlocked = safeCount(
+    db,
+    `
+      SELECT COUNT(*) AS c
+      FROM predictions
+      WHERE COALESCE(domain, '') = 'perp'
+        AND model_probability IS NOT NULL
+        AND market_probability = 0.5
+        AND learning_comparable = 0
+    `
+  );
+
+  let hasComparableForecastExclusions = false;
+  let missingComparatorFromCases = 0;
+  let insufficientSamples = 0;
+  if (tableExists(db, 'learning_cases') && tableHasColumn(db, 'learning_cases', 'exclusion_reason')) {
+    hasComparableForecastExclusions =
+      safeCount(
+        db,
+        `
+          SELECT COUNT(*) AS c
+          FROM learning_cases
+          WHERE case_type = 'comparable_forecast'
+            AND comparable = 0
+        `
+      ) > 0;
+    missingComparatorFromCases = safeCount(
+      db,
+      `
+        SELECT COUNT(*) AS c
+        FROM learning_cases
+        WHERE case_type = 'comparable_forecast'
+          AND comparable = 0
+          AND exclusion_reason = 'missing_comparator'
+      `
+    );
+    insufficientSamples = safeCount(
+      db,
+      `
+        SELECT COUNT(*) AS c
+        FROM learning_cases
+        WHERE case_type = 'comparable_forecast'
+          AND comparable = 0
+          AND exclusion_reason = 'insufficient_samples'
+      `
+    );
+  }
+
+  return {
+    totalPredictionsConsidered,
+    finalOutcomePredictions,
+    comparableEligible,
+    missingComparator: hasComparableForecastExclusions
+      ? missingComparatorFromCases
+      : missingComparatorFromPredictions,
+    syntheticComparatorBlocked,
+    insufficientSamples,
   };
 }
 
@@ -2566,6 +2711,7 @@ export function buildDashboardApiPayload(params?: {
     };
     predictionAccuracy: {
       totalFinalPredictions: number;
+      diagnostics: PredictionAccuracyDiagnostics;
       global: PredictionAccuracyWindow[];
     };
     learningAudit: LearningAuditSection;
