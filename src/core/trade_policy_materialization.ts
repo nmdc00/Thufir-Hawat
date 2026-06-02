@@ -1,4 +1,7 @@
+import { randomUUID } from 'node:crypto';
+
 import type { ThufirConfig } from './config.js';
+import { openDatabase } from '../memory/db.js';
 import type { LearningCase } from '../memory/learning_cases.js';
 import { listLearningCases } from '../memory/learning_cases.js';
 import {
@@ -391,6 +394,7 @@ export function deriveTradePolicyAdjustment(
 export function materializeTradePolicyAdjustmentFromLearningCase(params: {
   config: ThufirConfig;
   learningCase: LearningCase;
+  tradeCloseId?: string | null;
 }): TradePolicyAdjustmentRecord | null {
   const enabled =
     ((params.config.autonomy as Record<string, unknown> | undefined)?.tradePolicyAdjustments as
@@ -435,6 +439,39 @@ export function materializeTradePolicyAdjustmentFromLearningCase(params: {
           : null,
       active: true,
     });
+    try {
+      const db = openDatabase();
+      db.prepare(
+        `
+          INSERT INTO policy_promotion_events (
+            id, adjustment_id, trade_close_id, learning_case_id, scope_key, action,
+            sample_count, reason, payload
+          ) VALUES (
+            @id, @adjustmentId, @tradeCloseId, @learningCaseId, @scopeKey, @action,
+            @sampleCount, @reason, @payload
+          )
+        `
+      ).run({
+        id: randomUUID(),
+        adjustmentId: lastRecord.id,
+        tradeCloseId: params.tradeCloseId ?? null,
+        learningCaseId: params.learningCase.id,
+        scopeKey: lastRecord.scopeKey,
+        action: lastRecord.action,
+        sampleCount: lastRecord.evidenceCount,
+        reason: lastRecord.rationale,
+        payload: JSON.stringify({
+          source: params.tradeCloseId ? 'close_finalizer' : 'execution_learning',
+          policyKey: lastRecord.policyKey,
+          confidence: lastRecord.confidence,
+          thesisFailureRate: lastRecord.thesisFailureRate,
+          negativePnlRate: lastRecord.negativePnlRate,
+          averageQualityScore: lastRecord.averageQualityScore,
+        }),
+      });
+    } catch {
+      // Policy adjustment is the production-critical artifact; promotion events are audit metadata.
+    }
   }
 
   return lastRecord;
