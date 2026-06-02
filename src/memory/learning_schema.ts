@@ -500,6 +500,7 @@ export function ensureLearningSchema(db: Database.Database): void {
   dropLegacyCloseFinalizerViews(db);
   repairLegacyCloseFinalizerColumns(db);
   db.exec(CLOSE_TRADE_FINALIZER_SCHEMA_SQL);
+  ensureCloseFinalizerCompatibility(db);
   db.exec(TRADE_POLICY_ADJUSTMENTS_TABLE_SQL);
   ensureTradePolicyAdjustmentColumns(db);
   for (const statement of TRADE_POLICY_ADJUSTMENTS_INDEX_SQL) {
@@ -517,6 +518,30 @@ export function ensureLearningSchema(db: Database.Database): void {
   db.exec(COMPARABLE_LEARNING_CASES_VIEW_SQL);
   db.exec('DROP VIEW IF EXISTS execution_learning_cases;');
   db.exec(EXECUTION_LEARNING_CASES_VIEW_SQL);
+}
+
+function ensureCloseFinalizerCompatibility(db: Database.Database): void {
+  const hasTable = (table: string): boolean =>
+    Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(table));
+  const hasColumn = (table: string, column: string): boolean => {
+    if (!hasTable(table)) return false;
+    const columns = db.prepare(`PRAGMA table_info('${table}')`).all() as Array<{ name?: string }>;
+    return columns.some((row) => String(row.name ?? '') === column);
+  };
+
+  if (hasColumn('close_finalization_jobs', 'close_event_id')) {
+    db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_close_finalization_jobs_close_event_unique ON close_finalization_jobs(close_event_id)'
+    );
+  }
+  if (hasColumn('trade_closes', 'close_event_id')) {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_closes_close_event_unique ON trade_closes(close_event_id)');
+  }
+  if (hasColumn('trade_reflections', 'trade_close_id')) {
+    db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_reflections_trade_close_unique ON trade_reflections(trade_close_id)'
+    );
+  }
 }
 
 function ensureLearningCaseColumns(db: Database.Database): void {

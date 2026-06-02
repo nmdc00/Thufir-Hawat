@@ -194,7 +194,7 @@ export function selectRuntimeTradePolicyAdjustments(
     })
     .filter(Boolean) as RuntimeTradePolicyAdjustment[];
 
-  return matched;
+  return filterActionableTradePolicyAdjustments(matched);
 }
 
 export function deriveTradePolicyAdjustments(
