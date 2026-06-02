@@ -46,6 +46,12 @@ describe('dashboard page route', () => {
     expect(state.body).toContain('Overview');
     expect(state.body).toContain('Learning');
     expect(state.body).toContain('Comparable Prediction Accuracy');
+    expect(state.body).toContain('Total Considered');
+    expect(state.body).toContain('Missing Comparator');
+    expect(state.body).toContain('Synthetic Blocked');
+    expect(state.body).toContain('Insufficient Samples');
+    expect(state.body).toContain('Perp prediction candidates exist, but none have final outcomes yet.');
+    expect(state.body).toContain('missing a real comparator baseline');
     expect(state.body).toContain('Exclusion Reasons');
   });
 
