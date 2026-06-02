@@ -122,6 +122,34 @@ describe('learning schema migration', () => {
     }
   });
 
+  it('repairs legacy close finalizer tables before creating close indexes', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-close-finalizer-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE trade_close_events (
+        id TEXT PRIMARY KEY,
+        lifecycle_id TEXT,
+        symbol TEXT,
+        close_kind TEXT,
+        created_at TEXT
+      );
+      INSERT INTO trade_close_events (id, lifecycle_id, symbol, close_kind, created_at)
+      VALUES ('event-legacy', 'perp:BTC:1', 'BTC', 'full_close', '2026-06-01T10:00:00.000Z');
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+    const columns = db.prepare("PRAGMA table_info('trade_close_events')").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    expect(names.has('execution_mode')).toBe(true);
+    expect(names.has('realized_fee_usd')).toBe(true);
+    expect(
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_trade_close_events_mode'").get()
+    ).toBeTruthy();
+  });
+
   it('startup repair demotes open synthetic perp comparable rows before they resolve', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-open-synth-')), 'thufir.sqlite');
     const raw = new Database(dbPath);
