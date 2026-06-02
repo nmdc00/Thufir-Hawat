@@ -150,6 +150,46 @@ describe('learning schema migration', () => {
     ).toBeTruthy();
   });
 
+  it('replaces legacy close finalizer views with first-class tables', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-close-view-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE learning_cases (
+        id TEXT PRIMARY KEY,
+        case_type TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        comparable INTEGER NOT NULL DEFAULT 0,
+        source_prediction_id TEXT,
+        source_trade_id INTEGER,
+        source_dossier_id TEXT,
+        source_hypothesis_id TEXT,
+        source_artifact_id INTEGER,
+        comparator_kind TEXT,
+        baseline_payload TEXT,
+        exclusion_reason TEXT,
+        updated_at TEXT
+      );
+      CREATE VIEW regret_learning_cases AS
+      SELECT *
+      FROM learning_cases
+      WHERE case_type = 'regret_case';
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+    const object = db
+      .prepare("SELECT type FROM sqlite_master WHERE name = 'regret_learning_cases'")
+      .get() as { type: string };
+
+    expect(object.type).toBe('table');
+    expect(
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_regret_learning_cases_type'").get()
+    ).toBeTruthy();
+  });
+
   it('startup repair demotes open synthetic perp comparable rows before they resolve', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-open-synth-')), 'thufir.sqlite');
     const raw = new Database(dbPath);

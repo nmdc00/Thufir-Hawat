@@ -496,6 +496,7 @@ export function ensureLearningSchema(db: Database.Database): void {
   for (const statement of LEARNING_SIGNAL_AUDITS_INDEX_SQL) {
     db.exec(statement);
   }
+  dropLegacyCloseFinalizerViews(db);
   repairLegacyCloseFinalizerColumns(db);
   db.exec(CLOSE_TRADE_FINALIZER_SCHEMA_SQL);
   db.exec(TRADE_POLICY_ADJUSTMENTS_TABLE_SQL);
@@ -531,6 +532,17 @@ function tableExists(db: Database.Database, tableName: string): boolean {
   return Boolean(
     db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(tableName)
   );
+}
+
+function dropLegacyCloseFinalizerViews(db: Database.Database): void {
+  for (const viewName of ['trade_close_events', 'close_finalization_jobs', 'trade_closes', 'trade_reflections', 'regret_learning_cases', 'policy_promotion_events']) {
+    const row = db
+      .prepare("SELECT type FROM sqlite_master WHERE name = ? LIMIT 1")
+      .get(viewName) as { type?: string } | undefined;
+    if (row?.type === 'view') {
+      db.exec(`DROP VIEW IF EXISTS ${viewName}`);
+    }
+  }
 }
 
 function repairLegacyCloseFinalizerColumns(db: Database.Database): void {
