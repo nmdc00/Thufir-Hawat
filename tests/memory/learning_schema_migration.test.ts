@@ -135,6 +135,21 @@ describe('learning schema migration', () => {
       );
       INSERT INTO trade_close_events (id, lifecycle_id, symbol, close_kind, created_at)
       VALUES ('event-legacy', 'perp:BTC:1', 'BTC', 'full_close', '2026-06-01T10:00:00.000Z');
+      CREATE TABLE trade_closes (
+        trade_id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        exit_price REAL NOT NULL,
+        exit_reason TEXT NOT NULL,
+        pnl_usd REAL NOT NULL,
+        pnl_pct REAL NOT NULL,
+        hold_duration_seconds INTEGER NOT NULL,
+        closed_at TEXT NOT NULL
+      );
+      INSERT INTO trade_closes (
+        trade_id, symbol, exit_price, exit_reason, pnl_usd, pnl_pct, hold_duration_seconds, closed_at
+      ) VALUES (
+        'legacy-close-1', 'BTC', 50000, 'manual', 1.5, 0.01, 60, '2026-06-01T10:01:00.000Z'
+      );
     `);
     raw.close();
 
@@ -148,6 +163,9 @@ describe('learning schema migration', () => {
     expect(
       db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_trade_close_events_mode'").get()
     ).toBeTruthy();
+    expect(
+      (db.prepare("SELECT id FROM trade_closes WHERE trade_id = 'legacy-close-1'").get() as { id: string }).id
+    ).toBe('legacy-close-1');
   });
 
   it('replaces legacy close finalizer views with first-class tables', () => {
