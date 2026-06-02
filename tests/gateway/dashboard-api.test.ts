@@ -171,6 +171,62 @@ describe('dashboard api payload', () => {
     ]);
   });
 
+  it('reports comparator diagnostics for blocked and eligible perp prediction rows', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'thufir-dashboard-comparator-diagnostics-'));
+    dbDir = dir;
+    dbPath = join(dir, 'thufir.sqlite');
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase(dbPath);
+
+    db.prepare(
+      `
+        INSERT INTO predictions (
+          id, market_id, market_title, predicted_outcome, domain, symbol, created_at,
+          model_probability, market_probability, learning_comparable, outcome_basis, outcome, outcome_timestamp, pnl
+        ) VALUES
+          ('eligible-final', 'perp:BTC:eligible', 'BTC eligible', 'YES', 'perp', 'BTC', '2026-06-01T10:00:00.000Z', 0.74, 0.61, 1, 'final', 'YES', '2026-06-01T11:00:00.000Z', 12.5),
+          ('missing-final', 'perp:ETH:missing', 'ETH missing', 'YES', 'perp', 'ETH', '2026-06-01T10:01:00.000Z', 0.72, NULL, 0, 'final', 'NO', '2026-06-01T11:01:00.000Z', -8.0),
+          ('synthetic-final', 'perp:SOL:synthetic', 'SOL synthetic', 'YES', 'perp', 'SOL', '2026-06-01T10:02:00.000Z', 0.73, 0.5, 0, 'final', 'NO', '2026-06-01T11:02:00.000Z', -4.0),
+          ('insufficient-open', 'perp:DOGE:insufficient', 'DOGE insufficient', 'YES', 'perp', 'DOGE', '2026-06-01T10:03:00.000Z', 0.69, NULL, 0, 'legacy', NULL, NULL, NULL),
+          ('binary-ignore', 'binary:ignore', 'Binary ignore', 'YES', 'binary', 'IGN', '2026-06-01T10:04:00.000Z', 0.64, 0.55, 0, 'final', 'YES', '2026-06-01T11:04:00.000Z', 1.0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO learning_cases (
+          id, case_type, domain, entity_type, entity_id, comparable, exclusion_reason, created_at
+        ) VALUES
+          ('case-missing', 'comparable_forecast', 'perp', 'symbol', 'ETH', 0, 'missing_comparator', '2026-06-01T10:01:00.000Z'),
+          ('case-insufficient', 'comparable_forecast', 'perp', 'symbol', 'DOGE', 0, 'insufficient_samples', '2026-06-01T10:03:00.000Z'),
+          ('case-eligible', 'comparable_forecast', 'perp', 'symbol', 'BTC', 1, NULL, '2026-06-01T10:00:00.000Z')
+      `
+    ).run();
+
+    const payload = buildDashboardApiPayload({
+      db,
+      filters: {
+        mode: 'paper',
+        timeframe: 'all',
+        period: null,
+        from: null,
+        to: null,
+      },
+    });
+
+    expect(payload.sections.predictionAccuracy.totalFinalPredictions).toBe(1);
+    expect(payload.sections.predictionAccuracy.global).toEqual([
+      expect.objectContaining({ windowSize: 25, sampleCount: 1 }),
+    ]);
+    expect(payload.sections.predictionAccuracy.diagnostics).toEqual({
+      totalPredictionsConsidered: 4,
+      finalOutcomePredictions: 3,
+      comparableEligible: 1,
+      missingComparator: 1,
+      syntheticComparatorBlocked: 1,
+      insufficientSamples: 1,
+    });
+  });
+
   it('surfaces close finalizer, canonical close, regret, and learned policy rows', () => {
     const dir = mkdtempSync(join(tmpdir(), 'thufir-dashboard-close-learning-'));
     dbDir = dir;
