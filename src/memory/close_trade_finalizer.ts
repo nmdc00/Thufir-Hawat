@@ -125,6 +125,26 @@ function num(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function tableColumns(tableName: string): Set<string> {
+  const db = openDatabase();
+  const rows = db.prepare(`PRAGMA table_info('${tableName}')`).all() as Array<{ name?: string }>;
+  return new Set(rows.map((row) => String(row.name ?? '')));
+}
+
+function closePnlPct(input: Omit<TradeClose, 'createdAt' | 'updatedAt'>): number {
+  if (
+    input.entryPrice != null &&
+    input.exitPrice != null &&
+    Number.isFinite(input.entryPrice) &&
+    Number.isFinite(input.exitPrice) &&
+    input.entryPrice !== 0
+  ) {
+    const sideMultiplier = input.closedSide === 'short' ? -1 : 1;
+    return ((input.exitPrice - input.entryPrice) / input.entryPrice) * sideMultiplier;
+  }
+  return 0;
+}
+
 export function recordTradeCloseEvent(input: TradeCloseEventInput): TradeCloseEvent {
   const db = openDatabase();
   const id = input.id ?? randomUUID();
@@ -351,38 +371,105 @@ export function recoverExpiredCloseFinalizationLeases(): number {
 
 export function upsertTradeClose(input: Omit<TradeClose, 'createdAt' | 'updatedAt'>): TradeClose {
   const db = openDatabase();
+  const columns = tableColumns('trade_closes');
+  const values: Record<string, unknown> = {
+    id: input.id,
+    closeEventId: input.closeEventId,
+    lifecycleId: input.lifecycleId,
+    tradeId: input.tradeId,
+    symbol: input.symbol,
+    closedSide: input.closedSide,
+    executionMode: input.executionMode,
+    openedAt: input.openedAt,
+    closedAt: input.closedAt,
+    holdSeconds: input.holdSeconds,
+    entryPrice: input.entryPrice,
+    exitPrice: input.exitPrice,
+    totalOpenedSize: input.totalOpenedSize,
+    totalReducedSize: input.totalReducedSize,
+    finalCloseSize: input.finalCloseSize,
+    grossRealizedPnlUsd: input.grossRealizedPnlUsd,
+    feesUsd: input.feesUsd,
+    netRealizedPnlUsd: input.netRealizedPnlUsd,
+    capturedR: input.capturedR,
+    leftOnTableR: input.leftOnTableR,
+    exitMode: input.exitMode,
+    thesisInvalidationHit: boolToDb(input.thesisInvalidationHit),
+    thesisCorrect: boolToDb(input.thesisCorrect),
+    directionScore: input.directionScore,
+    timingScore: input.timingScore,
+    sizingScore: input.sizingScore,
+    exitScore: input.exitScore,
+    compositeScore: input.compositeScore,
+    linkedPredictionId: input.linkedPredictionId,
+    sourceLearningCaseId: input.sourceLearningCaseId,
+    sourceAuthority: input.sourceAuthority,
+    bootstrapQuality: input.bootstrapQuality,
+    deterministicStatus: input.deterministicStatus,
+    llmReflectionStatus: input.llmReflectionStatus,
+    facts: json(input.facts),
+    exitReason: input.exitMode ?? 'unknown',
+    pnlUsd: input.netRealizedPnlUsd ?? input.grossRealizedPnlUsd ?? 0,
+    pnlPct: closePnlPct(input),
+    holdDurationSeconds: input.holdSeconds ?? 0,
+    fundingPaidUsd: 0,
+  };
+  const insertColumns: Array<{ column: string; param: string; sql?: string }> = [
+    { column: 'id', param: 'id' },
+    { column: 'close_event_id', param: 'closeEventId' },
+    { column: 'lifecycle_id', param: 'lifecycleId' },
+    { column: 'trade_id', param: 'tradeId' },
+    { column: 'symbol', param: 'symbol' },
+    { column: 'closed_side', param: 'closedSide' },
+    { column: 'execution_mode', param: 'executionMode' },
+    { column: 'opened_at', param: 'openedAt' },
+    { column: 'closed_at', param: 'closedAt' },
+    { column: 'hold_seconds', param: 'holdSeconds' },
+    { column: 'entry_price', param: 'entryPrice' },
+    { column: 'exit_price', param: 'exitPrice' },
+    { column: 'total_opened_size', param: 'totalOpenedSize' },
+    { column: 'total_reduced_size', param: 'totalReducedSize' },
+    { column: 'final_close_size', param: 'finalCloseSize' },
+    { column: 'gross_realized_pnl_usd', param: 'grossRealizedPnlUsd' },
+    { column: 'fees_usd', param: 'feesUsd' },
+    { column: 'net_realized_pnl_usd', param: 'netRealizedPnlUsd' },
+    { column: 'captured_r', param: 'capturedR' },
+    { column: 'left_on_table_r', param: 'leftOnTableR' },
+    { column: 'exit_mode', param: 'exitMode' },
+    { column: 'thesis_invalidation_hit', param: 'thesisInvalidationHit' },
+    { column: 'thesis_correct', param: 'thesisCorrect' },
+    { column: 'direction_score', param: 'directionScore' },
+    { column: 'timing_score', param: 'timingScore' },
+    { column: 'sizing_score', param: 'sizingScore' },
+    { column: 'exit_score', param: 'exitScore' },
+    { column: 'composite_score', param: 'compositeScore' },
+    { column: 'linked_prediction_id', param: 'linkedPredictionId' },
+    { column: 'source_learning_case_id', param: 'sourceLearningCaseId' },
+    { column: 'source_authority', param: 'sourceAuthority' },
+    { column: 'bootstrap_quality', param: 'bootstrapQuality' },
+    { column: 'deterministic_status', param: 'deterministicStatus' },
+    { column: 'llm_reflection_status', param: 'llmReflectionStatus' },
+    { column: 'facts_payload', param: 'facts' },
+    { column: 'exit_reason', param: 'exitReason' },
+    { column: 'pnl_usd', param: 'pnlUsd' },
+    { column: 'pnl_pct', param: 'pnlPct' },
+    { column: 'hold_duration_seconds', param: 'holdDurationSeconds' },
+    { column: 'funding_paid_usd', param: 'fundingPaidUsd' },
+    { column: 'updated_at', param: 'updatedAt', sql: "datetime('now')" },
+  ].filter((column) => columns.has(column.column));
   db.prepare(
     `
       INSERT INTO trade_closes (
-        id, close_event_id, lifecycle_id, trade_id, symbol, closed_side, execution_mode,
-        opened_at, closed_at, hold_seconds, entry_price, exit_price, total_opened_size,
-        total_reduced_size, final_close_size, gross_realized_pnl_usd, fees_usd,
-        net_realized_pnl_usd, captured_r, left_on_table_r, exit_mode,
-        thesis_invalidation_hit, thesis_correct, direction_score, timing_score,
-        sizing_score, exit_score, composite_score, linked_prediction_id,
-        source_learning_case_id, source_authority, bootstrap_quality,
-        deterministic_status, llm_reflection_status, facts_payload, updated_at
+        ${insertColumns.map((column) => column.column).join(', ')}
       ) VALUES (
-        @id, @closeEventId, @lifecycleId, @tradeId, @symbol, @closedSide, @executionMode,
-        @openedAt, @closedAt, @holdSeconds, @entryPrice, @exitPrice, @totalOpenedSize,
-        @totalReducedSize, @finalCloseSize, @grossRealizedPnlUsd, @feesUsd,
-        @netRealizedPnlUsd, @capturedR, @leftOnTableR, @exitMode,
-        @thesisInvalidationHit, @thesisCorrect, @directionScore, @timingScore,
-        @sizingScore, @exitScore, @compositeScore, @linkedPredictionId,
-        @sourceLearningCaseId, @sourceAuthority, @bootstrapQuality,
-        @deterministicStatus, @llmReflectionStatus, @facts, datetime('now')
+        ${insertColumns.map((column) => column.sql ?? `@${column.param}`).join(', ')}
       )
       ON CONFLICT(close_event_id) DO UPDATE SET
         source_learning_case_id = COALESCE(excluded.source_learning_case_id, trade_closes.source_learning_case_id),
         facts_payload = excluded.facts_payload,
         updated_at = datetime('now')
     `
-  ).run({
-    ...input,
-    thesisInvalidationHit: boolToDb(input.thesisInvalidationHit),
-    thesisCorrect: boolToDb(input.thesisCorrect),
-    facts: json(input.facts),
-  });
+  ).run(values);
   return getTradeCloseByCloseEventId(input.closeEventId);
 }
 
