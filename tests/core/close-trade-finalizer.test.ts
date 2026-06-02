@@ -8,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { bootstrapOpenPerpPositionLifecycles } from '../../src/core/close_trade_finalizer.js';
 import { openDatabase } from '../../src/memory/db.js';
 import { createLearningCase } from '../../src/memory/learning_cases.js';
-import { recordTradeCloseEvent, upsertTradeClose } from '../../src/memory/close_trade_finalizer.js';
+import {
+  insertTradeReflection,
+  recordTradeCloseEvent,
+  upsertTradeClose,
+} from '../../src/memory/close_trade_finalizer.js';
 import { finalizeCloseEvent } from '../../src/core/close_trade_finalizer.js';
 import { placePaperPerpOrder } from '../../src/memory/paper_perps.js';
 import { getActivePerpPositionTradeId } from '../../src/memory/perp_trades.js';
@@ -337,5 +341,63 @@ describe('close trade finalizer bootstrap', () => {
       holdDurationSeconds: 300,
       closeEventId: 'event-legacy',
     });
+  });
+
+  it('inserts deterministic reflections into legacy trade_reflections tables', () => {
+    const dbPath = process.env.THUFIR_DB_PATH;
+    expect(dbPath).toBeTruthy();
+    const raw = new Database(dbPath!);
+    raw.exec(`
+      CREATE TABLE trade_reflections (
+        id INTEGER PRIMARY KEY,
+        created_at TEXT DEFAULT (datetime('now')),
+        trade_id TEXT NOT NULL,
+        thesis_correct INTEGER NOT NULL,
+        timing_correct INTEGER NOT NULL,
+        exit_reason_appropriate INTEGER NOT NULL,
+        what_worked TEXT,
+        what_failed TEXT,
+        lesson_for_next_trade TEXT,
+        trade_close_id TEXT,
+        what_worked_payload TEXT,
+        what_failed_payload TEXT,
+        lesson_for_next_trade_payload TEXT,
+        source_facts_payload TEXT,
+        llm_reflection_payload TEXT,
+        confidence REAL,
+        updated_at TEXT
+      );
+      CREATE UNIQUE INDEX idx_trade_reflections_trade_close_unique ON trade_reflections(trade_close_id);
+    `);
+    raw.close();
+
+    insertTradeReflection({
+      tradeCloseId: 'close-reflection',
+      thesisCorrect: true,
+      timingCorrect: false,
+      exitReasonAppropriate: false,
+      whatWorked: ['thesis_played_out'],
+      whatFailed: ['negative_r_close'],
+      lessonForNextTrade: ['review_exit_timing'],
+      sourceFacts: { capturedR: -1 },
+      confidence: 0.5,
+    });
+
+    const db = openDatabase();
+    const row = db
+      .prepare(
+        `
+          SELECT trade_id AS tradeId, trade_close_id AS tradeCloseId,
+                 source_facts_payload AS sourceFacts, thesis_correct AS thesisCorrect
+          FROM trade_reflections
+          WHERE trade_close_id = 'close-reflection'
+        `
+      )
+      .get() as { tradeId: string; tradeCloseId: string; sourceFacts: string; thesisCorrect: number };
+
+    expect(row.tradeId).toBe('close-reflection');
+    expect(row.tradeCloseId).toBe('close-reflection');
+    expect(JSON.parse(row.sourceFacts)).toEqual({ capturedR: -1 });
+    expect(row.thesisCorrect).toBe(1);
   });
 });
