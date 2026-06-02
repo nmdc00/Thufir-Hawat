@@ -360,6 +360,101 @@ const TRADE_POLICY_ADJUSTMENT_COLUMNS: ColumnSpec[] = [
   { name: 'expires_at', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN expires_at TEXT' },
   { name: 'updated_at', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN updated_at TEXT' },
 ];
+
+const CLOSE_FINALIZER_COLUMN_REPAIRS: Record<string, ColumnSpec[]> = {
+  trade_close_events: [
+    { name: 'lifecycle_id', sql: 'ALTER TABLE trade_close_events ADD COLUMN lifecycle_id TEXT' },
+    { name: 'trade_id', sql: 'ALTER TABLE trade_close_events ADD COLUMN trade_id INTEGER' },
+    { name: 'symbol', sql: 'ALTER TABLE trade_close_events ADD COLUMN symbol TEXT' },
+    { name: 'execution_mode', sql: 'ALTER TABLE trade_close_events ADD COLUMN execution_mode TEXT' },
+    { name: 'side', sql: 'ALTER TABLE trade_close_events ADD COLUMN side TEXT' },
+    { name: 'close_kind', sql: "ALTER TABLE trade_close_events ADD COLUMN close_kind TEXT DEFAULT 'full_close'" },
+    { name: 'size_reduced', sql: 'ALTER TABLE trade_close_events ADD COLUMN size_reduced REAL' },
+    { name: 'remaining_size', sql: 'ALTER TABLE trade_close_events ADD COLUMN remaining_size REAL' },
+    { name: 'realized_pnl_usd', sql: 'ALTER TABLE trade_close_events ADD COLUMN realized_pnl_usd REAL' },
+    { name: 'net_realized_pnl_usd', sql: 'ALTER TABLE trade_close_events ADD COLUMN net_realized_pnl_usd REAL' },
+    { name: 'realized_fee_usd', sql: 'ALTER TABLE trade_close_events ADD COLUMN realized_fee_usd REAL' },
+    { name: 'exit_price', sql: 'ALTER TABLE trade_close_events ADD COLUMN exit_price REAL' },
+    { name: 'exit_mode', sql: 'ALTER TABLE trade_close_events ADD COLUMN exit_mode TEXT' },
+    { name: 'thesis_invalidation_hit', sql: 'ALTER TABLE trade_close_events ADD COLUMN thesis_invalidation_hit INTEGER' },
+    { name: 'source_authority', sql: 'ALTER TABLE trade_close_events ADD COLUMN source_authority TEXT' },
+    { name: 'entry_journal_payload', sql: 'ALTER TABLE trade_close_events ADD COLUMN entry_journal_payload TEXT' },
+    { name: 'close_journal_payload', sql: 'ALTER TABLE trade_close_events ADD COLUMN close_journal_payload TEXT' },
+    { name: 'snapshot_payload', sql: 'ALTER TABLE trade_close_events ADD COLUMN snapshot_payload TEXT' },
+    { name: 'bootstrap_quality', sql: 'ALTER TABLE trade_close_events ADD COLUMN bootstrap_quality TEXT' },
+    { name: 'created_at', sql: 'ALTER TABLE trade_close_events ADD COLUMN created_at TEXT' },
+    { name: 'updated_at', sql: 'ALTER TABLE trade_close_events ADD COLUMN updated_at TEXT' },
+  ],
+  close_finalization_jobs: [
+    { name: 'close_event_id', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN close_event_id TEXT' },
+    { name: 'lifecycle_id', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN lifecycle_id TEXT' },
+    { name: 'trade_id', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN trade_id INTEGER' },
+    { name: 'symbol', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN symbol TEXT' },
+    { name: 'status', sql: "ALTER TABLE close_finalization_jobs ADD COLUMN status TEXT DEFAULT 'pending'" },
+    { name: 'attempts', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN attempts INTEGER DEFAULT 0' },
+    { name: 'lease_owner', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN lease_owner TEXT' },
+    { name: 'lease_expires_at', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN lease_expires_at TEXT' },
+    { name: 'last_error', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN last_error TEXT' },
+    { name: 'next_attempt_at', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN next_attempt_at TEXT' },
+    { name: 'created_at', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN created_at TEXT' },
+    { name: 'updated_at', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN updated_at TEXT' },
+    { name: 'finalized_at', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN finalized_at TEXT' },
+  ],
+  trade_closes: [
+    { name: 'id', sql: 'ALTER TABLE trade_closes ADD COLUMN id TEXT' },
+    { name: 'close_event_id', sql: 'ALTER TABLE trade_closes ADD COLUMN close_event_id TEXT' },
+    { name: 'lifecycle_id', sql: 'ALTER TABLE trade_closes ADD COLUMN lifecycle_id TEXT' },
+    { name: 'trade_id', sql: 'ALTER TABLE trade_closes ADD COLUMN trade_id INTEGER' },
+    { name: 'symbol', sql: 'ALTER TABLE trade_closes ADD COLUMN symbol TEXT' },
+    { name: 'closed_side', sql: 'ALTER TABLE trade_closes ADD COLUMN closed_side TEXT' },
+    { name: 'execution_mode', sql: 'ALTER TABLE trade_closes ADD COLUMN execution_mode TEXT' },
+    { name: 'opened_at', sql: 'ALTER TABLE trade_closes ADD COLUMN opened_at TEXT' },
+    { name: 'closed_at', sql: 'ALTER TABLE trade_closes ADD COLUMN closed_at TEXT' },
+    { name: 'hold_seconds', sql: 'ALTER TABLE trade_closes ADD COLUMN hold_seconds INTEGER' },
+    { name: 'entry_price', sql: 'ALTER TABLE trade_closes ADD COLUMN entry_price REAL' },
+    { name: 'exit_price', sql: 'ALTER TABLE trade_closes ADD COLUMN exit_price REAL' },
+    { name: 'total_opened_size', sql: 'ALTER TABLE trade_closes ADD COLUMN total_opened_size REAL' },
+    { name: 'total_reduced_size', sql: 'ALTER TABLE trade_closes ADD COLUMN total_reduced_size REAL' },
+    { name: 'final_close_size', sql: 'ALTER TABLE trade_closes ADD COLUMN final_close_size REAL' },
+    { name: 'gross_realized_pnl_usd', sql: 'ALTER TABLE trade_closes ADD COLUMN gross_realized_pnl_usd REAL' },
+    { name: 'fees_usd', sql: 'ALTER TABLE trade_closes ADD COLUMN fees_usd REAL' },
+    { name: 'net_realized_pnl_usd', sql: 'ALTER TABLE trade_closes ADD COLUMN net_realized_pnl_usd REAL' },
+    { name: 'captured_r', sql: 'ALTER TABLE trade_closes ADD COLUMN captured_r REAL' },
+    { name: 'left_on_table_r', sql: 'ALTER TABLE trade_closes ADD COLUMN left_on_table_r REAL' },
+    { name: 'exit_mode', sql: 'ALTER TABLE trade_closes ADD COLUMN exit_mode TEXT' },
+    { name: 'thesis_invalidation_hit', sql: 'ALTER TABLE trade_closes ADD COLUMN thesis_invalidation_hit INTEGER' },
+    { name: 'thesis_correct', sql: 'ALTER TABLE trade_closes ADD COLUMN thesis_correct INTEGER' },
+    { name: 'direction_score', sql: 'ALTER TABLE trade_closes ADD COLUMN direction_score REAL' },
+    { name: 'timing_score', sql: 'ALTER TABLE trade_closes ADD COLUMN timing_score REAL' },
+    { name: 'sizing_score', sql: 'ALTER TABLE trade_closes ADD COLUMN sizing_score REAL' },
+    { name: 'exit_score', sql: 'ALTER TABLE trade_closes ADD COLUMN exit_score REAL' },
+    { name: 'composite_score', sql: 'ALTER TABLE trade_closes ADD COLUMN composite_score REAL' },
+    { name: 'linked_prediction_id', sql: 'ALTER TABLE trade_closes ADD COLUMN linked_prediction_id TEXT' },
+    { name: 'source_learning_case_id', sql: 'ALTER TABLE trade_closes ADD COLUMN source_learning_case_id TEXT' },
+    { name: 'source_authority', sql: 'ALTER TABLE trade_closes ADD COLUMN source_authority TEXT' },
+    { name: 'bootstrap_quality', sql: 'ALTER TABLE trade_closes ADD COLUMN bootstrap_quality TEXT' },
+    { name: 'deterministic_status', sql: "ALTER TABLE trade_closes ADD COLUMN deterministic_status TEXT DEFAULT 'finalized'" },
+    { name: 'llm_reflection_status', sql: "ALTER TABLE trade_closes ADD COLUMN llm_reflection_status TEXT DEFAULT 'not_requested'" },
+    { name: 'facts_payload', sql: 'ALTER TABLE trade_closes ADD COLUMN facts_payload TEXT' },
+    { name: 'reflection_payload', sql: 'ALTER TABLE trade_closes ADD COLUMN reflection_payload TEXT' },
+    { name: 'created_at', sql: 'ALTER TABLE trade_closes ADD COLUMN created_at TEXT' },
+    { name: 'updated_at', sql: 'ALTER TABLE trade_closes ADD COLUMN updated_at TEXT' },
+  ],
+  trade_reflections: [
+    { name: 'trade_close_id', sql: 'ALTER TABLE trade_reflections ADD COLUMN trade_close_id TEXT' },
+    { name: 'thesis_correct', sql: 'ALTER TABLE trade_reflections ADD COLUMN thesis_correct INTEGER' },
+    { name: 'timing_correct', sql: 'ALTER TABLE trade_reflections ADD COLUMN timing_correct INTEGER' },
+    { name: 'exit_reason_appropriate', sql: 'ALTER TABLE trade_reflections ADD COLUMN exit_reason_appropriate INTEGER' },
+    { name: 'what_worked_payload', sql: 'ALTER TABLE trade_reflections ADD COLUMN what_worked_payload TEXT' },
+    { name: 'what_failed_payload', sql: 'ALTER TABLE trade_reflections ADD COLUMN what_failed_payload TEXT' },
+    { name: 'lesson_for_next_trade_payload', sql: 'ALTER TABLE trade_reflections ADD COLUMN lesson_for_next_trade_payload TEXT' },
+    { name: 'source_facts_payload', sql: 'ALTER TABLE trade_reflections ADD COLUMN source_facts_payload TEXT' },
+    { name: 'llm_reflection_payload', sql: 'ALTER TABLE trade_reflections ADD COLUMN llm_reflection_payload TEXT' },
+    { name: 'confidence', sql: 'ALTER TABLE trade_reflections ADD COLUMN confidence REAL' },
+    { name: 'created_at', sql: 'ALTER TABLE trade_reflections ADD COLUMN created_at TEXT' },
+    { name: 'updated_at', sql: 'ALTER TABLE trade_reflections ADD COLUMN updated_at TEXT' },
+  ],
+};
 export const LEGACY_PERP_CONTAMINATION_WHERE_SQL = `domain = 'perp'
   AND outcome_basis = 'final'
   AND predicted_outcome IN ('YES', 'NO')
@@ -402,6 +497,8 @@ export function ensureLearningSchema(db: Database.Database): void {
   for (const statement of LEARNING_SIGNAL_AUDITS_INDEX_SQL) {
     db.exec(statement);
   }
+  dropLegacyCloseFinalizerViews(db);
+  repairLegacyCloseFinalizerColumns(db);
   db.exec(CLOSE_TRADE_FINALIZER_SCHEMA_SQL);
   db.exec(TRADE_POLICY_ADJUSTMENTS_TABLE_SQL);
   ensureTradePolicyAdjustmentColumns(db);
@@ -430,6 +527,58 @@ function ensureLearningCaseColumns(db: Database.Database): void {
       db.exec(column.sql);
     }
   }
+}
+
+function tableExists(db: Database.Database, tableName: string): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(tableName)
+  );
+}
+
+function dropLegacyCloseFinalizerViews(db: Database.Database): void {
+  for (const viewName of ['trade_close_events', 'close_finalization_jobs', 'trade_closes', 'trade_reflections', 'regret_learning_cases', 'policy_promotion_events']) {
+    const row = db
+      .prepare("SELECT type FROM sqlite_master WHERE name = ? LIMIT 1")
+      .get(viewName) as { type?: string } | undefined;
+    if (row?.type === 'view') {
+      db.exec(`DROP VIEW IF EXISTS ${viewName}`);
+    }
+  }
+}
+
+function backfillLegacyCloseFinalizerColumns(db: Database.Database): void {
+  if (tableExists(db, 'trade_closes')) {
+    const rows = db.prepare("PRAGMA table_info('trade_closes')").all() as Array<{ name?: string }>;
+    const present = new Set(rows.map((row) => String(row.name ?? '')));
+    if (present.has('id')) {
+      const sourceExpression = present.has('close_event_id') && present.has('trade_id')
+        ? "COALESCE(NULLIF(TRIM(id), ''), NULLIF(TRIM(close_event_id), ''), CAST(trade_id AS TEXT))"
+        : present.has('trade_id')
+          ? "COALESCE(NULLIF(TRIM(id), ''), CAST(trade_id AS TEXT))"
+          : "COALESCE(NULLIF(TRIM(id), ''), rowid)";
+      db.exec(`
+        UPDATE trade_closes
+        SET id = ${sourceExpression}
+        WHERE id IS NULL OR TRIM(id) = ''
+      `);
+    }
+  }
+}
+
+function repairLegacyCloseFinalizerColumns(db: Database.Database): void {
+  for (const [tableName, columns] of Object.entries(CLOSE_FINALIZER_COLUMN_REPAIRS)) {
+    if (!tableExists(db, tableName)) {
+      continue;
+    }
+    const rows = db.prepare(`PRAGMA table_info('${tableName}')`).all() as Array<{ name?: string }>;
+    const present = new Set(rows.map((row) => String(row.name ?? '')));
+    for (const column of columns) {
+      if (!present.has(column.name)) {
+        db.exec(column.sql);
+      }
+    }
+  }
+  backfillLegacyCloseFinalizerColumns(db);
 }
 
 function ensureTradePolicyAdjustmentColumns(db: Database.Database): void {

@@ -122,6 +122,92 @@ describe('learning schema migration', () => {
     }
   });
 
+  it('repairs legacy close finalizer tables before creating close indexes', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-close-finalizer-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE trade_close_events (
+        id TEXT PRIMARY KEY,
+        lifecycle_id TEXT,
+        symbol TEXT,
+        close_kind TEXT,
+        created_at TEXT
+      );
+      INSERT INTO trade_close_events (id, lifecycle_id, symbol, close_kind, created_at)
+      VALUES ('event-legacy', 'perp:BTC:1', 'BTC', 'full_close', '2026-06-01T10:00:00.000Z');
+      CREATE TABLE trade_closes (
+        trade_id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        exit_price REAL NOT NULL,
+        exit_reason TEXT NOT NULL,
+        pnl_usd REAL NOT NULL,
+        pnl_pct REAL NOT NULL,
+        hold_duration_seconds INTEGER NOT NULL,
+        closed_at TEXT NOT NULL
+      );
+      INSERT INTO trade_closes (
+        trade_id, symbol, exit_price, exit_reason, pnl_usd, pnl_pct, hold_duration_seconds, closed_at
+      ) VALUES (
+        'legacy-close-1', 'BTC', 50000, 'manual', 1.5, 0.01, 60, '2026-06-01T10:01:00.000Z'
+      );
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+    const columns = db.prepare("PRAGMA table_info('trade_close_events')").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    expect(names.has('execution_mode')).toBe(true);
+    expect(names.has('realized_fee_usd')).toBe(true);
+    expect(
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_trade_close_events_mode'").get()
+    ).toBeTruthy();
+    expect(
+      (db.prepare("SELECT id FROM trade_closes WHERE trade_id = 'legacy-close-1'").get() as { id: string }).id
+    ).toBe('legacy-close-1');
+  });
+
+  it('replaces legacy close finalizer views with first-class tables', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-close-view-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE learning_cases (
+        id TEXT PRIMARY KEY,
+        case_type TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        comparable INTEGER NOT NULL DEFAULT 0,
+        source_prediction_id TEXT,
+        source_trade_id INTEGER,
+        source_dossier_id TEXT,
+        source_hypothesis_id TEXT,
+        source_artifact_id INTEGER,
+        comparator_kind TEXT,
+        baseline_payload TEXT,
+        exclusion_reason TEXT,
+        updated_at TEXT
+      );
+      CREATE VIEW regret_learning_cases AS
+      SELECT *
+      FROM learning_cases
+      WHERE case_type = 'regret_case';
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+    const object = db
+      .prepare("SELECT type FROM sqlite_master WHERE name = 'regret_learning_cases'")
+      .get() as { type: string };
+
+    expect(object.type).toBe('table');
+    expect(
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_regret_learning_cases_type'").get()
+    ).toBeTruthy();
+  });
+
   it('startup repair demotes open synthetic perp comparable rows before they resolve', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-open-synth-')), 'thufir.sqlite');
     const raw = new Database(dbPath);
