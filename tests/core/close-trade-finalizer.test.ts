@@ -1,13 +1,14 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import Database from 'better-sqlite3';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { bootstrapOpenPerpPositionLifecycles } from '../../src/core/close_trade_finalizer.js';
 import { openDatabase } from '../../src/memory/db.js';
 import { createLearningCase } from '../../src/memory/learning_cases.js';
-import { recordTradeCloseEvent } from '../../src/memory/close_trade_finalizer.js';
+import { recordTradeCloseEvent, upsertTradeClose } from '../../src/memory/close_trade_finalizer.js';
 import { finalizeCloseEvent } from '../../src/core/close_trade_finalizer.js';
 import { placePaperPerpOrder } from '../../src/memory/paper_perps.js';
 import { getActivePerpPositionTradeId } from '../../src/memory/perp_trades.js';
@@ -222,6 +223,119 @@ describe('close trade finalizer bootstrap', () => {
       sizeMultiplier: 0.4,
       evidenceCount: 3,
       negativePnlRate: 1,
+    });
+  });
+
+  it('upserts canonical close rows into legacy trade_closes tables with required columns', () => {
+    const dbPath = process.env.THUFIR_DB_PATH;
+    expect(dbPath).toBeTruthy();
+    const raw = new Database(dbPath!);
+    raw.exec(`
+      CREATE TABLE trade_closes (
+        trade_id TEXT PRIMARY KEY,
+        created_at TEXT DEFAULT (datetime('now')),
+        symbol TEXT NOT NULL,
+        exit_price REAL NOT NULL,
+        exit_reason TEXT NOT NULL,
+        pnl_usd REAL NOT NULL,
+        pnl_pct REAL NOT NULL,
+        hold_duration_seconds INTEGER NOT NULL,
+        funding_paid_usd REAL DEFAULT 0,
+        fees_usd REAL DEFAULT 0,
+        closed_at TEXT NOT NULL,
+        id TEXT,
+        close_event_id TEXT,
+        lifecycle_id TEXT,
+        closed_side TEXT,
+        execution_mode TEXT,
+        opened_at TEXT,
+        hold_seconds INTEGER,
+        entry_price REAL,
+        total_opened_size REAL,
+        total_reduced_size REAL,
+        final_close_size REAL,
+        gross_realized_pnl_usd REAL,
+        net_realized_pnl_usd REAL,
+        captured_r REAL,
+        left_on_table_r REAL,
+        exit_mode TEXT,
+        thesis_invalidation_hit INTEGER,
+        thesis_correct INTEGER,
+        direction_score REAL,
+        timing_score REAL,
+        sizing_score REAL,
+        exit_score REAL,
+        composite_score REAL,
+        linked_prediction_id TEXT,
+        source_learning_case_id TEXT,
+        source_authority TEXT,
+        bootstrap_quality TEXT,
+        deterministic_status TEXT DEFAULT 'finalized',
+        llm_reflection_status TEXT DEFAULT 'not_requested',
+        facts_payload TEXT,
+        updated_at TEXT
+      );
+      CREATE UNIQUE INDEX idx_trade_closes_close_event_unique ON trade_closes(close_event_id);
+    `);
+    raw.close();
+
+    const close = upsertTradeClose({
+      id: 'close-legacy',
+      closeEventId: 'event-legacy',
+      lifecycleId: 'life-legacy',
+      tradeId: 123,
+      symbol: 'BTC',
+      closedSide: 'long',
+      executionMode: 'paper',
+      openedAt: '2026-06-02T10:00:00.000Z',
+      closedAt: '2026-06-02T10:05:00.000Z',
+      holdSeconds: 300,
+      entryPrice: 100,
+      exitPrice: 95,
+      totalOpenedSize: 1,
+      totalReducedSize: 1,
+      finalCloseSize: 1,
+      grossRealizedPnlUsd: -5,
+      feesUsd: 0.1,
+      netRealizedPnlUsd: -5.1,
+      capturedR: -1,
+      leftOnTableR: null,
+      exitMode: 'risk_reduction',
+      thesisInvalidationHit: false,
+      thesisCorrect: true,
+      directionScore: 1,
+      timingScore: 0.5,
+      sizingScore: 0.5,
+      exitScore: 0,
+      compositeScore: 0.5,
+      linkedPredictionId: null,
+      sourceLearningCaseId: null,
+      sourceAuthority: 'test',
+      bootstrapQuality: null,
+      deterministicStatus: 'finalized',
+      llmReflectionStatus: 'not_requested',
+      facts: { source: 'test' },
+    });
+
+    const db = openDatabase();
+    const row = db
+      .prepare(
+        `
+          SELECT exit_reason AS exitReason, pnl_usd AS pnlUsd,
+                 hold_duration_seconds AS holdDurationSeconds,
+                 close_event_id AS closeEventId
+          FROM trade_closes
+          WHERE close_event_id = 'event-legacy'
+        `
+      )
+      .get() as { exitReason: string; pnlUsd: number; holdDurationSeconds: number; closeEventId: string };
+
+    expect(close.id).toBe('close-legacy');
+    expect(row).toEqual({
+      exitReason: 'risk_reduction',
+      pnlUsd: -5.1,
+      holdDurationSeconds: 300,
+      closeEventId: 'event-legacy',
     });
   });
 });
