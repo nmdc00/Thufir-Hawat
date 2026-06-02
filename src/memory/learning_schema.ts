@@ -401,6 +401,7 @@ const CLOSE_FINALIZER_COLUMN_REPAIRS: Record<string, ColumnSpec[]> = {
     { name: 'finalized_at', sql: 'ALTER TABLE close_finalization_jobs ADD COLUMN finalized_at TEXT' },
   ],
   trade_closes: [
+    { name: 'id', sql: 'ALTER TABLE trade_closes ADD COLUMN id TEXT' },
     { name: 'close_event_id', sql: 'ALTER TABLE trade_closes ADD COLUMN close_event_id TEXT' },
     { name: 'lifecycle_id', sql: 'ALTER TABLE trade_closes ADD COLUMN lifecycle_id TEXT' },
     { name: 'trade_id', sql: 'ALTER TABLE trade_closes ADD COLUMN trade_id INTEGER' },
@@ -545,6 +546,25 @@ function dropLegacyCloseFinalizerViews(db: Database.Database): void {
   }
 }
 
+function backfillLegacyCloseFinalizerColumns(db: Database.Database): void {
+  if (tableExists(db, 'trade_closes')) {
+    const rows = db.prepare("PRAGMA table_info('trade_closes')").all() as Array<{ name?: string }>;
+    const present = new Set(rows.map((row) => String(row.name ?? '')));
+    if (present.has('id')) {
+      const sourceExpression = present.has('close_event_id') && present.has('trade_id')
+        ? "COALESCE(NULLIF(TRIM(id), ''), NULLIF(TRIM(close_event_id), ''), CAST(trade_id AS TEXT))"
+        : present.has('trade_id')
+          ? "COALESCE(NULLIF(TRIM(id), ''), CAST(trade_id AS TEXT))"
+          : "COALESCE(NULLIF(TRIM(id), ''), rowid)";
+      db.exec(`
+        UPDATE trade_closes
+        SET id = ${sourceExpression}
+        WHERE id IS NULL OR TRIM(id) = ''
+      `);
+    }
+  }
+}
+
 function repairLegacyCloseFinalizerColumns(db: Database.Database): void {
   for (const [tableName, columns] of Object.entries(CLOSE_FINALIZER_COLUMN_REPAIRS)) {
     if (!tableExists(db, tableName)) {
@@ -558,6 +578,7 @@ function repairLegacyCloseFinalizerColumns(db: Database.Database): void {
       }
     }
   }
+  backfillLegacyCloseFinalizerColumns(db);
 }
 
 function ensureTradePolicyAdjustmentColumns(db: Database.Database): void {
