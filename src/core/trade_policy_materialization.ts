@@ -63,12 +63,6 @@ function extractCompositeQualityScore(learningCase: LearningCase): number | null
   return atomicScores.reduce((sum, value) => sum + value, 0) / atomicScores.length;
 }
 
-function normalizeDirection(side: string | null): 'long' | 'short' | null {
-  if (side === 'buy' || side === 'long') return 'long';
-  if (side === 'sell' || side === 'short') return 'short';
-  return null;
-}
-
 function extractFailureMode(learningCase: LearningCase): string | null {
   const context = learningCase.context ?? {};
   const policyInputs = learningCase.policyInputs ?? {};
@@ -124,16 +118,16 @@ function extractHelpfulCooldown(learningCase: LearningCase): { helpful: boolean;
 export function scopeFromLearningCase(learningCase: LearningCase): TradePolicyAdjustmentScope {
   const context = learningCase.context ?? {};
   return {
-    symbol: normalizeString(context.symbol),
-    direction: normalizeDirection(normalizeString(context.direction)),
-    strategySource: normalizeString(context.strategySource),
+    symbol: null,
+    direction: null,
+    strategySource: null,
     triggerReason: normalizeString(context.triggerReason) ?? normalizeString(context.entryTrigger),
     signalClass: normalizeString(context.signalClass),
     symbolClass: normalizeString(context.symbolClass),
-    session: normalizeString(context.session),
+    session: null,
     marketRegime: normalizeString(context.marketRegime),
-    volatilityBucket: normalizeString(context.volatilityBucket),
-    liquidityBucket: normalizeString(context.liquidityBucket),
+    volatilityBucket: null,
+    liquidityBucket: null,
   };
 }
 
@@ -414,6 +408,9 @@ export function materializeTradePolicyAdjustmentFromLearningCase(params: {
     domain: 'perp',
     limit: 200,
   }).filter((candidate) => sameScope(scopeFromLearningCase(candidate), scope));
+  if (!recentCases.some((candidate) => candidate.id === params.learningCase.id)) {
+    recentCases.unshift(params.learningCase);
+  }
 
   const derived = deriveTradePolicyAdjustments(params.config, recentCases, scope);
   if (derived.length === 0) {
