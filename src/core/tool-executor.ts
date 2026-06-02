@@ -542,6 +542,111 @@ type PredictionSignalTriplet = {
   onChain: number;
 };
 
+type PerpPredictionBaselineInput = {
+  symbol: string;
+  side: 'buy' | 'sell';
+  signalClass: string | null;
+  marketRegime: string | null;
+  triggerReason: string | null;
+  symbolClass: string | null;
+  session: string | null;
+  volatilityBucket: string | null;
+  liquidityBucket: string | null;
+  forecastTarget?: 'positive_net_pnl_before_ttl_or_invalidation';
+};
+
+type PerpPredictionBaseline = {
+  probability: number | null;
+  comparable: boolean;
+  source: 'segment_history_blended' | 'global_prior' | 'missing';
+  fallbackLevel: string | null;
+  sampleCount: number;
+  wins: number;
+  priorProbability: number | null;
+  priorStrength: number;
+  segmentKey: string | null;
+  exclusionReason: null | 'missing_comparator' | 'insufficient_samples' | 'synthetic_comparator';
+};
+
+type PerpPredictionBaselineResolver = (
+  config: ThufirConfig,
+  input: PerpPredictionBaselineInput
+) => PerpPredictionBaseline;
+
+const MISSING_PERP_PREDICTION_BASELINE: PerpPredictionBaseline = {
+  probability: null,
+  comparable: false,
+  source: 'missing',
+  fallbackLevel: null,
+  sampleCount: 0,
+  wins: 0,
+  priorProbability: null,
+  priorStrength: 0,
+  segmentKey: null,
+  exclusionReason: 'missing_comparator',
+};
+
+function isProbabilityInRange(value: number | null): value is number {
+  return value != null && value >= 0.01 && value <= 0.99;
+}
+
+function isSyntheticComparatorSource(source: string | null): boolean {
+  if (!source) return true;
+  const normalized = source.trim().toLowerCase();
+  return (
+    normalized.length === 0 ||
+    normalized === 'missing' ||
+    normalized === 'synthetic' ||
+    normalized === 'synthetic_0_5' ||
+    normalized === 'synthetic_0.5'
+  );
+}
+
+function readExplicitComparatorSource(toolInput: Record<string, unknown>): string | null {
+  return (
+    toOptionalNonEmptyString(toolInput.prediction_comparator_source) ??
+    toOptionalNonEmptyString(toolInput.prediction_market_probability_source) ??
+    toOptionalNonEmptyString(toolInput.prediction_market_probability_kind)
+  );
+}
+
+function isAuditableExplicitComparator(params: {
+  probability: number | null;
+  source: string | null;
+}): params is { probability: number; source: string } {
+  return (
+    isProbabilityInRange(params.probability) &&
+    params.probability !== 0.5 &&
+    !isSyntheticComparatorSource(params.source)
+  );
+}
+
+async function resolvePerpPredictionBaselineForExecutor(
+  config: ThufirConfig,
+  input: PerpPredictionBaselineInput
+): Promise<PerpPredictionBaseline> {
+  try {
+    // @ts-ignore Agent A owns this module on the release branch; runtime import is best-effort here.
+    const mod = (await import('./perp_prediction_baselines.js')) as {
+      resolvePerpPredictionBaseline?: PerpPredictionBaselineResolver;
+    };
+    if (typeof mod.resolvePerpPredictionBaseline === 'function') {
+      return mod.resolvePerpPredictionBaseline(config, input);
+    }
+  } catch {
+    // Agent A owns the resolver module; missing module or resolver failures keep forecasts non-comparable.
+  }
+  if (process.env.VITEST) {
+    const testResolver = (globalThis as {
+      __thufirResolvePerpPredictionBaseline?: PerpPredictionBaselineResolver;
+    }).__thufirResolvePerpPredictionBaseline;
+    if (typeof testResolver === 'function') {
+      return testResolver(config, input);
+    }
+  }
+  return MISSING_PERP_PREDICTION_BASELINE;
+}
+
 function parsePredictionSignalTriplet(input: unknown): PredictionSignalTriplet | null {
   let candidate = input;
   if (typeof candidate === 'string') {
@@ -563,7 +668,8 @@ function parsePredictionSignalTriplet(input: unknown): PredictionSignalTriplet |
   return { technical, news, onChain };
 }
 
-function maybeCreatePerpOpenPredictionArtifacts(params: {
+async function maybeCreatePerpOpenPredictionArtifacts(params: {
+  config: ThufirConfig;
   toolInput: Record<string, unknown>;
   symbol: string;
   side: 'buy' | 'sell';
@@ -572,7 +678,12 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
   size: number;
   signalClass: string | null;
   marketRegime: string | null;
-}): string | null {
+  triggerReason: string | null;
+  symbolClass: string | null;
+  session: string | null;
+  volatilityBucket: string | null;
+  liquidityBucket: string | null;
+}): Promise<string | null> {
   const explicitEnabled = params.toolInput.create_learning_prediction;
   const signalScores = parsePredictionSignalTriplet(params.toolInput.prediction_signal_scores);
   const signalWeightsSnapshot = parsePredictionSignalTriplet(params.toolInput.prediction_signal_weights);
@@ -591,7 +702,8 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
   const modelProbability = toFiniteNumberOrNull(
     params.toolInput.prediction_model_probability ?? params.toolInput.confidence
   );
-  const marketProbability = toFiniteNumberOrNull(params.toolInput.prediction_market_probability);
+  const explicitMarketProbability = toFiniteNumberOrNull(params.toolInput.prediction_market_probability);
+  const explicitComparatorSource = readExplicitComparatorSource(params.toolInput);
   const horizonMinutesRaw = Number(
     params.toolInput.prediction_horizon_minutes ?? params.toolInput.horizon_minutes ?? NaN
   );
@@ -614,10 +726,39 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
     params.toolInput.prediction_strategy_class.trim().length > 0
       ? params.toolInput.prediction_strategy_class.trim()
       : params.signalClass;
-  const learningComparableRequested =
-    typeof params.toolInput.prediction_learning_comparable === 'boolean'
-      ? params.toolInput.prediction_learning_comparable
-      : false;
+  const explicitComparator = isAuditableExplicitComparator({
+    probability: explicitMarketProbability,
+    source: explicitComparatorSource,
+  })
+    ? {
+        probability: explicitMarketProbability,
+        source: explicitComparatorSource,
+      }
+    : null;
+  const baseline =
+    explicitComparator == null
+      ? await resolvePerpPredictionBaselineForExecutor(params.config, {
+          symbol: params.symbol,
+          side: params.side,
+          signalClass: params.signalClass,
+          marketRegime: params.marketRegime,
+          triggerReason: params.triggerReason,
+          symbolClass: params.symbolClass,
+          session: params.session,
+          volatilityBucket: params.volatilityBucket,
+          liquidityBucket: params.liquidityBucket,
+          forecastTarget: 'positive_net_pnl_before_ttl_or_invalidation',
+        })
+      : null;
+  const baselineProbability = baseline != null && isProbabilityInRange(baseline.probability)
+    ? baseline.probability
+    : null;
+  const marketProbability = explicitComparator?.probability ?? baselineProbability;
+  const requestedComparable =
+    explicitComparator != null
+      ? params.toolInput.prediction_learning_comparable === true
+      : baseline?.comparable === true;
+  const learningComparableRequested = requestedComparable && modelProbability != null && marketProbability != null;
   const shouldCreate =
     explicitEnabled === true ||
     signalScores != null ||
@@ -645,6 +786,15 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
     marketProbability: marketProbability ?? undefined,
     signalScores: signalScores ?? undefined,
     signalWeightsSnapshot: signalWeightsSnapshot ?? undefined,
+    contextTags:
+      baseline != null
+        ? [
+            `perp_baseline_source:${baseline.source}`,
+            ...(baseline.fallbackLevel ? [`perp_baseline_fallback:${baseline.fallbackLevel}`] : []),
+          ]
+        : explicitComparatorSource
+          ? [`perp_comparator_source:${explicitComparatorSource}`]
+          : undefined,
     sessionTag: sessionTag ?? undefined,
     regimeTag: regimeTag ?? undefined,
     strategyClass: strategyClass ?? undefined,
@@ -665,7 +815,10 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
       entityId: params.symbol,
       comparable: learningComparable,
       comparatorKind: learningComparable ? 'market_price' : null,
-      exclusionReason: learningComparable ? null : 'missing_comparator',
+      exclusionReason:
+        learningComparable
+          ? null
+          : baseline?.exclusionReason ?? 'missing_comparator',
       sourcePredictionId: predictionId,
       belief: {
         modelProbability,
@@ -673,6 +826,14 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
       },
       baseline: {
         marketProbability,
+        source: explicitComparator?.source ?? baseline?.source ?? 'missing',
+        fallbackLevel: baseline?.fallbackLevel ?? null,
+        sampleCount: baseline?.sampleCount ?? null,
+        wins: baseline?.wins ?? null,
+        priorProbability: baseline?.priorProbability ?? null,
+        priorStrength: baseline?.priorStrength ?? null,
+        segmentKey: baseline?.segmentKey ?? null,
+        exclusionReason: baseline?.exclusionReason ?? null,
       },
       context: {
         horizonMinutes,
@@ -680,6 +841,10 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
         strategyClass,
         regimeTag,
         sessionTag,
+        triggerReason: params.triggerReason,
+        symbolClass: params.symbolClass,
+        volatilityBucket: params.volatilityBucket,
+        liquidityBucket: params.liquidityBucket,
       },
       action: {
         side: params.side,
@@ -2751,7 +2916,8 @@ export async function executeToolCall(
         let predictionId: string | null = null;
         if (!reduceOnly) {
           try {
-            predictionId = maybeCreatePerpOpenPredictionArtifacts({
+            predictionId = await maybeCreatePerpOpenPredictionArtifacts({
+              config: ctx.config,
               toolInput,
               symbol,
               side: side as 'buy' | 'sell',
@@ -2760,6 +2926,11 @@ export async function executeToolCall(
               size,
               signalClass: effectiveSignalClass,
               marketRegime,
+              triggerReason: learningScopeContext.triggerReason,
+              symbolClass: learningScopeContext.symbolClass,
+              session: learningScopeContext.session,
+              volatilityBucket,
+              liquidityBucket,
             });
           } catch {
             predictionId = null;

@@ -16,6 +16,7 @@ import { createPrediction, getPrediction } from '../../src/memory/predictions.js
 import { listTradePolicyAdjustments } from '../../src/memory/trade_policy_adjustments.js';
 
 describe('tool-executor perps', () => {
+  const baselineModulePath = '../../src/core/perp_prediction_baselines.js';
   const originalDbPath = process.env.THUFIR_DB_PATH;
   let currentMarkPrice = 50000;
 
@@ -26,6 +27,9 @@ describe('tool-executor perps', () => {
   });
 
   afterEach(() => {
+    vi.doUnmock(baselineModulePath);
+    delete (globalThis as { __thufirResolvePerpPredictionBaseline?: unknown })
+      .__thufirResolvePerpPredictionBaseline;
     vi.restoreAllMocks();
     if (process.env.THUFIR_DB_PATH) {
       rmSync(process.env.THUFIR_DB_PATH, { force: true });
@@ -53,6 +57,27 @@ describe('tool-executor perps', () => {
     listMarkets: async () => [],
     searchMarkets: async () => [],
   };
+
+  function createPaperPerpContext() {
+    const executor = new PaperExecutor({ initialCashUsdc: 200 });
+    const limiter = {
+      checkAndReserve: async () => ({ allowed: true }),
+      confirm: () => {},
+      release: () => {},
+    };
+    return {
+      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
+      marketClient,
+      executor,
+      limiter,
+    };
+  }
+
+  function mockPerpPredictionBaseline(baseline: Record<string, unknown>) {
+    (globalThis as {
+      __thufirResolvePerpPredictionBaseline?: () => Record<string, unknown>;
+    }).__thufirResolvePerpPredictionBaseline = vi.fn(() => baseline);
+  }
 
   it('perp_place_order routes to executor', async () => {
     const executor = {
@@ -1365,19 +1390,136 @@ describe('tool-executor perps', () => {
     }
   });
 
+  it('creates a comparable perp prediction from a resolved baseline', async () => {
+    mockPerpPredictionBaseline({
+      probability: 0.62,
+      comparable: true,
+      source: 'segment_history_blended',
+      fallbackLevel: 'signalClass+marketRegime',
+      sampleCount: 8,
+      wins: 5,
+      priorProbability: 0.5,
+      priorStrength: 20,
+      segmentKey: 'momentum_breakout|high_vol_expansion',
+      exclusionReason: null,
+    });
+
+    const ctx = createPaperPerpContext();
+
+    const result = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCBASE',
+        side: 'buy',
+        size: 0.01,
+        mode: 'paper',
+        create_learning_prediction: true,
+        prediction_model_probability: 0.74,
+        signal_class: 'momentum_breakout',
+        market_regime: 'high_vol_expansion',
+        entry_trigger: 'technical',
+        volatility_bucket: 'high',
+        liquidity_bucket: 'deep',
+      },
+      ctx
+    );
+
+    expect(result.success).toBe(true);
+    const predictionId = (result.data as { prediction_id?: string | null }).prediction_id;
+    expect(predictionId).toBeTruthy();
+
+    const storedPrediction = getPrediction(String(predictionId));
+    expect(storedPrediction?.marketProbability).toBe(0.62);
+    expect(storedPrediction?.learningComparable).toBe(true);
+
+    const prediction = listLearningCases({
+      caseType: 'comparable_forecast',
+      entityType: 'symbol',
+      entityId: 'BTCBASE',
+      limit: 1,
+    })[0];
+    expect(prediction).toBeTruthy();
+    expect(prediction.sourcePredictionId).toBe(predictionId);
+    expect(prediction.comparable).toBe(true);
+    expect(prediction.comparatorKind).toBe('market_price');
+    expect(prediction.exclusionReason).toBeNull();
+    expect(prediction.baseline).toMatchObject({
+      marketProbability: 0.62,
+      source: 'segment_history_blended',
+      fallbackLevel: 'signalClass+marketRegime',
+      sampleCount: 8,
+    });
+  });
+
+  it('keeps perp prediction learning excluded when baseline is missing', async () => {
+    mockPerpPredictionBaseline({
+      probability: null,
+      comparable: false,
+      source: 'missing',
+      fallbackLevel: null,
+      sampleCount: 0,
+      wins: 0,
+      priorProbability: null,
+      priorStrength: 20,
+      segmentKey: null,
+      exclusionReason: 'missing_comparator',
+    });
+
+    const ctx = createPaperPerpContext();
+
+    const result = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCMISSBASE',
+        side: 'buy',
+        size: 0.01,
+        mode: 'paper',
+        create_learning_prediction: true,
+        prediction_model_probability: 0.71,
+        signal_class: 'momentum_breakout',
+      },
+      ctx
+    );
+
+    expect(result.success).toBe(true);
+    const predictionId = (result.data as { prediction_id?: string | null }).prediction_id;
+    expect(predictionId).toBeTruthy();
+
+    const storedPrediction = getPrediction(String(predictionId));
+    expect(storedPrediction?.marketProbability).toBeNull();
+    expect(storedPrediction?.learningComparable).toBe(false);
+
+    const prediction = listLearningCases({
+      caseType: 'comparable_forecast',
+      entityType: 'symbol',
+      entityId: 'BTCMISSBASE',
+      limit: 1,
+    })[0];
+    expect(prediction).toBeTruthy();
+    expect(prediction.comparable).toBe(false);
+    expect(prediction.comparatorKind).toBeNull();
+    expect(['missing_comparator', 'insufficient_samples']).toContain(prediction.exclusionReason);
+    expect(prediction.baseline).toMatchObject({
+      marketProbability: null,
+      source: 'missing',
+    });
+  });
+
   it('does not admit synthetic perp comparable learning cases from perp_place_order', async () => {
-    const executor = new PaperExecutor({ initialCashUsdc: 200 });
-    const limiter = {
-      checkAndReserve: async () => ({ allowed: true }),
-      confirm: () => {},
-      release: () => {},
-    };
-    const ctx = {
-      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
-      marketClient,
-      executor,
-      limiter,
-    };
+    mockPerpPredictionBaseline({
+      probability: null,
+      comparable: false,
+      source: 'missing',
+      fallbackLevel: null,
+      sampleCount: 0,
+      wins: 0,
+      priorProbability: null,
+      priorStrength: 20,
+      segmentKey: null,
+      exclusionReason: 'missing_comparator',
+    });
+
+    const ctx = createPaperPerpContext();
 
     const result = await executeToolCall(
       'perp_place_order',
@@ -1407,12 +1549,12 @@ describe('tool-executor perps', () => {
 
     const storedPrediction = getPrediction(String(prediction.sourcePredictionId));
     expect(storedPrediction?.learningComparable).toBe(false);
-    expect(storedPrediction?.marketProbability).toBe(0.5);
+    expect(storedPrediction?.marketProbability).toBeNull();
 
     expect(prediction.comparable).toBe(false);
     expect(prediction.comparatorKind).toBeNull();
     expect(prediction.exclusionReason).toBe('missing_comparator');
-    expect(prediction.baseline?.marketProbability).toBe(0.5);
+    expect(prediction.baseline?.marketProbability).toBeNull();
   });
 
   it('returns the linked prediction id on reduce-only close responses', async () => {
@@ -1634,18 +1776,20 @@ describe('tool-executor perps', () => {
   });
 
   it('does not admit synthetic perp comparable learning cases from perp_place_order', async () => {
-    const executor = new PaperExecutor({ initialCashUsdc: 200 });
-    const limiter = {
-      checkAndReserve: async () => ({ allowed: true }),
-      confirm: () => {},
-      release: () => {},
-    };
-    const ctx = {
-      config: { execution: { provider: 'hyperliquid', mode: 'paper' } } as any,
-      marketClient,
-      executor,
-      limiter,
-    };
+    mockPerpPredictionBaseline({
+      probability: null,
+      comparable: false,
+      source: 'missing',
+      fallbackLevel: null,
+      sampleCount: 0,
+      wins: 0,
+      priorProbability: null,
+      priorStrength: 20,
+      segmentKey: null,
+      exclusionReason: 'missing_comparator',
+    });
+
+    const ctx = createPaperPerpContext();
 
     const result = await executeToolCall(
       'perp_place_order',
@@ -1675,12 +1819,12 @@ describe('tool-executor perps', () => {
 
     const storedPrediction = getPrediction(String(prediction.sourcePredictionId));
     expect(storedPrediction?.learningComparable).toBe(false);
-    expect(storedPrediction?.marketProbability).toBe(0.5);
+    expect(storedPrediction?.marketProbability).toBeNull();
 
     expect(prediction.comparable).toBe(false);
     expect(prediction.comparatorKind).toBeNull();
     expect(prediction.exclusionReason).toBe('missing_comparator');
-    expect(prediction.baseline?.marketProbability).toBe(0.5);
+    expect(prediction.baseline?.marketProbability).toBeNull();
   });
 
   it('returns the linked prediction id on reduce-only close responses', async () => {
