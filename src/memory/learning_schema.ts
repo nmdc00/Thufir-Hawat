@@ -528,6 +528,68 @@ function ensureCloseFinalizerCompatibility(db: Database.Database): void {
     const columns = db.prepare(`PRAGMA table_info('${table}')`).all() as Array<{ name?: string }>;
     return columns.some((row) => String(row.name ?? '') === column);
   };
+  const hasLegacyReflectionEnvelopeFk = (): boolean => {
+    if (!hasTable('trade_reflections')) return false;
+    const rows = db.prepare("PRAGMA foreign_key_list('trade_reflections')").all() as Array<{
+      table?: string;
+      from?: string;
+      to?: string;
+    }>;
+    return rows.some(
+      (row) =>
+        String(row.table ?? '') === 'trade_envelopes' &&
+        String(row.from ?? '') === 'trade_id' &&
+        String(row.to ?? '') === 'trade_id'
+    );
+  };
+
+  if (hasLegacyReflectionEnvelopeFk()) {
+    const rows = db.prepare("PRAGMA table_info('trade_reflections')").all() as Array<{ name?: string }>;
+    const present = new Set(rows.map((row) => String(row.name ?? '')));
+    const selectExpr = (column: string, fallback: string): string => (present.has(column) ? column : fallback);
+    db.exec(`
+      ALTER TABLE trade_reflections RENAME TO trade_reflections_legacy;
+      CREATE TABLE trade_reflections (
+          id TEXT PRIMARY KEY,
+          trade_close_id TEXT NOT NULL UNIQUE,
+          thesis_correct INTEGER CHECK(thesis_correct IN (0, 1) OR thesis_correct IS NULL),
+          timing_correct INTEGER CHECK(timing_correct IN (0, 1) OR timing_correct IS NULL),
+          exit_reason_appropriate INTEGER CHECK(exit_reason_appropriate IN (0, 1) OR exit_reason_appropriate IS NULL),
+          what_worked TEXT,
+          what_failed TEXT,
+          lesson_for_next_trade TEXT,
+          source_facts TEXT,
+          confidence REAL,
+          llm_status TEXT NOT NULL DEFAULT 'not_requested',
+          llm_payload TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT
+      );
+      INSERT OR IGNORE INTO trade_reflections (
+          id, trade_close_id, thesis_correct, timing_correct, exit_reason_appropriate,
+          what_worked, what_failed, lesson_for_next_trade, source_facts, confidence,
+          llm_status, llm_payload, created_at, updated_at
+      )
+      SELECT
+          ${selectExpr('id', 'lower(hex(randomblob(16)))')},
+          ${selectExpr('trade_close_id', selectExpr('trade_id', 'lower(hex(randomblob(16)))'))},
+          ${selectExpr('thesis_correct', 'NULL')},
+          ${selectExpr('timing_correct', 'NULL')},
+          ${selectExpr('exit_reason_appropriate', 'NULL')},
+          COALESCE(${selectExpr('what_worked_payload', 'NULL')}, ${selectExpr('what_worked', 'NULL')}),
+          COALESCE(${selectExpr('what_failed_payload', 'NULL')}, ${selectExpr('what_failed', 'NULL')}),
+          COALESCE(${selectExpr('lesson_for_next_trade_payload', 'NULL')}, ${selectExpr('lesson_for_next_trade', 'NULL')}),
+          COALESCE(${selectExpr('source_facts', 'NULL')}, ${selectExpr('source_facts_payload', 'NULL')}),
+          ${selectExpr('confidence', 'NULL')},
+          COALESCE(${selectExpr('llm_status', 'NULL')}, 'not_requested'),
+          COALESCE(${selectExpr('llm_payload', 'NULL')}, ${selectExpr('llm_reflection_payload', 'NULL')}),
+          ${selectExpr('created_at', "datetime('now')")},
+          ${selectExpr('updated_at', 'NULL')}
+      FROM trade_reflections_legacy
+      WHERE ${selectExpr('trade_close_id', selectExpr('trade_id', 'NULL'))} IS NOT NULL;
+      DROP TABLE trade_reflections_legacy;
+    `);
+  }
 
   if (hasColumn('close_finalization_jobs', 'close_event_id')) {
     db.exec(

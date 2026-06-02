@@ -400,4 +400,67 @@ describe('close trade finalizer bootstrap', () => {
     expect(JSON.parse(row.sourceFacts)).toEqual({ capturedR: -1 });
     expect(row.thesisCorrect).toBe(1);
   });
+
+  it('migrates legacy reflection envelope foreign keys before inserting deterministic reflections', () => {
+    const dbPath = process.env.THUFIR_DB_PATH;
+    expect(dbPath).toBeTruthy();
+    const raw = new Database(dbPath!);
+    raw.pragma('foreign_keys = ON');
+    raw.exec(`
+      CREATE TABLE trade_envelopes (
+        trade_id TEXT PRIMARY KEY
+      );
+      CREATE TABLE trade_reflections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT DEFAULT (datetime('now')),
+        trade_id TEXT NOT NULL,
+        thesis_correct INTEGER NOT NULL,
+        timing_correct INTEGER NOT NULL,
+        exit_reason_appropriate INTEGER NOT NULL,
+        what_worked TEXT,
+        what_failed TEXT,
+        lesson_for_next_trade TEXT,
+        trade_close_id TEXT,
+        what_worked_payload TEXT,
+        what_failed_payload TEXT,
+        lesson_for_next_trade_payload TEXT,
+        source_facts_payload TEXT,
+        llm_reflection_payload TEXT,
+        confidence REAL,
+        updated_at TEXT,
+        FOREIGN KEY (trade_id) REFERENCES trade_envelopes(trade_id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX idx_trade_reflections_trade_close_unique ON trade_reflections(trade_close_id);
+    `);
+    raw.close();
+
+    insertTradeReflection({
+      tradeCloseId: 'close-without-envelope',
+      thesisCorrect: true,
+      timingCorrect: true,
+      exitReasonAppropriate: false,
+      whatWorked: ['thesis_played_out'],
+      whatFailed: ['negative_r_close'],
+      lessonForNextTrade: ['review_exit_timing'],
+      sourceFacts: { capturedR: -1 },
+      confidence: 0.5,
+    });
+
+    const db = openDatabase();
+    const foreignKeys = db.prepare("PRAGMA foreign_key_list('trade_reflections')").all();
+    const row = db
+      .prepare(
+        `
+          SELECT trade_close_id AS tradeCloseId, source_facts AS sourceFacts, thesis_correct AS thesisCorrect
+          FROM trade_reflections
+          WHERE trade_close_id = 'close-without-envelope'
+        `
+      )
+      .get() as { tradeCloseId: string; sourceFacts: string; thesisCorrect: number };
+
+    expect(foreignKeys).toEqual([]);
+    expect(row.tradeCloseId).toBe('close-without-envelope');
+    expect(JSON.parse(row.sourceFacts)).toEqual({ capturedR: -1 });
+    expect(row.thesisCorrect).toBe(1);
+  });
 });
