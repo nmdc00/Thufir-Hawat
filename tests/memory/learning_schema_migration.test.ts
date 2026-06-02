@@ -208,6 +208,61 @@ describe('learning schema migration', () => {
     ).toBeTruthy();
   });
 
+  it('repairs legacy close finalizer tables with upsert-compatible unique indexes', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-close-finalizer-legacy-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE trade_closes (
+        trade_id TEXT PRIMARY KEY,
+        id TEXT,
+        close_event_id TEXT,
+        lifecycle_id TEXT,
+        symbol TEXT,
+        execution_mode TEXT,
+        closed_at TEXT
+      );
+      CREATE TABLE trade_reflections (
+        id INTEGER PRIMARY KEY,
+        trade_close_id TEXT,
+        trade_id TEXT NOT NULL,
+        thesis_correct INTEGER
+      );
+      CREATE TABLE close_finalization_jobs (
+        id TEXT PRIMARY KEY,
+        close_event_id TEXT,
+        lifecycle_id TEXT,
+        symbol TEXT,
+        status TEXT,
+        next_attempt_at TEXT
+      );
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+    const indexes = db
+      .prepare(
+        `
+          SELECT name, tbl_name AS tableName
+          FROM sqlite_master
+          WHERE type = 'index'
+            AND name IN (
+              'idx_trade_closes_close_event_unique',
+              'idx_trade_reflections_trade_close_unique',
+              'idx_close_finalization_jobs_close_event_unique'
+            )
+          ORDER BY name
+        `
+      )
+      .all() as Array<{ name: string; tableName: string }>;
+
+    expect(indexes).toEqual([
+      { name: 'idx_close_finalization_jobs_close_event_unique', tableName: 'close_finalization_jobs' },
+      { name: 'idx_trade_closes_close_event_unique', tableName: 'trade_closes' },
+      { name: 'idx_trade_reflections_trade_close_unique', tableName: 'trade_reflections' },
+    ]);
+  });
+
   it('startup repair demotes open synthetic perp comparable rows before they resolve', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-open-synth-')), 'thufir.sqlite');
     const raw = new Database(dbPath);

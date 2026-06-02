@@ -19,6 +19,7 @@ function useTempDb(): void {
 
 function createExecutionLearningCase(params: {
   tradeId: number;
+  symbol?: string;
   signalClass: string;
   marketRegime?: string;
   thesisCorrect: boolean;
@@ -38,11 +39,12 @@ function createExecutionLearningCase(params: {
     caseType: 'execution_quality',
     domain: 'perp',
     entityType: 'symbol',
-    entityId: 'BTC',
+    entityId: params.symbol ?? 'BTC',
     comparable: false,
     exclusionReason: 'execution_quality_case',
     sourceTradeId: params.tradeId,
     context: {
+      symbol: params.symbol ?? 'BTC',
       triggerReason: params.triggerReason ?? 'news',
       signalClass: params.signalClass,
       symbolClass: params.symbolClass ?? 'major',
@@ -218,5 +220,61 @@ describe('trade policy materialization', () => {
     expect(derived.find((entry) => entry.policyKey === 'confirmation')?.action).toBe('require_confirmation');
     expect(derived.find((entry) => entry.policyKey === 'cooldown')?.cooldownMinutes).toBe(45);
     expect(derived.find((entry) => entry.policyKey === 'leverage')?.leverageCap).toBe(3);
+  });
+
+  it('aggregates policy evidence by setup regime instead of fragmenting by symbol', () => {
+    createExecutionLearningCase({
+      tradeId: 20,
+      symbol: 'XYZ:TSLA',
+      signalClass: 'momentum_breakout',
+      marketRegime: 'high_vol_expansion',
+      triggerReason: 'technical',
+      thesisCorrect: true,
+      netPnl: -2.1,
+      compositeScore: 0.5,
+    });
+    createExecutionLearningCase({
+      tradeId: 21,
+      symbol: 'XYZ:EWY',
+      signalClass: 'momentum_breakout',
+      marketRegime: 'high_vol_expansion',
+      triggerReason: 'technical',
+      thesisCorrect: true,
+      netPnl: -2.0,
+      compositeScore: 0.52,
+    });
+    const third = createExecutionLearningCase({
+      tradeId: 22,
+      symbol: 'XYZ:CRWV',
+      signalClass: 'momentum_breakout',
+      marketRegime: 'high_vol_expansion',
+      triggerReason: 'technical',
+      thesisCorrect: true,
+      netPnl: -1.7,
+      compositeScore: 0.51,
+    });
+
+    const adjustment = materializeTradePolicyAdjustmentFromLearningCase({
+      config: {
+        autonomy: {
+          tradePolicyAdjustments: {
+            enabled: true,
+            minSamples: 3,
+            downweightOnThesisFailureRatio: 2,
+            downweightOnNegativePnlRatio: 0.6,
+            downweightMultiplier: 0.4,
+          },
+        },
+      } as any,
+      learningCase: third,
+    });
+
+    expect(adjustment).not.toBeNull();
+    expect(adjustment?.action).toBe('downweight');
+    expect(adjustment?.signalClass).toBe('momentum_breakout');
+    expect(adjustment?.marketRegime).toBe('high_vol_expansion');
+    expect(adjustment?.symbol).toBeNull();
+    expect(adjustment?.evidenceCount).toBe(3);
+    expect(adjustment?.negativePnlRate).toBe(1);
   });
 });
