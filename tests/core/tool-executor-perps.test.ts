@@ -332,6 +332,10 @@ describe('tool-executor perps', () => {
       )
     ).toMatchObject({ success: true });
 
+    expect(runDueCloseFinalizationJobs({ config: ctx.config, workerId: 'test-finalizer', limit: 5 })).toMatchObject({
+      finalized: 1,
+    });
+
     const adjustments = listTradePolicyAdjustments('perp');
     expect(adjustments).toHaveLength(1);
     expect(adjustments[0]!.active).toBe(true);
@@ -1562,7 +1566,12 @@ describe('tool-executor perps', () => {
     };
     const config = {
       execution: { provider: 'hyperliquid', mode: 'paper' },
-      autonomy: { closePolicyLearning: { enabled: true, minSamples: 1 } },
+      autonomy: {
+        tradePolicyAdjustments: {
+          enabled: true,
+          minSamples: 1,
+        },
+      },
     } as any;
     const ctx = { config, marketClient, executor, limiter };
 

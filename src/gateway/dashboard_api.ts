@@ -2270,10 +2270,10 @@ function buildCloseLearningSection(db: Database.Database): CloseLearningSection 
             SELECT id, scope_key AS scopeKey, symbol, direction, signal_class AS signalClass,
                    market_regime AS marketRegime, trigger_reason AS triggerReason,
                    action, size_multiplier AS sizeMultiplier, leverage_cap AS leverageCap,
-                   confidence, sample_count AS sampleCount,
+                   confidence, COALESCE(sample_count, evidence_count) AS sampleCount,
                    source_trade_close_id AS sourceTradeCloseId,
                    source_learning_case_id AS sourceLearningCaseId,
-                   reason, expires_at AS expiresAt, created_at AS createdAt
+                   COALESCE(reason, rationale) AS reason, expires_at AS expiresAt, created_at AS createdAt
             FROM trade_policy_adjustments
             WHERE active = 1
             ORDER BY datetime(created_at) DESC

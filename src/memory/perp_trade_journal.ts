@@ -72,11 +72,6 @@ export type PerpTradeJournalEntry = {
     | null;
   emotionalExitFlag?: boolean | null;
   thesisEvaluationReason?: string | null;
-  entryGateVerdict?: string | null;
-  entryGateReasonCode?: string | null;
-  policyReasonCode?: string | null;
-  policyReason?: string | null;
-  policySizeMultiplier?: number | null;
   originatorExitStage?: string | null;
   originatorExitReason?: string | null;
   maeProxy?: number | null;

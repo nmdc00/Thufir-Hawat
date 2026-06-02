@@ -69,7 +69,6 @@ import {
   type PerpBookMode,
   type PerpExitMode,
 } from './perp_lifecycle.js';
-import { materializeTradePolicyAdjustmentFromLearningCase } from './trade_policy_materialization.js';
 import { inferTradeSymbolClass } from './trade_symbol_class.js';
 import {
   hydrateEntryTradeContract,
@@ -2611,7 +2610,12 @@ export async function executeToolCall(
               side: side as 'buy' | 'sell',
               size,
               leverage: leverage ?? null,
+              direction: toPolicyDirection(learningScopeContext.direction),
               signalClass: effectiveSignalClass,
+              triggerReason: learningScopeContext.triggerReason,
+              symbolClass: learningScopeContext.symbolClass,
+              session: learningScopeContext.session,
+              strategySource: learningScopeContext.strategySource,
               marketRegime,
               volatilityBucket,
               liquidityBucket,
@@ -2669,9 +2673,9 @@ export async function executeToolCall(
               realizedPnlUsd: result.realizedPnlUsd ?? null,
               netRealizedPnlUsd:
                 typeof result.realizedPnlUsd === 'number'
-                  ? result.realizedPnlUsd - (realizedFee.realized_fee_usd ?? 0)
+                  ? result.realizedPnlUsd - (realizedObservation.realized_fee_usd ?? 0)
                   : null,
-              realizedFeeUsd: realizedFee.realized_fee_usd,
+              realizedFeeUsd: realizedObservation.realized_fee_usd,
               exitPrice: market.markPrice ?? null,
               exitMode: exitAssessment.exitMode,
               thesisInvalidationHit: exitAssessment.thesisInvalidationHit,
@@ -2697,7 +2701,7 @@ export async function executeToolCall(
                 capturedR: componentScores?.capturedR ?? null,
                 leftOnTableR: componentScores?.leftOnTableR ?? null,
                 realizedPnlUsd: result.realizedPnlUsd ?? null,
-                realizedFeeUsd: realizedFee.realized_fee_usd,
+                realizedFeeUsd: realizedObservation.realized_fee_usd,
                 learningCaseId: persistedLearningCase.id,
               },
               snapshotPayload: {

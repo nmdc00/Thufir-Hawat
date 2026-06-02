@@ -217,11 +217,11 @@ describe('dashboard api payload', () => {
     db.prepare(
       `
         INSERT INTO trade_policy_adjustments (
-          id, scope_key, symbol, signal_class, action, size_multiplier,
+          id, domain, scope_key, symbol, signal_class, action, size_multiplier,
           sample_count, source_trade_close_id, reason, active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
-    ).run('adj-1', 'symbol=BTC|signalClass=momentum_breakout', 'BTC', 'momentum_breakout', 'downweight', 0.5, 3, 'close-1', 'test learned policy', 1);
+    ).run('adj-1', 'perp', 'symbol=BTC|signalClass=momentum_breakout', 'BTC', 'momentum_breakout', 'downweight', 0.5, 3, 'close-1', 'test learned policy', 1);
     db.prepare(
       `
         INSERT INTO policy_promotion_events (

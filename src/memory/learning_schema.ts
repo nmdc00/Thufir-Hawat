@@ -122,9 +122,12 @@ const TRADE_POLICY_ADJUSTMENTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS trade_pol
     thesis_failure_rate REAL,
     negative_pnl_rate REAL,
     average_quality_score REAL,
+    sample_count INTEGER,
     source_learning_case_id TEXT,
     source_trade_id INTEGER,
+    source_trade_close_id TEXT,
     rationale TEXT,
+    reason TEXT,
     evidence_payload TEXT,
     expires_at TEXT,
     active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
@@ -347,9 +350,12 @@ const TRADE_POLICY_ADJUSTMENT_COLUMNS: ColumnSpec[] = [
   { name: 'thesis_failure_rate', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN thesis_failure_rate REAL' },
   { name: 'negative_pnl_rate', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN negative_pnl_rate REAL' },
   { name: 'average_quality_score', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN average_quality_score REAL' },
+  { name: 'sample_count', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN sample_count INTEGER' },
   { name: 'source_learning_case_id', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN source_learning_case_id TEXT' },
   { name: 'source_trade_id', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN source_trade_id INTEGER' },
+  { name: 'source_trade_close_id', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN source_trade_close_id TEXT' },
   { name: 'rationale', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN rationale TEXT' },
+  { name: 'reason', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN reason TEXT' },
   { name: 'evidence_payload', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN evidence_payload TEXT' },
   { name: 'expires_at', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN expires_at TEXT' },
   { name: 'updated_at', sql: 'ALTER TABLE trade_policy_adjustments ADD COLUMN updated_at TEXT' },
@@ -454,6 +460,22 @@ function backfillLegacyTradePolicyAdjustmentColumns(db: Database.Database, prese
       UPDATE trade_policy_adjustments
       SET rationale = COALESCE(NULLIF(TRIM(rationale), ''), reason_summary)
       WHERE rationale IS NULL OR TRIM(rationale) = ''
+    `);
+  }
+
+  if (present.has('rationale') && present.has('reason')) {
+    db.exec(`
+      UPDATE trade_policy_adjustments
+      SET reason = COALESCE(NULLIF(TRIM(reason), ''), rationale)
+      WHERE reason IS NULL OR TRIM(reason) = ''
+    `);
+  }
+
+  if (present.has('evidence_count') && present.has('sample_count')) {
+    db.exec(`
+      UPDATE trade_policy_adjustments
+      SET sample_count = COALESCE(sample_count, evidence_count)
+      WHERE sample_count IS NULL
     `);
   }
 
