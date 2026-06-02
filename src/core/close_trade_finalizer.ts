@@ -32,6 +32,14 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    const normalized = stringOrNull(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function average(values: Array<number | null>): number | null {
   const finite = values.filter((value): value is number => value != null && Number.isFinite(value));
   if (finite.length === 0) return null;
@@ -107,11 +115,58 @@ export function finalizeCloseEvent(params: {
   const thesisCorrect = bool(closePayload.thesisCorrect ?? linkedLearningCase?.outcome?.thesisCorrect);
   const capturedR = num(closePayload.capturedR ?? closePayload.captured_r ?? linkedLearningCase?.qualityScores?.capturedR);
   const leftOnTableR = num(closePayload.leftOnTableR ?? closePayload.left_on_table_r ?? linkedLearningCase?.qualityScores?.leftOnTableR);
+  const signalClass = firstString(
+    closePayload.signalClass,
+    closePayload.signal_class,
+    entryPayload.signalClass,
+    entryPayload.signal_class,
+    linkedLearningCase?.context?.signalClass,
+    linkedLearningCase?.context?.signal_class
+  );
+  const marketRegime = firstString(
+    closePayload.marketRegime,
+    closePayload.market_regime,
+    entryPayload.marketRegime,
+    entryPayload.market_regime,
+    linkedLearningCase?.context?.marketRegime,
+    linkedLearningCase?.context?.market_regime
+  );
+  const volatilityBucket = firstString(
+    closePayload.volatilityBucket,
+    closePayload.volatility_bucket,
+    entryPayload.volatilityBucket,
+    entryPayload.volatility_bucket,
+    linkedLearningCase?.context?.volatilityBucket,
+    linkedLearningCase?.context?.volatility_bucket
+  );
+  const liquidityBucket = firstString(
+    closePayload.liquidityBucket,
+    closePayload.liquidity_bucket,
+    entryPayload.liquidityBucket,
+    entryPayload.liquidity_bucket,
+    linkedLearningCase?.context?.liquidityBucket,
+    linkedLearningCase?.context?.liquidity_bucket
+  );
+  const triggerReason = firstString(
+    closePayload.triggerReason,
+    closePayload.trigger_reason,
+    closePayload.entryTrigger,
+    closePayload.entry_trigger,
+    entryPayload.triggerReason,
+    entryPayload.trigger_reason,
+    entryPayload.entryTrigger,
+    entryPayload.entry_trigger,
+    linkedLearningCase?.context?.triggerReason,
+    linkedLearningCase?.context?.entryTrigger
+  );
   const entryPrice = num(snapshot.entryPrice ?? closePayload.entryPrice ?? entryPayload.markPrice);
   const exitPrice = event.exitPrice ?? num(snapshot.exitPrice ?? closePayload.markPrice);
-  const feesUsd = event.realizedFeeUsd ?? num(closePayload.realizedFeeUsd);
-  const grossPnl = event.realizedPnlUsd ?? num(closePayload.realizedPnlUsd);
-  const netPnl = event.netRealizedPnlUsd ?? (grossPnl != null ? grossPnl - (feesUsd ?? 0) : null);
+  const feesUsd = event.realizedFeeUsd ?? num(closePayload.realizedFeeUsd ?? closePayload.realized_fee_usd);
+  const grossPnl = event.realizedPnlUsd ?? num(closePayload.realizedPnlUsd ?? closePayload.realized_pnl_usd);
+  const netPnl =
+    event.netRealizedPnlUsd ??
+    num(closePayload.netRealizedPnlUsd ?? closePayload.net_realized_pnl_usd) ??
+    (grossPnl != null ? grossPnl - (feesUsd ?? 0) : null);
   const openedAt = stringOrNull(entryPayload.createdAt) ?? null;
   const closedAt = event.createdAt;
   const holdSeconds =
@@ -156,8 +211,9 @@ export function finalizeCloseEvent(params: {
     llmReflectionStatus: 'not_requested',
     facts: {
       closeEvent: event,
-      closeJournal: closePayload,
+      closeJournal: { ...closePayload, signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason },
       entryJournal: entryPayload,
+      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason },
       learningCaseId: linkedLearningCase?.id ?? null,
     },
   });
@@ -195,7 +251,7 @@ export function finalizeCloseEvent(params: {
       regretType: 'negative_r_close',
       severity: Math.min(1, Math.abs(capturedR)),
       evidence: { capturedR, thesisCorrect, exitMode: event.exitMode },
-      policyEvidence: { signalClass: closePayload.signalClass, marketRegime: closePayload.marketRegime },
+      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason },
     });
   }
   if (leftOnTableR != null && leftOnTableR > 1) {
@@ -206,14 +262,42 @@ export function finalizeCloseEvent(params: {
       regretType: 'closed_too_early',
       severity: Math.min(1, leftOnTableR / 3),
       evidence: { leftOnTableR, capturedR },
-      policyEvidence: { signalClass: closePayload.signalClass, marketRegime: closePayload.marketRegime },
+      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason },
     });
   }
 
   if (linkedLearningCase) {
+    const normalizedLearningCase = {
+      ...linkedLearningCase,
+      context: {
+        ...(linkedLearningCase.context ?? {}),
+        symbol: linkedLearningCase.context?.symbol ?? event.symbol,
+        signalClass: signalClass ?? linkedLearningCase.context?.signalClass ?? null,
+        marketRegime: marketRegime ?? linkedLearningCase.context?.marketRegime ?? null,
+        volatilityBucket: volatilityBucket ?? linkedLearningCase.context?.volatilityBucket ?? null,
+        liquidityBucket: liquidityBucket ?? linkedLearningCase.context?.liquidityBucket ?? null,
+        triggerReason: triggerReason ?? linkedLearningCase.context?.triggerReason ?? null,
+      },
+      outcome: {
+        ...(linkedLearningCase.outcome ?? {}),
+        thesisCorrect: thesisCorrect ?? linkedLearningCase.outcome?.thesisCorrect ?? null,
+        netRealizedPnlUsd: netPnl ?? linkedLearningCase.outcome?.netRealizedPnlUsd ?? null,
+        realizedPnlUsd: grossPnl ?? linkedLearningCase.outcome?.realizedPnlUsd ?? null,
+      },
+      qualityScores: {
+        ...(linkedLearningCase.qualityScores ?? {}),
+        compositeScore: compositeScore ?? linkedLearningCase.qualityScores?.compositeScore ?? null,
+        directionScore: directionScore ?? linkedLearningCase.qualityScores?.directionScore ?? null,
+        timingScore: timingScore ?? linkedLearningCase.qualityScores?.timingScore ?? null,
+        sizingScore: sizingScore ?? linkedLearningCase.qualityScores?.sizingScore ?? null,
+        exitScore: exitScore ?? linkedLearningCase.qualityScores?.exitScore ?? null,
+        capturedR: capturedR ?? linkedLearningCase.qualityScores?.capturedR ?? null,
+        leftOnTableR: leftOnTableR ?? linkedLearningCase.qualityScores?.leftOnTableR ?? null,
+      },
+    };
     materializeTradePolicyAdjustmentFromLearningCase({
       config: params.config,
-      learningCase: linkedLearningCase,
+      learningCase: normalizedLearningCase,
       tradeCloseId: tradeClose.id,
     });
   }
