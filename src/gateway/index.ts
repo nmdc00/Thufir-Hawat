@@ -57,6 +57,10 @@ import { installConsoleFileMirror } from '../core/unified-logging.js';
 import { PositionHeartbeatService } from '../core/position_heartbeat.js';
 import { resolveOutcomes } from '../core/resolver.js';
 import { LlmExitConsultant } from '../core/llm_exit_consultant.js';
+import {
+  bootstrapOpenPerpPositionLifecycles,
+  startCloseTradeFinalizerWorker,
+} from '../core/close_trade_finalizer.js';
 import { SchedulerControlPlane } from '../core/scheduler_control_plane.js';
 import type { ScheduleDefinition } from '../core/scheduler_control_plane.js';
 import { EscalationPolicyEngine } from './escalation.js';
@@ -112,6 +116,21 @@ const level =
     ? rawLevel
     : 'info';
 const logger = new Logger(level);
+try {
+  const bootstrap = bootstrapOpenPerpPositionLifecycles({
+    mode: 'paper',
+    initialCashUsdc: config.paper?.initialCashUsdc ?? 200,
+    source: 'gateway_startup',
+  });
+  if (bootstrap.bootstrapped > 0) {
+    logger.info(
+      `Close finalizer bootstrap: inspected=${bootstrap.inspected} bootstrapped=${bootstrap.bootstrapped} skipped=${bootstrap.skipped}`
+    );
+  }
+} catch (error) {
+  logger.warn(`Close finalizer bootstrap failed: ${error instanceof Error ? error.message : String(error)}`);
+}
+startCloseTradeFinalizerWorker({ config, logger });
 const agentRegistry = createAgentRegistry(config, logger);
 const defaultAgent =
   agentRegistry.agents.get(agentRegistry.defaultAgentId) ??

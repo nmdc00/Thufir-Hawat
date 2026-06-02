@@ -72,6 +72,7 @@ function clampSignedScore(value: number): number {
 }
 
 function toFiniteNumberOrNull(value: unknown): number | null {
+  if (value == null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }

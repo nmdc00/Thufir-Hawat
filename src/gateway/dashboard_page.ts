@@ -700,10 +700,10 @@ function buildDashboardHtml(): string {
                 <div className="head"><h3>Trade Log with Component Scores</h3><p>Most recent learning loop entries and quality labels.</p></div>
                 <div className="body scroll-x">
                   <table>
-                    <thead><tr><th>Closed</th><th>Symbol</th><th>Side</th><th>Signal</th><th>D</th><th>T</th><th>S</th><th>X</th><th>R</th><th>Thesis</th><th>Quality</th></tr></thead>
+                    <thead><tr><th>Closed</th><th>Symbol</th><th>Side</th><th>Signal</th><th>D</th><th>T</th><th>S</th><th>X</th><th>PnL</th><th>R</th><th>Thesis</th><th>Quality</th></tr></thead>
                     <tbody>
-                      {(tradeLog.rows || []).length === 0 ? <tr><td colSpan="11" className="muted">No trade log rows.</td></tr> : (tradeLog.rows || []).map((row, idx) => (
-                        <tr key={String(row.tradeId) + '_' + idx}><td className="mono">{fmtTime(row.closedAt)}</td><td>{row.symbol}</td><td>{row.side || '-'}</td><td>{row.signalClass || 'unknown'}</td><td className="mono">{num(row.directionScore, 2)}</td><td className="mono">{num(row.timingScore, 2)}</td><td className="mono">{num(row.sizingScore, 2)}</td><td className="mono">{num(row.exitScore, 2)}</td><td className="mono">{num(row.rCaptured, 3)}</td><td>{row.thesisCorrect == null ? '-' : row.thesisCorrect ? 'yes' : 'no'}</td><td><span className={scorePillClass(row.qualityBand)}>{row.qualityBand}</span></td></tr>
+                      {(tradeLog.rows || []).length === 0 ? <tr><td colSpan="12" className="muted">No trade log rows.</td></tr> : (tradeLog.rows || []).map((row, idx) => (
+                        <tr key={String(row.tradeId) + '_' + idx}><td className="mono">{fmtTime(row.closedAt)}</td><td>{row.symbol}</td><td>{row.side || '-'}</td><td>{row.signalClass || 'unknown'}</td><td className="mono">{num(row.directionScore, 2)}</td><td className="mono">{num(row.timingScore, 2)}</td><td className="mono">{num(row.sizingScore, 2)}</td><td className="mono">{num(row.exitScore, 2)}</td><td className="mono">{money(typeof row.realizedPnlUsd === 'number' ? row.realizedPnlUsd : null)}</td><td className="mono">{num(row.rCaptured, 3)}</td><td>{row.thesisCorrect == null ? '-' : row.thesisCorrect ? 'yes' : 'no'}</td><td><span className={scorePillClass(row.qualityBand)}>{row.qualityBand}</span></td></tr>
                       ))}
                     </tbody>
                   </table>

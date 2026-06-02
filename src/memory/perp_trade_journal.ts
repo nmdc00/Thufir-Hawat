@@ -27,6 +27,8 @@ export type PerpTradeJournalEntry = {
   estimatedFeeType?: 'taker' | 'maker' | null;
   estimatedFeeUsd?: number | null;
   realizedFeeUsd?: number | null;
+  realizedPnlUsd?: number | null;
+  netRealizedPnlUsd?: number | null;
   realizedFeeToken?: string | null;
   realizedFillCount?: number | null;
   realizedOrderId?: number | null;
@@ -70,6 +72,8 @@ export type PerpTradeJournalEntry = {
     | null;
   emotionalExitFlag?: boolean | null;
   thesisEvaluationReason?: string | null;
+  originatorExitStage?: string | null;
+  originatorExitReason?: string | null;
   maeProxy?: number | null;
   mfeProxy?: number | null;
   directionScore?: number | null;
