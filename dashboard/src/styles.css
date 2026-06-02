@@ -66,6 +66,7 @@ body::before {
 .kpi-value { font-size: 1.25rem; }
 .kpi-sub, .footnote, .panel-head p, .line-chart-meta { color: var(--muted); font-size: 0.82rem; }
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr); gap: 14px; }
+.learning-stack { display: flex; flex-direction: column; gap: 14px; }
 .panel { border-radius: 20px; overflow: hidden; }
 .panel-head { padding: 16px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(90deg, rgba(216, 107, 49, 0.16), rgba(109, 200, 215, 0.08)); }
 .panel-head h2, .panel-head h3, .subpanel h3 { margin: 0; font-size: 1rem; }
@@ -75,7 +76,9 @@ body::before {
 .line-chart { width: 100%; height: 320px; }
 .line-chart-meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; }
 .subgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.compact-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 0; margin-bottom: 14px; }
 .subpanel { border-radius: 18px; padding: 16px; }
+.learning-note { margin-top: 14px; border-radius: 14px; border: 1px solid rgba(245, 162, 77, 0.28); background: rgba(245, 162, 77, 0.10); color: #ffd294; padding: 12px 14px; font-size: 0.86rem; line-height: 1.45; }
 .table-wrap { overflow: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 100%; }
 th, td { padding: 10px 12px; border-bottom: 1px solid rgba(246, 220, 180, 0.08); text-align: left; vertical-align: top; }
@@ -106,7 +109,7 @@ th { font-size: 0.68rem; }
 .thread-body { white-space: pre-wrap; line-height: 1.55; }
 .log-meta { margin-top: 8px; color: var(--muted); line-height: 1.45; }
 .log-pre { margin: 10px 0 0; padding: 12px; border-radius: 14px; background: rgba(0, 0, 0, 0.18); overflow: auto; white-space: pre-wrap; }
-@media (max-width: 1120px) { .hero, .content-grid, .kpi-grid, .toolbar, .subgrid { grid-template-columns: 1fr; } }
+@media (max-width: 1120px) { .hero, .content-grid, .kpi-grid, .toolbar, .subgrid, .compact-grid { grid-template-columns: 1fr; } }
 @media (max-width: 720px) {
   .conversation-toolbar { flex-direction: column; align-items: stretch; }
   .conversation-filters { flex-direction: column; }
