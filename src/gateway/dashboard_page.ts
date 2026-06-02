@@ -395,6 +395,32 @@ function buildDashboardHtml(): string {
         );
       }
 
+      function comparatorEmptyExplanation(diagnostics, totalFinalPredictions) {
+        if (Number(totalFinalPredictions || 0) > 0) return null;
+        const totalConsidered = Number(diagnostics && diagnostics.totalPredictionsConsidered ? diagnostics.totalPredictionsConsidered : 0);
+        const finalOutcomes = Number(diagnostics && diagnostics.finalOutcomePredictions ? diagnostics.finalOutcomePredictions : 0);
+        const missingComparator = Number(diagnostics && diagnostics.missingComparator ? diagnostics.missingComparator : 0);
+        const insufficientSamples = Number(diagnostics && diagnostics.insufficientSamples ? diagnostics.insufficientSamples : 0);
+        const syntheticBlocked = Number(diagnostics && diagnostics.syntheticComparatorBlocked ? diagnostics.syntheticComparatorBlocked : 0);
+
+        if (totalConsidered === 0) {
+          return 'No perp prediction candidates have been recorded yet.';
+        }
+        if (finalOutcomes === 0) {
+          return 'Perp prediction candidates exist, but none have final outcomes yet.';
+        }
+        if (insufficientSamples > 0) {
+          return insufficientSamples + ' perp prediction' + (insufficientSamples === 1 ? ' is' : 's are') + ' waiting on more baseline samples before comparable scoring.';
+        }
+        if (missingComparator > 0) {
+          return missingComparator + ' perp prediction' + (missingComparator === 1 ? ' is' : 's are') + ' missing a real comparator baseline.';
+        }
+        if (syntheticBlocked > 0) {
+          return syntheticBlocked + ' synthetic 0.5 comparator row' + (syntheticBlocked === 1 ? ' is' : 's are') + ' blocked from comparable scoring.';
+        }
+        return 'No final comparable predictions are available yet after comparator eligibility checks.';
+      }
+
       function LearningTab({ observability, predictionAccuracy, learningAudit }) {
         const runtime = observability && observability.runtimeContext ? observability.runtimeContext : {};
         const activeWeights = Array.isArray(observability && observability.activeWeights) ? observability.activeWeights : [];
@@ -402,6 +428,8 @@ function buildDashboardHtml(): string {
         const recentAudits = Array.isArray(observability && observability.recentAudits) ? observability.recentAudits : [];
         const windows = Array.isArray(predictionAccuracy && predictionAccuracy.global) ? predictionAccuracy.global : [];
         const totalFinalPredictions = Number(predictionAccuracy && predictionAccuracy.totalFinalPredictions ? predictionAccuracy.totalFinalPredictions : 0);
+        const diagnostics = predictionAccuracy && predictionAccuracy.diagnostics ? predictionAccuracy.diagnostics : {};
+        const emptyExplanation = comparatorEmptyExplanation(diagnostics, totalFinalPredictions);
         const exclusions = Array.isArray(learningAudit && learningAudit.exclusions && learningAudit.exclusions.byReason)
           ? learningAudit.exclusions.byReason
           : [];
@@ -427,14 +455,18 @@ function buildDashboardHtml(): string {
                 <div className="body">
                   <div className="learning-stat-grid" style={{ marginBottom: '10px' }}>
                     <div className="learning-stat"><div className="k">Final Comparable Predictions</div><div className="v mono">{num(totalFinalPredictions, 0)}</div></div>
-                    <div className="learning-stat"><div className="k">Comparable Cases</div><div className="v mono">{num(learningAudit && learningAudit.comparable && learningAudit.comparable.totalCaseCount, 0)}</div></div>
-                    <div className="learning-stat"><div className="k">Excluded Rows</div><div className="v mono">{num(learningAudit && learningAudit.exclusions && learningAudit.exclusions.totalCaseCount, 0)}</div></div>
+                    <div className="learning-stat"><div className="k">Total Considered</div><div className="v mono">{num(diagnostics.totalPredictionsConsidered, 0)}</div></div>
+                    <div className="learning-stat"><div className="k">Final Outcomes</div><div className="v mono">{num(diagnostics.finalOutcomePredictions, 0)}</div></div>
+                    <div className="learning-stat"><div className="k">Comparable Eligible</div><div className="v mono">{num(diagnostics.comparableEligible, 0)}</div></div>
+                    <div className="learning-stat"><div className="k">Missing Comparator</div><div className="v mono">{num(diagnostics.missingComparator, 0)}</div></div>
+                    <div className="learning-stat"><div className="k">Synthetic Blocked</div><div className="v mono">{num(diagnostics.syntheticComparatorBlocked, 0)}</div></div>
+                    <div className="learning-stat"><div className="k">Insufficient Samples</div><div className="v mono">{num(diagnostics.insufficientSamples, 0)}</div></div>
                     <div className="learning-stat"><div className="k">Execution Cases</div><div className="v mono">{num(learningAudit && learningAudit.execution && learningAudit.execution.totalCaseCount, 0)}</div></div>
                   </div>
                   <MetricsTable rows={windows} />
-                  {totalFinalPredictions === 0 ? (
+                  {emptyExplanation ? (
                     <div className="learning-note">
-                      No final comparable predictions are available yet. This is expected when the comparable pipeline has not produced rows in <span className="mono">learning_examples</span>.
+                      {emptyExplanation}
                     </div>
                   ) : null}
                 </div>
@@ -587,7 +619,7 @@ function buildDashboardHtml(): string {
         const promotion = sections.promotionGates || { rows: [] };
         const policy = sections.policyState || {};
         const perf = sections.performanceBreakdown || {};
-        const predictionAccuracy = sections.predictionAccuracy || { global: [], byDomain: {}, totalFinalPredictions: 0 };
+        const predictionAccuracy = sections.predictionAccuracy || { global: [], byDomain: {}, totalFinalPredictions: 0, diagnostics: {} };
         const learningAudit = sections.learningAudit || { comparable: { totalCaseCount: 0, byDomain: [] }, execution: { totalCaseCount: 0, byDomain: [] }, exclusions: { totalCaseCount: 0, byReason: [] }, policyOutputs: [] };
         const learningObservability = sections.learningObservability || { runtimeContext: {}, activeWeights: [], totalShadowAudits: 0, runSummaries: [], recentAudits: [] };
 
