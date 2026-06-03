@@ -1025,7 +1025,9 @@ async function tryBuildLiveWalletSnapshot(config: ThufirConfig): Promise<LiveWal
         : perpWithdrawable > 0
           ? perpWithdrawable
           : spotUsdcFree;
-    const accountValue = availableBalance;
+    const marginAccountValue = toNumber(state.marginSummary?.accountValue ?? null);
+    const crossAccountValue = toNumber(state.crossMarginSummary?.accountValue ?? null);
+    const accountValue = marginAccountValue ?? crossAccountValue ?? availableBalance;
     const equityCurve =
       accountValue != null
         ? {
