@@ -76,7 +76,8 @@ describe('dashboard api live wallet overlay', () => {
       expect(payload.sections.openPositions.rows.length).toBe(1);
       expect(payload.sections.openPositions.rows[0].symbol).toBe('BTC');
       expect(payload.sections.openPositions.summary.totalUnrealizedPnlUsd).toBeCloseTo(120, 8);
-      expect(payload.sections.equityCurve.summary.endEquity).toBeCloseTo(12.841434, 8);
+      expect(payload.sections.equityCurve.points[0].cashBalance).toBeCloseTo(900, 8);
+      expect(payload.sections.equityCurve.summary.endEquity).toBeCloseTo(1020, 8);
     } finally {
       if (process.env.THUFIR_DB_PATH) {
         rmSync(process.env.THUFIR_DB_PATH, { force: true });
