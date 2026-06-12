@@ -109,6 +109,9 @@ describe('PLIL predictions — data integrity', () => {
       symbol: 'SOL',
       domain: 'perp',
       learningComparable: true,
+      comparatorKind: 'exogenous_price_climatology',
+      comparatorSource: 'price_climatology',
+      forecastTargetKind: 'price_reaches_directional_threshold_before_horizon',
     });
 
     const pred = getPrediction(id);

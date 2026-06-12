@@ -110,17 +110,36 @@ function EquityChart({ points }: { points: Array<{ timestamp: string; equity: nu
   const width = 960;
   const height = 320;
   const padding = 28;
-  const values = points.map((point) => Number(point.equity)).filter((value) => Number.isFinite(value));
+  const chartPoints = points.map((point, index) => {
+    const timestampMs = Date.parse(point.timestamp);
+    return {
+      ...point,
+      equity: Number(point.equity),
+      timestampMs: Number.isFinite(timestampMs) ? timestampMs : index,
+    };
+  }).filter((point) => Number.isFinite(point.equity));
+  const values = chartPoints.map((point) => point.equity);
+  if (chartPoints.length === 0) {
+    return <div className="empty-state">No valid equity points for this filter window.</div>;
+  }
   const min = Math.min(...values);
   const max = Math.max(...values);
   const floor = Math.abs(max - min) < 1e-9 ? min - 1 : min;
   const ceil = Math.abs(max - min) < 1e-9 ? max + 1 : max;
-  const xFor = (index: number) => padding + (index / Math.max(1, points.length - 1)) * (width - padding * 2);
+  const minTime = Math.min(...chartPoints.map((point) => point.timestampMs));
+  const maxTime = Math.max(...chartPoints.map((point) => point.timestampMs));
+  const timeSpan = maxTime - minTime;
+  const xFor = (point: { timestampMs: number }, index: number) => {
+    const ratio = timeSpan > 0
+      ? (point.timestampMs - minTime) / timeSpan
+      : index / Math.max(1, chartPoints.length - 1);
+    return padding + ratio * (width - padding * 2);
+  };
   const yFor = (value: number) => padding + ((ceil - value) / Math.max(1e-9, ceil - floor)) * (height - padding * 2);
-  const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index)} ${yFor(Number(point.equity))}`).join(' ');
-  const area = `${line} L ${xFor(points.length - 1)} ${height - padding} L ${xFor(0)} ${height - padding} Z`;
-  const first = points[0]!;
-  const last = points[points.length - 1]!;
+  const line = chartPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(point, index)} ${yFor(point.equity)}`).join(' ');
+  const area = `${line} L ${xFor(chartPoints[chartPoints.length - 1]!, chartPoints.length - 1)} ${height - padding} L ${xFor(chartPoints[0]!, 0)} ${height - padding} Z`;
+  const first = chartPoints[0]!;
+  const last = chartPoints[chartPoints.length - 1]!;
   return (
     <>
       <svg className="line-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="Equity curve">

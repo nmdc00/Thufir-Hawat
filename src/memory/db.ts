@@ -140,6 +140,11 @@ function migratePredictionsForPlil(db: Database.Database): void {
     'learning_comparable',
     "learning_comparable INTEGER NOT NULL DEFAULT 0 CHECK(learning_comparable IN (0, 1))"
   );
+  addColumnIfMissing('forecast_target_kind', 'forecast_target_kind TEXT');
+  addColumnIfMissing('forecast_target_payload', 'forecast_target_payload TEXT');
+  addColumnIfMissing('comparator_source', 'comparator_source TEXT');
+  addColumnIfMissing('comparator_kind', 'comparator_kind TEXT');
+  addColumnIfMissing('comparator_payload', 'comparator_payload TEXT');
   addColumnIfMissing(
     'outcome_basis',
     "outcome_basis TEXT DEFAULT 'legacy' CHECK(outcome_basis IN ('final', 'estimated', 'legacy'))"

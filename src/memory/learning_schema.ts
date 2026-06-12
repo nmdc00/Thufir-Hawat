@@ -9,6 +9,9 @@ SELECT
   symbol,
   model_probability,
   market_probability,
+  comparator_kind,
+  comparator_source,
+  forecast_target_kind,
   executed,
   position_size,
   CASE WHEN outcome = 'YES' THEN 1 ELSE 0 END                               AS outcome_value,
@@ -24,6 +27,40 @@ WHERE outcome_basis     = 'final'
   AND model_probability  IS NOT NULL
   AND market_probability IS NOT NULL
   AND learning_comparable = 1
+  AND outcome            IS NOT NULL;`;
+
+const MARKET_COMPARABLE_LEARNING_EXAMPLES_VIEW_SQL = `CREATE VIEW market_comparable_learning_examples AS
+SELECT *
+FROM learning_examples
+WHERE comparator_kind IN ('exogenous_price_climatology', 'exogenous_options_implied');`;
+
+const INTERNAL_COMPARABLE_LEARNING_EXAMPLES_VIEW_SQL = `CREATE VIEW internal_comparable_learning_examples AS
+SELECT
+  id,
+  domain,
+  regime_tag           AS regime,
+  strategy_class,
+  symbol,
+  model_probability,
+  market_probability,
+  comparator_kind,
+  comparator_source,
+  forecast_target_kind,
+  executed,
+  position_size,
+  CASE WHEN outcome = 'YES' THEN 1 ELSE 0 END                               AS outcome_value,
+  pnl,
+  (model_probability  - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)
+  * (model_probability  - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)  AS brier_model,
+  (market_probability - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)
+  * (market_probability - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)  AS brier_market,
+  created_at,
+  outcome_timestamp    AS resolved_at
+FROM predictions
+WHERE outcome_basis     = 'final'
+  AND model_probability  IS NOT NULL
+  AND market_probability IS NOT NULL
+  AND comparator_kind = 'internal_segment_history'
   AND outcome            IS NOT NULL;`;
 
 export const LEARNING_CASES_TABLE_SQL = `CREATE TABLE IF NOT EXISTS learning_cases (
@@ -512,8 +549,12 @@ export function ensureLearningSchema(db: Database.Database): void {
   cleanupSyntheticPerpComparableLearningCases(db);
 
   // Recreate views explicitly so older definitions do not survive forever.
+  db.exec('DROP VIEW IF EXISTS market_comparable_learning_examples;');
+  db.exec('DROP VIEW IF EXISTS internal_comparable_learning_examples;');
   db.exec('DROP VIEW IF EXISTS learning_examples;');
   db.exec(LEARNING_EXAMPLES_VIEW_SQL);
+  db.exec(MARKET_COMPARABLE_LEARNING_EXAMPLES_VIEW_SQL);
+  db.exec(INTERNAL_COMPARABLE_LEARNING_EXAMPLES_VIEW_SQL);
   db.exec('DROP VIEW IF EXISTS comparable_learning_cases;');
   db.exec(COMPARABLE_LEARNING_CASES_VIEW_SQL);
   db.exec('DROP VIEW IF EXISTS execution_learning_cases;');
