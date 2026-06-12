@@ -206,6 +206,9 @@ type PredictionAccuracyDiagnostics = {
   insufficientSamples: number;
 };
 
+const PREDICTION_ACCURACY_WINDOW_STEP = 25;
+const PREDICTION_ACCURACY_MAX_ROWS = 500;
+
 type LearningAuditSection = {
   comparable: {
     totalCaseCount: number;
@@ -2083,20 +2086,22 @@ function buildPredictionAccuracySection(db: Database.Database): {
           pnl
         FROM learning_examples
         ORDER BY datetime(resolved_at) DESC, datetime(created_at) DESC, id DESC
-        LIMIT 500
+        LIMIT ${PREDICTION_ACCURACY_MAX_ROWS}
       `
     )
     .all() as Array<Record<string, unknown>>;
 
-  const windows = [25, 50, 100, 250].filter(
-    (windowSize) => rows.length >= windowSize || (windowSize === 25 && rows.length > 0)
+  const completeWindowCount = Math.floor(rows.length / PREDICTION_ACCURACY_WINDOW_STEP);
+  const windows = Array.from(
+    { length: completeWindowCount },
+    (_, index) => (index + 1) * PREDICTION_ACCURACY_WINDOW_STEP
   );
 
   return {
     totalFinalPredictions,
     diagnostics,
     global: windows.map((windowSize) => {
-      const slice = rows.slice(0, Math.min(windowSize, rows.length));
+      const slice = rows.slice(0, windowSize);
       const sampleCount = slice.length;
       const avg = (field: string): number | null => {
         const values = slice
