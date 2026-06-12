@@ -42,6 +42,13 @@ function numericField(row: Record<string, unknown> | null | undefined, key: stri
   return Number.isFinite(value) ? value : null;
 }
 
+function objectField(row: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> {
+  const value = row?.[key];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
 function formatHeld(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   if (h < 24) return `${h}h`;
@@ -176,6 +183,29 @@ function DataTable({ headers, rows, empty }: { headers: string[]; rows: Array<Ar
         </tbody>
       </table>
     </div>
+  );
+}
+
+function PredictionAccuracyTable({ rows, marketLabel, empty }: {
+  rows: Array<Record<string, unknown>>;
+  marketLabel: string;
+  empty: string;
+}) {
+  return (
+    <DataTable
+      headers={['Window', 'Samples', 'Accuracy', 'Brier Δ', 'Model', marketLabel, 'Avg Edge', 'PnL']}
+      empty={empty}
+      rows={rows.map((row) => [
+        <span className="mono">{numberText(numericField(row, 'windowSize'), 0)}</span>,
+        <span className="mono">{numberText(numericField(row, 'sampleCount'), 0)}</span>,
+        <span className="mono">{percent(numericField(row, 'accuracy') == null ? null : Number(numericField(row, 'accuracy')) * 100)}</span>,
+        <span className="mono">{numberText(numericField(row, 'brierDelta'), 4)}</span>,
+        <span className="mono">{numberText(numericField(row, 'brierModel'), 4)}</span>,
+        <span className="mono">{numberText(numericField(row, 'brierMarket'), 4)}</span>,
+        <span className="mono">{numberText(numericField(row, 'avgEdge'), 4)}</span>,
+        <span className="mono">{money(numericField(row, 'totalPnl'))}</span>,
+      ])}
+    />
   );
 }
 
@@ -402,8 +432,13 @@ export default function App() {
   const performance = payload?.sections.performanceBreakdown;
   const closeLearning = payload?.sections.closeLearning;
   const predictionAccuracy = payload?.sections.predictionAccuracy ?? {};
-  const accuracyWindows = Array.isArray(predictionAccuracy.global)
-    ? predictionAccuracy.global as Array<Record<string, unknown>>
+  const marketAccuracy = objectField(predictionAccuracy, 'marketComparable');
+  const internalAccuracy = objectField(predictionAccuracy, 'internalComparable');
+  const marketAccuracyWindows = Array.isArray(marketAccuracy.global)
+    ? marketAccuracy.global as Array<Record<string, unknown>>
+    : [];
+  const internalAccuracyWindows = Array.isArray(internalAccuracy.global)
+    ? internalAccuracy.global as Array<Record<string, unknown>>
     : [];
   const accuracyDiagnostics = predictionAccuracy.diagnostics && typeof predictionAccuracy.diagnostics === 'object'
     ? predictionAccuracy.diagnostics as Record<string, unknown>
@@ -485,34 +520,38 @@ export default function App() {
       {tab === 'learning' && (
         <section className="learning-stack">
           <article className="panel">
-            <div className="panel-head"><h2>Comparable Prediction Accuracy</h2><p>Rolling calibration windows for final comparable predictions.</p></div>
+            <div className="panel-head"><h2>Comparable Prediction Accuracy</h2><p>Market-proof rows require an exogenous comparator; internal rows use Thufir's own segment baseline.</p></div>
             <div className="panel-body">
               <div className="subgrid compact-grid">
-                <div className="subpanel"><h3>Final Comparable</h3><div className="mono">{numberText(numericField(predictionAccuracy, 'totalFinalPredictions'), 0)}</div></div>
+                <div className="subpanel"><h3>Market Comparable</h3><div className="mono">{numberText(numericField(marketAccuracy, 'totalFinalPredictions'), 0)}</div></div>
+                <div className="subpanel"><h3>Internal Comparable</h3><div className="mono">{numberText(numericField(internalAccuracy, 'totalFinalPredictions'), 0)}</div></div>
                 <div className="subpanel"><h3>Total Considered</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'totalPredictionsConsidered'), 0)}</div></div>
                 <div className="subpanel"><h3>Final Outcomes</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'finalOutcomePredictions'), 0)}</div></div>
-                <div className="subpanel"><h3>Comparable Eligible</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'comparableEligible'), 0)}</div></div>
+                <div className="subpanel"><h3>Legacy Comparable</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'comparableEligible'), 0)}</div></div>
                 <div className="subpanel"><h3>Missing Comparator</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'missingComparator'), 0)}</div></div>
                 <div className="subpanel"><h3>Synthetic Blocked</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'syntheticComparatorBlocked'), 0)}</div></div>
                 <div className="subpanel"><h3>Insufficient Samples</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'insufficientSamples'), 0)}</div></div>
               </div>
-              <DataTable
-                headers={['Window', 'Samples', 'Accuracy', 'Brier Δ', 'Model', 'Market', 'Avg Edge', 'PnL']}
-                empty="No prediction-accuracy windows yet."
-                rows={accuracyWindows.map((row) => [
-                  <span className="mono">{numberText(numericField(row, 'windowSize'), 0)}</span>,
-                  <span className="mono">{numberText(numericField(row, 'sampleCount'), 0)}</span>,
-                  <span className="mono">{percent(numericField(row, 'accuracy') == null ? null : Number(numericField(row, 'accuracy')) * 100)}</span>,
-                  <span className="mono">{numberText(numericField(row, 'brierDelta'), 4)}</span>,
-                  <span className="mono">{numberText(numericField(row, 'brierModel'), 4)}</span>,
-                  <span className="mono">{numberText(numericField(row, 'brierMarket'), 4)}</span>,
-                  <span className="mono">{numberText(numericField(row, 'avgEdge'), 4)}</span>,
-                  <span className="mono">{money(numericField(row, 'totalPnl'))}</span>,
-                ])}
+              <h3>Market Comparator</h3>
+              <PredictionAccuracyTable
+                rows={marketAccuracyWindows}
+                marketLabel="Market"
+                empty="No market-comparable windows yet."
               />
-              {accuracyWindows.length === 0 && (
+              {marketAccuracyWindows.length === 0 && (
                 <div className="learning-note">
-                  No final comparable predictions are available yet. Current exclusions are missing comparator, synthetic comparator, or insufficient historical baseline samples.
+                  Market-comparable windows start after closed predictions have a frozen exogenous comparator such as price climatology.
+                </div>
+              )}
+              <h3>Internal Comparator</h3>
+              <PredictionAccuracyTable
+                rows={internalAccuracyWindows}
+                marketLabel="Internal"
+                empty="No internal-comparable windows yet."
+              />
+              {internalAccuracyWindows.length === 0 && (
+                <div className="learning-note">
+                  Internal-comparable windows start after closed predictions have a stored segment-history comparator.
                 </div>
               )}
             </div>
