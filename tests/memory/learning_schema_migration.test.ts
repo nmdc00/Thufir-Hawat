@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { openDatabase } from '../../src/memory/db.js';
 import {
+  backfillLegacyPerpComparatorMetadata,
   cleanupSyntheticPerpComparableRows,
   cleanupSyntheticPerpComparableLearningCases,
   cleanupLegacyPerpComparableRows,
@@ -399,6 +400,91 @@ describe('learning schema migration', () => {
       .prepare("SELECT learning_comparable AS learningComparable FROM predictions WHERE id = 'open-synth'")
       .get() as { learningComparable: number };
     expect(row.learningComparable).toBe(0);
+  });
+
+  it('backfills legacy segment-history perp comparator metadata including open predictions', () => {
+    const db = openDatabase();
+    db.exec(`
+      INSERT INTO predictions (
+        id, market_id, market_title, predicted_outcome, domain, created_at, resolution_status,
+        model_probability, market_probability, learning_comparable, outcome_basis,
+        context_tags
+      ) VALUES
+      (
+        'resolved-legacy-internal', 'perp:BTC', 'BTC long', 'YES', 'perp', '2026-06-01T10:00:00.000Z', 'resolved_true',
+        0.72, 0.31, 1, 'final',
+        '["perp_baseline_source:segment_history_blended","perp_baseline_fallback:signal_regime"]'
+      ),
+      (
+        'open-legacy-internal', 'perp:ETH', 'ETH short', 'NO', 'perp', '2026-06-01T11:00:00.000Z', 'open',
+        0.68, 0.27, 1, 'legacy',
+        '["perp_baseline_source:segment_history_blended","perp_baseline_fallback:signal_regime"]'
+      ),
+      (
+        'synthetic-legacy', 'perp:SOL', 'SOL long', 'YES', 'perp', '2026-06-01T12:00:00.000Z', 'open',
+        0.68, 0.5, 1, 'legacy',
+        '["perp_baseline_source:segment_history_blended"]'
+      );
+
+      INSERT INTO learning_cases (
+        id, case_type, domain, entity_type, entity_id, comparable, comparator_kind,
+        source_prediction_id, baseline_payload, exclusion_reason
+      ) VALUES (
+        'legacy-case', 'comparable_forecast', 'perp', 'symbol', 'BTC', 1, 'market_price',
+        'resolved-legacy-internal',
+        '{"marketProbability":0.31,"source":"segment_history_blended","fallbackLevel":"signal_regime","sampleCount":20}',
+        NULL
+      );
+    `);
+
+    const changed = backfillLegacyPerpComparatorMetadata(db);
+    expect(changed.predictions).toBe(2);
+    expect(changed.learningCases).toBe(1);
+
+    const rows = db
+      .prepare(
+        `SELECT id, learning_comparable AS learningComparable, comparator_kind AS comparatorKind,
+                comparator_source AS comparatorSource, forecast_target_kind AS forecastTargetKind
+         FROM predictions
+         WHERE id IN ('resolved-legacy-internal', 'open-legacy-internal', 'synthetic-legacy')
+         ORDER BY id`
+      )
+      .all() as Array<{
+      id: string;
+      learningComparable: number;
+      comparatorKind: string | null;
+      comparatorSource: string | null;
+      forecastTargetKind: string | null;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        id: 'open-legacy-internal',
+        learningComparable: 1,
+        comparatorKind: 'internal_segment_history',
+        comparatorSource: 'segment_history_blended',
+        forecastTargetKind: 'positive_net_pnl_before_ttl_or_invalidation',
+      },
+      {
+        id: 'resolved-legacy-internal',
+        learningComparable: 1,
+        comparatorKind: 'internal_segment_history',
+        comparatorSource: 'segment_history_blended',
+        forecastTargetKind: 'positive_net_pnl_before_ttl_or_invalidation',
+      },
+      {
+        id: 'synthetic-legacy',
+        learningComparable: 0,
+        comparatorKind: null,
+        comparatorSource: null,
+        forecastTargetKind: null,
+      },
+    ]);
+
+    const learningCase = db
+      .prepare("SELECT comparator_kind AS comparatorKind FROM learning_cases WHERE id = 'legacy-case'")
+      .get() as { comparatorKind: string };
+    expect(learningCase.comparatorKind).toBe('internal_segment_history');
   });
 
   it('demotes synthetic perp comparable learning cases', () => {

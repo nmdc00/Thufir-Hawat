@@ -547,6 +547,7 @@ export function ensureLearningSchema(db: Database.Database): void {
 
   cleanupSyntheticPerpComparableRows(db);
   cleanupSyntheticPerpComparableLearningCases(db);
+  backfillLegacyPerpComparatorMetadata(db);
 
   // Recreate views explicitly so older definitions do not survive forever.
   db.exec('DROP VIEW IF EXISTS market_comparable_learning_examples;');
@@ -971,6 +972,112 @@ export function cleanupSyntheticPerpComparableLearningCases(db: Database.Databas
     )
     .run();
   return result.changes;
+}
+
+export type LegacyPerpComparatorBackfillSummary = {
+  predictions: number;
+  learningCases: number;
+};
+
+export function backfillLegacyPerpComparatorMetadata(
+  db: Database.Database
+): LegacyPerpComparatorBackfillSummary {
+  cleanupSyntheticPerpComparableRows(db);
+  cleanupSyntheticPerpComparableLearningCases(db);
+
+  if (
+    !hasPredictionColumns(db, [
+      'domain',
+      'predicted_outcome',
+      'model_probability',
+      'market_probability',
+      'learning_comparable',
+      'forecast_target_kind',
+      'forecast_target_payload',
+      'comparator_source',
+      'comparator_kind',
+      'comparator_payload',
+      'context_tags',
+      'symbol',
+      'horizon_minutes',
+      'execution_price',
+      'position_size',
+    ])
+  ) {
+    return { predictions: 0, learningCases: 0 };
+  }
+
+  const predictionsChanged = db
+    .prepare(
+      `UPDATE predictions
+       SET comparator_kind = 'internal_segment_history',
+           comparator_source = 'segment_history_blended',
+           comparator_payload = json_object(
+             'source', 'segment_history_blended',
+             'legacyBackfill', 1,
+             'marketProbability', market_probability,
+             'contextTags', context_tags
+           ),
+           forecast_target_kind = COALESCE(
+             forecast_target_kind,
+             'positive_net_pnl_before_ttl_or_invalidation'
+           ),
+           forecast_target_payload = COALESCE(
+             forecast_target_payload,
+             json_object(
+               'kind', 'positive_net_pnl_before_ttl_or_invalidation',
+               'symbol', symbol,
+               'side', CASE predicted_outcome WHEN 'YES' THEN 'buy' WHEN 'NO' THEN 'sell' ELSE NULL END,
+               'horizonMinutes', horizon_minutes,
+               'executionPrice', execution_price,
+               'positionSize', position_size,
+               'legacyBackfill', 1
+             )
+           )
+       WHERE domain = 'perp'
+         AND predicted_outcome IN ('YES', 'NO')
+         AND model_probability IS NOT NULL
+         AND market_probability IS NOT NULL
+         AND market_probability != 0.5
+         AND learning_comparable = 1
+         AND (comparator_kind IS NULL OR comparator_kind = '' OR comparator_kind = 'market_price')
+         AND (
+           context_tags LIKE '%perp_baseline_source:segment_history_blended%'
+           OR id IN (
+             SELECT source_prediction_id
+             FROM learning_cases
+             WHERE case_type = 'comparable_forecast'
+               AND domain = 'perp'
+               AND comparable = 1
+               AND comparator_kind = 'market_price'
+               AND source_prediction_id IS NOT NULL
+               AND json_extract(baseline_payload, '$.source') = 'segment_history_blended'
+           )
+         )`
+    )
+    .run().changes;
+
+  const hasLearningCasesTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_cases' LIMIT 1")
+    .get();
+  if (!hasLearningCasesTable) {
+    return { predictions: predictionsChanged, learningCases: 0 };
+  }
+
+  const learningCasesChanged = db
+    .prepare(
+      `UPDATE learning_cases
+       SET comparator_kind = 'internal_segment_history',
+           updated_at = datetime('now')
+       WHERE case_type = 'comparable_forecast'
+         AND domain = 'perp'
+         AND comparable = 1
+         AND comparator_kind = 'market_price'
+         AND json_extract(baseline_payload, '$.source') = 'segment_history_blended'`
+    )
+    .run().changes;
+
+  return { predictions: predictionsChanged, learningCases: learningCasesChanged };
 }
 
 export type LearningSchemaSummary = {
