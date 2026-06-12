@@ -13,6 +13,33 @@ import {
   handleDashboardApiRequest,
   parseDashboardFilters,
 } from '../../src/gateway/dashboard_api.js';
+import { recordOutcome } from '../../src/memory/calibration.js';
+import { createPrediction } from '../../src/memory/predictions.js';
+
+function seedComparableFinalPredictions(count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    const createdAt = new Date(Date.UTC(2026, 5, 1, 10, index, 0)).toISOString();
+    const id = createPrediction({
+      marketId: `perp:BTC:${index}`,
+      marketTitle: `BTC comparable ${index}`,
+      predictedOutcome: 'YES',
+      predictedProbability: 0.65,
+      modelProbability: 0.65,
+      marketProbability: 0.55,
+      domain: 'perp',
+      symbol: 'BTC',
+      createdAt,
+      executed: true,
+    });
+    recordOutcome({
+      id,
+      outcome: index % 5 === 0 ? 'NO' : 'YES',
+      outcomeBasis: 'final',
+      outcomeTimestamp: new Date(Date.UTC(2026, 5, 1, 11, index, 0)).toISOString(),
+      pnl: index % 5 === 0 ? -5 : 8,
+    });
+  }
+}
 
 describe('dashboard api filters', () => {
   it('defaults to combined/all when query values are absent or invalid', () => {
@@ -214,9 +241,7 @@ describe('dashboard api payload', () => {
     });
 
     expect(payload.sections.predictionAccuracy.totalFinalPredictions).toBe(1);
-    expect(payload.sections.predictionAccuracy.global).toEqual([
-      expect.objectContaining({ windowSize: 25, sampleCount: 1 }),
-    ]);
+    expect(payload.sections.predictionAccuracy.global).toEqual([]);
     expect(payload.sections.predictionAccuracy.diagnostics).toEqual({
       totalPredictionsConsidered: 4,
       finalOutcomePredictions: 3,
@@ -225,6 +250,39 @@ describe('dashboard api payload', () => {
       syntheticComparatorBlocked: 1,
       insufficientSamples: 1,
     });
+  });
+
+  it('reports only complete 25-sample prediction accuracy windows', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'thufir-dashboard-accuracy-windows-'));
+    dbDir = dir;
+    dbPath = join(dir, 'thufir.sqlite');
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase(dbPath);
+
+    seedComparableFinalPredictions(75);
+
+    const payload = buildDashboardApiPayload({
+      db,
+      filters: {
+        mode: 'paper',
+        timeframe: 'all',
+        period: null,
+        from: null,
+        to: null,
+      },
+    });
+
+    expect(payload.sections.predictionAccuracy.totalFinalPredictions).toBe(75);
+    expect(payload.sections.predictionAccuracy.global.map((row) => row.windowSize)).toEqual([
+      25,
+      50,
+      75,
+    ]);
+    expect(payload.sections.predictionAccuracy.global.map((row) => row.sampleCount)).toEqual([
+      25,
+      50,
+      75,
+    ]);
   });
 
   it('surfaces close finalizer, canonical close, regret, and learned policy rows', () => {
