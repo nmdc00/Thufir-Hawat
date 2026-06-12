@@ -20,6 +20,7 @@ import type {
 const PERIODS = ['1d', '7d', '14d', '30d', '90d'];
 const TABS = ['overview', 'positions', 'trades', 'performance', 'learning', 'policy', 'conversations', 'logs'] as const;
 type DashboardTab = (typeof TABS)[number];
+const PREDICTION_ACCURACY_WINDOW_SIZE = 25;
 
 function money(value: number | null | undefined): string {
   if (value == null || Number.isNaN(Number(value))) return '-';
@@ -207,6 +208,21 @@ function PredictionAccuracyTable({ rows, marketLabel, empty }: {
       ])}
     />
   );
+}
+
+function predictionAccuracyEmptyNote(params: {
+  totalFinalPredictions: number | null;
+  comparatorLabel: string;
+  noSamplesText: string;
+}): string {
+  const total = params.totalFinalPredictions ?? 0;
+  if (total > 0 && total < PREDICTION_ACCURACY_WINDOW_SIZE) {
+    return `${numberText(total, 0)} ${params.comparatorLabel} predictions available. Rolling windows start at ${PREDICTION_ACCURACY_WINDOW_SIZE} samples.`;
+  }
+  if (total >= PREDICTION_ACCURACY_WINDOW_SIZE) {
+    return `${numberText(total, 0)} ${params.comparatorLabel} predictions available, but no complete rolling window matched the current filter.`;
+  }
+  return params.noSamplesText;
 }
 
 function PerfTable({ rows }: { rows: Array<Record<string, unknown>> }) {
@@ -443,6 +459,8 @@ export default function App() {
   const accuracyDiagnostics = predictionAccuracy.diagnostics && typeof predictionAccuracy.diagnostics === 'object'
     ? predictionAccuracy.diagnostics as Record<string, unknown>
     : {};
+  const marketComparableCount = numericField(marketAccuracy, 'totalFinalPredictions');
+  const internalComparableCount = numericField(internalAccuracy, 'totalFinalPredictions');
 
   return (
     <main className="app-shell">
@@ -523,11 +541,11 @@ export default function App() {
             <div className="panel-head"><h2>Comparable Prediction Accuracy</h2><p>Market-proof rows require an exogenous comparator; internal rows use Thufir's own segment baseline.</p></div>
             <div className="panel-body">
               <div className="subgrid compact-grid">
-                <div className="subpanel"><h3>Market Comparable</h3><div className="mono">{numberText(numericField(marketAccuracy, 'totalFinalPredictions'), 0)}</div></div>
-                <div className="subpanel"><h3>Internal Comparable</h3><div className="mono">{numberText(numericField(internalAccuracy, 'totalFinalPredictions'), 0)}</div></div>
+                <div className="subpanel"><h3>Market Comparable</h3><div className="mono">{numberText(marketComparableCount, 0)}</div></div>
+                <div className="subpanel"><h3>Internal Comparable</h3><div className="mono">{numberText(internalComparableCount, 0)}</div></div>
                 <div className="subpanel"><h3>Total Considered</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'totalPredictionsConsidered'), 0)}</div></div>
                 <div className="subpanel"><h3>Final Outcomes</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'finalOutcomePredictions'), 0)}</div></div>
-                <div className="subpanel"><h3>Legacy Comparable</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'comparableEligible'), 0)}</div></div>
+                <div className="subpanel"><h3>Final Comparable</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'comparableEligible'), 0)}</div></div>
                 <div className="subpanel"><h3>Missing Comparator</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'missingComparator'), 0)}</div></div>
                 <div className="subpanel"><h3>Synthetic Blocked</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'syntheticComparatorBlocked'), 0)}</div></div>
                 <div className="subpanel"><h3>Insufficient Samples</h3><div className="mono">{numberText(numericField(accuracyDiagnostics, 'insufficientSamples'), 0)}</div></div>
@@ -540,7 +558,11 @@ export default function App() {
               />
               {marketAccuracyWindows.length === 0 && (
                 <div className="learning-note">
-                  Market-comparable windows start after closed predictions have a frozen exogenous comparator such as price climatology.
+                  {predictionAccuracyEmptyNote({
+                    totalFinalPredictions: marketComparableCount,
+                    comparatorLabel: 'market-comparable',
+                    noSamplesText: 'Market-comparable windows start after closed predictions have a frozen exogenous comparator such as price climatology.',
+                  })}
                 </div>
               )}
               <h3>Internal Comparator</h3>
@@ -551,7 +573,11 @@ export default function App() {
               />
               {internalAccuracyWindows.length === 0 && (
                 <div className="learning-note">
-                  Internal-comparable windows start after closed predictions have a stored segment-history comparator.
+                  {predictionAccuracyEmptyNote({
+                    totalFinalPredictions: internalComparableCount,
+                    comparatorLabel: 'internal-comparable',
+                    noSamplesText: 'Internal-comparable windows start after closed predictions have a stored segment-history comparator.',
+                  })}
                 </div>
               )}
             </div>
