@@ -31,6 +31,18 @@ function seedComparableFinalPredictions(count: number): void {
       createdAt,
       executed: true,
     });
+    openDatabase()
+      .prepare(
+        `
+          UPDATE predictions
+          SET comparator_kind = 'exogenous_price_climatology',
+              comparator_source = 'price_climatology',
+              forecast_target_kind = 'price_reaches_directional_threshold_before_horizon',
+              learning_comparable = 1
+          WHERE id = ?
+        `
+      )
+      .run(id);
     recordOutcome({
       id,
       outcome: index % 5 === 0 ? 'NO' : 'YES',
@@ -209,23 +221,25 @@ describe('dashboard api payload', () => {
       `
         INSERT INTO predictions (
           id, market_id, market_title, predicted_outcome, domain, symbol, created_at,
-          model_probability, market_probability, learning_comparable, outcome_basis, outcome, outcome_timestamp, pnl
+          model_probability, market_probability, learning_comparable,
+          comparator_kind, comparator_source, forecast_target_kind,
+          outcome_basis, outcome, outcome_timestamp, pnl
         ) VALUES
-          ('eligible-final', 'perp:BTC:eligible', 'BTC eligible', 'YES', 'perp', 'BTC', '2026-06-01T10:00:00.000Z', 0.74, 0.61, 1, 'final', 'YES', '2026-06-01T11:00:00.000Z', 12.5),
-          ('missing-final', 'perp:ETH:missing', 'ETH missing', 'YES', 'perp', 'ETH', '2026-06-01T10:01:00.000Z', 0.72, NULL, 0, 'final', 'NO', '2026-06-01T11:01:00.000Z', -8.0),
-          ('synthetic-final', 'perp:SOL:synthetic', 'SOL synthetic', 'YES', 'perp', 'SOL', '2026-06-01T10:02:00.000Z', 0.73, 0.5, 0, 'final', 'NO', '2026-06-01T11:02:00.000Z', -4.0),
-          ('insufficient-open', 'perp:DOGE:insufficient', 'DOGE insufficient', 'YES', 'perp', 'DOGE', '2026-06-01T10:03:00.000Z', 0.69, NULL, 0, 'legacy', NULL, NULL, NULL),
-          ('binary-ignore', 'binary:ignore', 'Binary ignore', 'YES', 'binary', 'IGN', '2026-06-01T10:04:00.000Z', 0.64, 0.55, 0, 'final', 'YES', '2026-06-01T11:04:00.000Z', 1.0)
+          ('eligible-final', 'perp:BTC:eligible', 'BTC eligible', 'YES', 'perp', 'BTC', '2026-06-01T10:00:00.000Z', 0.74, 0.61, 1, 'exogenous_price_climatology', 'price_climatology', 'price_reaches_directional_threshold_before_horizon', 'final', 'YES', '2026-06-01T11:00:00.000Z', 12.5),
+          ('missing-final', 'perp:ETH:missing', 'ETH missing', 'YES', 'perp', 'ETH', '2026-06-01T10:01:00.000Z', 0.72, NULL, 0, 'missing', 'missing', NULL, 'final', 'NO', '2026-06-01T11:01:00.000Z', -8.0),
+          ('synthetic-final', 'perp:SOL:synthetic', 'SOL synthetic', 'YES', 'perp', 'SOL', '2026-06-01T10:02:00.000Z', 0.73, 0.5, 0, 'synthetic', 'synthetic_0_5', NULL, 'final', 'NO', '2026-06-01T11:02:00.000Z', -4.0),
+          ('insufficient-open', 'perp:DOGE:insufficient', 'DOGE insufficient', 'YES', 'perp', 'DOGE', '2026-06-01T10:03:00.000Z', 0.69, NULL, 0, 'missing', 'missing', NULL, 'legacy', NULL, NULL, NULL),
+          ('binary-ignore', 'binary:ignore', 'Binary ignore', 'YES', 'binary', 'IGN', '2026-06-01T10:04:00.000Z', 0.64, 0.55, 0, 'exogenous_price_climatology', 'price_climatology', 'price_reaches_directional_threshold_before_horizon', 'final', 'YES', '2026-06-01T11:04:00.000Z', 1.0)
       `
     ).run();
     db.prepare(
       `
         INSERT INTO learning_cases (
-          id, case_type, domain, entity_type, entity_id, comparable, exclusion_reason, created_at
+          id, case_type, domain, entity_type, entity_id, comparable, comparator_kind, exclusion_reason, created_at
         ) VALUES
-          ('case-missing', 'comparable_forecast', 'perp', 'symbol', 'ETH', 0, 'missing_comparator', '2026-06-01T10:01:00.000Z'),
-          ('case-insufficient', 'comparable_forecast', 'perp', 'symbol', 'DOGE', 0, 'insufficient_samples', '2026-06-01T10:03:00.000Z'),
-          ('case-eligible', 'comparable_forecast', 'perp', 'symbol', 'BTC', 1, NULL, '2026-06-01T10:00:00.000Z')
+          ('case-missing', 'comparable_forecast', 'perp', 'symbol', 'ETH', 0, 'missing', 'missing_comparator', '2026-06-01T10:01:00.000Z'),
+          ('case-insufficient', 'comparable_forecast', 'perp', 'symbol', 'DOGE', 0, 'missing', 'insufficient_samples', '2026-06-01T10:03:00.000Z'),
+          ('case-eligible', 'comparable_forecast', 'perp', 'symbol', 'BTC', 1, 'exogenous_price_climatology', NULL, '2026-06-01T10:00:00.000Z')
       `
     ).run();
 
@@ -242,14 +256,143 @@ describe('dashboard api payload', () => {
 
     expect(payload.sections.predictionAccuracy.totalFinalPredictions).toBe(1);
     expect(payload.sections.predictionAccuracy.global).toEqual([]);
-    expect(payload.sections.predictionAccuracy.diagnostics).toEqual({
+    expect(payload.sections.predictionAccuracy.diagnostics).toMatchObject({
       totalPredictionsConsidered: 4,
       finalOutcomePredictions: 3,
       comparableEligible: 1,
+      marketComparableEligible: 1,
+      internalComparableEligible: 0,
+      internalOnlyFinalPredictions: 0,
       missingComparator: 1,
       syntheticComparatorBlocked: 1,
       insufficientSamples: 1,
+      byComparatorKind: [
+        { comparatorKind: 'exogenous_price_climatology', count: 1 },
+        { comparatorKind: 'missing', count: 1 },
+        { comparatorKind: 'synthetic', count: 1 },
+      ],
+      byComparatorSource: [
+        { comparatorSource: 'missing', count: 1 },
+        { comparatorSource: 'price_climatology', count: 1 },
+        { comparatorSource: 'synthetic_0_5', count: 1 },
+      ],
+      byExclusionReason: [
+        { reason: 'insufficient_samples', count: 1 },
+        { reason: 'missing_comparator', count: 1 },
+      ],
     });
+  });
+
+  it('separates market-comparable and internal baseline prediction accuracy families', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'thufir-dashboard-comparator-families-'));
+    dbDir = dir;
+    dbPath = join(dir, 'thufir.sqlite');
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase(dbPath);
+
+    for (let index = 0; index < 25; index += 1) {
+      db.prepare(
+        `
+          INSERT INTO predictions (
+            id, market_id, market_title, predicted_outcome, domain, symbol, created_at,
+            model_probability, market_probability, learning_comparable,
+            comparator_kind, comparator_source, forecast_target_kind,
+            outcome_basis, outcome, outcome_timestamp, pnl
+          ) VALUES (?, ?, ?, 'YES', 'perp', ?, ?, ?, ?, 1, ?, ?, ?, 'final', ?, ?, ?)
+        `
+      ).run(
+        `exo-${index}`,
+        `perp:BTC:exo:${index}`,
+        `BTC exogenous ${index}`,
+        'BTC',
+        new Date(Date.UTC(2026, 5, 1, 10, index, 0)).toISOString(),
+        0.7,
+        0.58,
+        'exogenous_price_climatology',
+        'price_climatology',
+        'price_reaches_directional_threshold_before_horizon',
+        index % 4 === 0 ? 'NO' : 'YES',
+        new Date(Date.UTC(2026, 5, 1, 11, index, 0)).toISOString(),
+        index % 4 === 0 ? -4 : 6
+      );
+      db.prepare(
+        `
+          INSERT INTO predictions (
+            id, market_id, market_title, predicted_outcome, domain, symbol, created_at,
+            model_probability, market_probability, learning_comparable,
+            comparator_kind, comparator_source, forecast_target_kind,
+            outcome_basis, outcome, outcome_timestamp, pnl
+          ) VALUES (?, ?, ?, 'YES', 'perp', ?, ?, ?, ?, 1, ?, ?, ?, 'final', ?, ?, ?)
+        `
+      ).run(
+        `internal-${index}`,
+        `perp:ETH:internal:${index}`,
+        `ETH internal ${index}`,
+        'ETH',
+        new Date(Date.UTC(2026, 5, 2, 10, index, 0)).toISOString(),
+        0.62,
+        0.51,
+        'internal_segment_history',
+        'segment_history_blended',
+        'positive_net_pnl_before_ttl_or_invalidation',
+        index % 5 === 0 ? 'NO' : 'YES',
+        new Date(Date.UTC(2026, 5, 2, 11, index, 0)).toISOString(),
+        index % 5 === 0 ? -3 : 5
+      );
+    }
+
+    db.prepare(
+      `
+        INSERT INTO predictions (
+          id, market_id, market_title, predicted_outcome, domain, symbol, created_at,
+          model_probability, market_probability, learning_comparable,
+          comparator_kind, comparator_source, outcome_basis, outcome, outcome_timestamp, pnl
+        ) VALUES
+          ('synthetic-final', 'perp:SOL:synthetic', 'SOL synthetic', 'YES', 'perp', 'SOL', '2026-06-03T10:00:00.000Z', 0.66, 0.5, 0, 'synthetic', 'synthetic_0_5', 'final', 'NO', '2026-06-03T11:00:00.000Z', -2),
+          ('missing-final', 'perp:DOGE:missing', 'DOGE missing', 'YES', 'perp', 'DOGE', '2026-06-03T10:01:00.000Z', 0.64, NULL, 0, 'missing', 'missing', 'final', 'YES', '2026-06-03T11:01:00.000Z', 1)
+      `
+    ).run();
+
+    const payload = buildDashboardApiPayload({
+      db,
+      filters: {
+        mode: 'paper',
+        timeframe: 'all',
+        period: null,
+        from: null,
+        to: null,
+      },
+    });
+    const predictionAccuracy = payload.sections.predictionAccuracy as typeof payload.sections.predictionAccuracy & {
+      marketComparable: { totalFinalPredictions: number; global: Array<{ sampleCount: number; comparatorKind?: string; comparatorSource?: string; label?: string }> };
+      internalComparable: { totalFinalPredictions: number; global: Array<{ sampleCount: number; comparatorKind?: string; comparatorSource?: string; label?: string }> };
+    };
+
+    expect(predictionAccuracy.marketComparable.totalFinalPredictions).toBe(25);
+    expect(predictionAccuracy.marketComparable.global.map((row) => row.sampleCount)).toEqual([25]);
+    expect(predictionAccuracy.marketComparable.global[0]).toMatchObject({
+      comparatorKind: 'exogenous_price_climatology',
+      comparatorSource: 'price_climatology',
+      label: 'Market-comparable forecast accuracy',
+    });
+    expect(predictionAccuracy.internalComparable.totalFinalPredictions).toBe(25);
+    expect(predictionAccuracy.internalComparable.global.map((row) => row.sampleCount)).toEqual([25]);
+    expect(predictionAccuracy.internalComparable.global[0]).toMatchObject({
+      comparatorKind: 'internal_segment_history',
+      comparatorSource: 'segment_history_blended',
+      label: 'Internal baseline forecast accuracy',
+    });
+    expect(predictionAccuracy.diagnostics).toMatchObject({
+      finalOutcomePredictions: 52,
+      marketComparableEligible: 25,
+      internalComparableEligible: 25,
+      syntheticComparatorBlocked: 1,
+      missingComparator: 1,
+    });
+    expect(JSON.stringify(predictionAccuracy.marketComparable)).not.toContain('internal_segment_history');
+    expect(JSON.stringify(predictionAccuracy.marketComparable)).not.toContain('segment_history_blended');
+    expect(JSON.stringify(predictionAccuracy.internalComparable)).not.toContain('exogenous_price_climatology');
+    expect(JSON.stringify(predictionAccuracy)).not.toContain('market_price');
   });
 
   it('reports only complete 25-sample prediction accuracy windows', () => {
@@ -395,6 +538,11 @@ describe('dashboard api payload', () => {
     });
 
     expect(payload.sections.equityCurve.points.length).toBeGreaterThanOrEqual(2);
+    const startPoint = payload.sections.equityCurve.points[0]!;
+    expect(startPoint.cashBalance).toBeCloseTo(200, 8);
+    expect(startPoint.equity).toBeCloseTo(200, 8);
+    expect(startPoint.cumulativeFees).toBeCloseTo(0, 8);
+    expect(payload.sections.equityCurve.summary.startEquity).toBeCloseTo(200, 8);
     const endEquity = payload.sections.equityCurve.summary.endEquity;
     expect(endEquity).not.toBeNull();
     expect(Number(endEquity)).toBeGreaterThan(200);

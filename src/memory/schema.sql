@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS predictions (
     model_probability REAL,    -- Thufir's raw probability estimate (never market price)
     market_probability REAL,   -- market-implied price at decision time
     learning_comparable INTEGER NOT NULL DEFAULT 0 CHECK(learning_comparable IN (0, 1)),
+    forecast_target_kind TEXT,
+    forecast_target_payload TEXT,
+    comparator_source TEXT,
+    comparator_kind TEXT,
+    comparator_payload TEXT,
     outcome_basis TEXT DEFAULT 'legacy'
         CHECK(outcome_basis IN ('final', 'estimated', 'legacy'))
         -- 'final'    = confirmed market resolution (use for learning)
@@ -92,6 +97,9 @@ SELECT
   symbol,
   model_probability,
   market_probability,
+  comparator_kind,
+  comparator_source,
+  forecast_target_kind,
   executed,
   position_size,
   CASE WHEN outcome = 'YES' THEN 1 ELSE 0 END                               AS outcome_value,
@@ -107,6 +115,40 @@ WHERE outcome_basis     = 'final'
   AND model_probability  IS NOT NULL
   AND market_probability IS NOT NULL
   AND learning_comparable = 1
+  AND outcome            IS NOT NULL;
+
+CREATE VIEW IF NOT EXISTS market_comparable_learning_examples AS
+SELECT *
+FROM learning_examples
+WHERE comparator_kind IN ('exogenous_price_climatology', 'exogenous_options_implied');
+
+CREATE VIEW IF NOT EXISTS internal_comparable_learning_examples AS
+SELECT
+  id,
+  domain,
+  regime_tag           AS regime,
+  strategy_class,
+  symbol,
+  model_probability,
+  market_probability,
+  comparator_kind,
+  comparator_source,
+  forecast_target_kind,
+  executed,
+  position_size,
+  CASE WHEN outcome = 'YES' THEN 1 ELSE 0 END                               AS outcome_value,
+  pnl,
+  (model_probability  - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)
+  * (model_probability  - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)  AS brier_model,
+  (market_probability - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)
+  * (market_probability - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)  AS brier_market,
+  created_at,
+  outcome_timestamp    AS resolved_at
+FROM predictions
+WHERE outcome_basis     = 'final'
+  AND model_probability  IS NOT NULL
+  AND market_probability IS NOT NULL
+  AND comparator_kind = 'internal_segment_history'
   AND outcome            IS NOT NULL;
 
 -- ============================================================================

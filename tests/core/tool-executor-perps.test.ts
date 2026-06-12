@@ -1385,7 +1385,7 @@ describe('tool-executor perps', () => {
     }
   });
 
-  it('creates a comparable perp prediction from a resolved baseline', async () => {
+  it('creates an internal-baseline perp prediction from a resolved segment-history baseline', async () => {
     mockPerpPredictionBaseline({
       probability: 0.62,
       comparable: true,
@@ -1425,7 +1425,9 @@ describe('tool-executor perps', () => {
 
     const storedPrediction = getPrediction(String(predictionId));
     expect(storedPrediction?.marketProbability).toBe(0.62);
-    expect(storedPrediction?.learningComparable).toBe(true);
+    expect(storedPrediction?.learningComparable).toBe(false);
+    expect(storedPrediction?.comparatorKind).toBe('internal_segment_history');
+    expect(storedPrediction?.comparatorSource).toBe('segment_history_blended');
 
     const prediction = listLearningCases({
       caseType: 'comparable_forecast',
@@ -1435,14 +1437,103 @@ describe('tool-executor perps', () => {
     })[0];
     expect(prediction).toBeTruthy();
     expect(prediction.sourcePredictionId).toBe(predictionId);
-    expect(prediction.comparable).toBe(true);
-    expect(prediction.comparatorKind).toBe('market_price');
+    expect(prediction.comparable).toBe(false);
+    expect(prediction.comparatorKind).toBe('internal_segment_history');
     expect(prediction.exclusionReason).toBeNull();
     expect(prediction.baseline).toMatchObject({
       marketProbability: 0.62,
       source: 'segment_history_blended',
       fallbackLevel: 'signalClass+marketRegime',
       sampleCount: 8,
+    });
+  });
+
+  it('creates a market-comparable perp prediction from price climatology candles', async () => {
+    mockPerpPredictionBaseline({
+      probability: 0.44,
+      comparable: true,
+      source: 'segment_history_blended',
+      fallbackLevel: 'signalClass+marketRegime',
+      sampleCount: 8,
+      wins: 4,
+      priorProbability: 0.5,
+      priorStrength: 20,
+      segmentKey: 'momentum_breakout|high_vol_expansion',
+      exclusionReason: null,
+    });
+
+    const now = Date.now();
+    const hour = 60 * 60 * 1000;
+    const candles = [
+      { timestamp: now - 4 * hour, open: 100, high: 105, low: 99, close: 100 },
+      { timestamp: now - 3 * hour, open: 100, high: 112, low: 98, close: 101 },
+      { timestamp: now - 2 * hour, open: 100, high: 106, low: 99, close: 100 },
+      { timestamp: now - 1 * hour, open: 100, high: 111, low: 97, close: 102 },
+    ];
+    const ctx = {
+      ...createPaperPerpContext(),
+      config: {
+        execution: { provider: 'hyperliquid', mode: 'paper' },
+        autonomy: {
+          exogenousComparators: {
+            priceClimatology: {
+              enabled: true,
+              lookbackDays: 30,
+              minComparableSamples: 3,
+              defaultThresholdPct: 0.1,
+              defaultHorizonMinutes: 60,
+            },
+          },
+        },
+      } as any,
+    };
+
+    const result = await executeToolCall(
+      'perp_place_order',
+      {
+        symbol: 'BTCCLIM',
+        side: 'buy',
+        size: 0.01,
+        mode: 'paper',
+        create_learning_prediction: true,
+        prediction_model_probability: 0.74,
+        prediction_horizon_minutes: 60,
+        prediction_price_threshold_pct: 0.1,
+        prediction_price_climatology_candles: candles,
+      },
+      ctx
+    );
+
+    expect(result.success).toBe(true);
+    const predictionId = (result.data as { prediction_id?: string | null }).prediction_id;
+    expect(predictionId).toBeTruthy();
+
+    const storedPrediction = getPrediction(String(predictionId));
+    expect(storedPrediction?.learningComparable).toBe(true);
+    expect(storedPrediction?.marketProbability).toBeCloseTo(2 / 3, 5);
+    expect(storedPrediction?.forecastTargetKind).toBe('price_reaches_directional_threshold_before_horizon');
+    expect(storedPrediction?.comparatorKind).toBe('exogenous_price_climatology');
+    expect(storedPrediction?.comparatorSource).toBe('price_climatology');
+    expect(storedPrediction?.comparatorPayload).toMatchObject({
+      comparatorKind: 'exogenous_price_climatology',
+      source: 'price_climatology',
+      sampleCount: 3,
+      wins: 2,
+    });
+
+    const prediction = listLearningCases({
+      caseType: 'comparable_forecast',
+      entityType: 'symbol',
+      entityId: 'BTCCLIM',
+      limit: 1,
+    })[0];
+    expect(prediction).toBeTruthy();
+    expect(prediction.comparable).toBe(true);
+    expect(prediction.comparatorKind).toBe('exogenous_price_climatology');
+    expect(prediction.baseline).toMatchObject({
+      marketProbability: storedPrediction?.marketProbability,
+      source: 'price_climatology',
+      comparatorKind: 'exogenous_price_climatology',
     });
   });
 

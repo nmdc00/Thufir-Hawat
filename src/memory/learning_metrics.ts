@@ -27,6 +27,14 @@ type LearningExampleRow = {
   pnl: number | null;
 };
 
+type LearningMetricFamily = 'all' | 'market' | 'internal';
+
+function relationForFamily(family: LearningMetricFamily): string {
+  if (family === 'market') return 'market_comparable_learning_examples';
+  if (family === 'internal') return 'internal_comparable_learning_examples';
+  return 'learning_examples';
+}
+
 function emptyWindow(windowSize: number, sampleCount: number): WindowMetrics {
   return {
     windowSize,
@@ -42,7 +50,12 @@ function emptyWindow(windowSize: number, sampleCount: number): WindowMetrics {
   };
 }
 
-function loadLearningRows(domain?: string, db: Database.Database = openDatabase()): LearningExampleRow[] {
+function loadLearningRows(
+  domain?: string,
+  db: Database.Database = openDatabase(),
+  family: LearningMetricFamily = 'all'
+): LearningExampleRow[] {
+  const relationName = relationForFamily(family);
   const sql = `
     SELECT
       outcome_value,
@@ -51,7 +64,7 @@ function loadLearningRows(domain?: string, db: Database.Database = openDatabase(
       model_probability,
       market_probability,
       pnl
-    FROM learning_examples
+    FROM ${relationName}
     ${domain ? 'WHERE domain = ?' : ''}
     ORDER BY resolved_at DESC
     LIMIT 200
@@ -61,9 +74,10 @@ function loadLearningRows(domain?: string, db: Database.Database = openDatabase(
 
 export function computeRollingWindowMetrics(
   domain?: string,
-  db: Database.Database = openDatabase()
+  db: Database.Database = openDatabase(),
+  family: LearningMetricFamily = 'all'
 ): WindowMetrics[] {
-  const rows = loadLearningRows(domain, db);
+  const rows = loadLearningRows(domain, db, family);
   const totalAvailable = rows.length;
 
   return WINDOWS.map((windowSize) => {
@@ -111,6 +125,20 @@ export function computeRollingWindowMetrics(
       totalPnl: pnlSum,
     };
   });
+}
+
+export function computeMarketComparableWindowMetrics(
+  domain?: string,
+  db: Database.Database = openDatabase()
+): WindowMetrics[] {
+  return computeRollingWindowMetrics(domain, db, 'market');
+}
+
+export function computeInternalComparableWindowMetrics(
+  domain?: string,
+  db: Database.Database = openDatabase()
+): WindowMetrics[] {
+  return computeRollingWindowMetrics(domain, db, 'internal');
 }
 
 export function computeDomainWindowMetrics(
