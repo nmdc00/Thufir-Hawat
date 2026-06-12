@@ -195,15 +195,24 @@ type PredictionAccuracyWindow = {
   brierDelta: number | null;
   avgEdge: number | null;
   totalPnl: number | null;
+  comparatorKind?: string;
+  comparatorSource?: string;
+  label?: string;
 };
 
 type PredictionAccuracyDiagnostics = {
   totalPredictionsConsidered: number;
   finalOutcomePredictions: number;
   comparableEligible: number;
+  marketComparableEligible: number;
+  internalComparableEligible: number;
+  internalOnlyFinalPredictions: number;
   missingComparator: number;
   syntheticComparatorBlocked: number;
   insufficientSamples: number;
+  byComparatorKind: Array<{ comparatorKind: string; count: number }>;
+  byComparatorSource: Array<{ comparatorSource: string; count: number }>;
+  byExclusionReason: Array<{ reason: string; count: number }>;
 };
 
 const PREDICTION_ACCURACY_WINDOW_STEP = 25;
@@ -836,12 +845,30 @@ function buildPaperEquitySeries(
   let cashBalance = startingCash > 0 ? startingCash : 200;
   let cumulativeRealized = 0;
   let cumulativeFees = 0;
+  let emittedBaselinePoint = false;
 
   for (const fill of fills) {
     const fillMs = Date.parse(fill.createdAt);
     if (!Number.isFinite(fillMs)) {
       continue;
     }
+    const inRange =
+      (fromMs == null || fillMs >= fromMs) &&
+      (toMs == null || fillMs <= toMs);
+    if (inRange && !emittedBaselinePoint) {
+      const baselineUnrealizedPnl = computeUnrealizedPnl(positions, lastMarkBySymbol);
+      const baselineTimestamp = fromMs == null ? fillMs : fromMs;
+      points.push({
+        timestamp: new Date(baselineTimestamp).toISOString(),
+        cashBalance,
+        unrealizedPnl: baselineUnrealizedPnl,
+        equity: cashBalance + baselineUnrealizedPnl,
+        cumulativeRealizedPnl: cumulativeRealized,
+        cumulativeFees,
+      });
+      emittedBaselinePoint = true;
+    }
+
     applyFillToPositionState(positions, fill);
     lastMarkBySymbol.set(fill.symbol, fill.markPrice);
 
@@ -851,9 +878,6 @@ function buildPaperEquitySeries(
     const unrealizedPnl = computeUnrealizedPnl(positions, lastMarkBySymbol);
     const equity = cashBalance + unrealizedPnl;
 
-    const inRange =
-      (fromMs == null || fillMs >= fromMs) &&
-      (toMs == null || fillMs <= toMs);
     if (inRange) {
       points.push({
         timestamp: new Date(fillMs).toISOString(),
@@ -2058,10 +2082,24 @@ function buildPredictionAccuracySection(db: Database.Database): {
   totalFinalPredictions: number;
   diagnostics: PredictionAccuracyDiagnostics;
   global: PredictionAccuracyWindow[];
+  marketComparable: {
+    totalFinalPredictions: number;
+    global: PredictionAccuracyWindow[];
+  };
+  internalComparable: {
+    totalFinalPredictions: number;
+    global: PredictionAccuracyWindow[];
+  };
 } {
   const diagnostics = buildPredictionAccuracyDiagnostics(db);
   if (!relationExists(db, 'learning_examples')) {
-    return { totalFinalPredictions: 0, diagnostics, global: [] };
+    return {
+      totalFinalPredictions: 0,
+      diagnostics,
+      global: [],
+      marketComparable: { totalFinalPredictions: 0, global: [] },
+      internalComparable: { totalFinalPredictions: 0, global: [] },
+    };
   }
 
   const totalFinalPredictions = safeCount(db, 'SELECT COUNT(*) AS c FROM learning_examples');
@@ -2069,7 +2107,20 @@ function buildPredictionAccuracySection(db: Database.Database): {
     db,
     "SELECT COUNT(*) AS c FROM learning_examples WHERE COALESCE(domain, '') = 'perp'"
   );
-  const rows = db
+  if (relationExists(db, 'market_comparable_learning_examples')) {
+    diagnostics.marketComparableEligible = safeCount(
+      db,
+      "SELECT COUNT(*) AS c FROM market_comparable_learning_examples WHERE COALESCE(domain, '') = 'perp'"
+    );
+  }
+  if (relationExists(db, 'internal_comparable_learning_examples')) {
+    diagnostics.internalComparableEligible = safeCount(
+      db,
+      "SELECT COUNT(*) AS c FROM internal_comparable_learning_examples WHERE COALESCE(domain, '') = 'perp'"
+    );
+  }
+
+  const loadRows = (relationName: string): Array<Record<string, unknown>> => db
     .prepare(
       `
         SELECT
@@ -2084,23 +2135,23 @@ function buildPredictionAccuracySection(db: Database.Database): {
           (brier_market - brier_model) AS brierDelta,
           (model_probability - market_probability) AS edge,
           pnl
-        FROM learning_examples
+        FROM ${relationName}
         ORDER BY datetime(resolved_at) DESC, datetime(created_at) DESC, id DESC
         LIMIT ${PREDICTION_ACCURACY_MAX_ROWS}
       `
     )
     .all() as Array<Record<string, unknown>>;
 
-  const completeWindowCount = Math.floor(rows.length / PREDICTION_ACCURACY_WINDOW_STEP);
-  const windows = Array.from(
-    { length: completeWindowCount },
-    (_, index) => (index + 1) * PREDICTION_ACCURACY_WINDOW_STEP
-  );
-
-  return {
-    totalFinalPredictions,
-    diagnostics,
-    global: windows.map((windowSize) => {
+  const rowsToWindows = (
+    rows: Array<Record<string, unknown>>,
+    metadata?: { comparatorKind: string; comparatorSource: string; label: string }
+  ): PredictionAccuracyWindow[] => {
+    const completeWindowCount = Math.floor(rows.length / PREDICTION_ACCURACY_WINDOW_STEP);
+    const windows = Array.from(
+      { length: completeWindowCount },
+      (_, index) => (index + 1) * PREDICTION_ACCURACY_WINDOW_STEP
+    );
+    return windows.map((windowSize) => {
       const slice = rows.slice(0, windowSize);
       const sampleCount = slice.length;
       const avg = (field: string): number | null => {
@@ -2126,8 +2177,39 @@ function buildPredictionAccuracySection(db: Database.Database): {
         brierDelta: avg('brierDelta'),
         avgEdge: avg('edge'),
         totalPnl: total('pnl'),
+        ...(metadata ?? {}),
       };
-    }),
+    });
+  };
+
+  const globalRows = loadRows('learning_examples');
+  const marketRows = relationExists(db, 'market_comparable_learning_examples')
+    ? loadRows('market_comparable_learning_examples')
+    : [];
+  const internalRows = relationExists(db, 'internal_comparable_learning_examples')
+    ? loadRows('internal_comparable_learning_examples')
+    : [];
+
+  return {
+    totalFinalPredictions,
+    diagnostics,
+    global: rowsToWindows(globalRows),
+    marketComparable: {
+      totalFinalPredictions: marketRows.length,
+      global: rowsToWindows(marketRows, {
+        comparatorKind: 'exogenous_price_climatology',
+        comparatorSource: 'price_climatology',
+        label: 'Market-comparable forecast accuracy',
+      }),
+    },
+    internalComparable: {
+      totalFinalPredictions: internalRows.length,
+      global: rowsToWindows(internalRows, {
+        comparatorKind: 'internal_segment_history',
+        comparatorSource: 'segment_history_blended',
+        label: 'Internal baseline forecast accuracy',
+      }),
+    },
   };
 }
 
@@ -2136,9 +2218,15 @@ function buildPredictionAccuracyDiagnostics(db: Database.Database): PredictionAc
     totalPredictionsConsidered: 0,
     finalOutcomePredictions: 0,
     comparableEligible: 0,
+    marketComparableEligible: 0,
+    internalComparableEligible: 0,
+    internalOnlyFinalPredictions: 0,
     missingComparator: 0,
     syntheticComparatorBlocked: 0,
     insufficientSamples: 0,
+    byComparatorKind: [],
+    byComparatorSource: [],
+    byExclusionReason: [],
   };
 
   if (!tableExists(db, 'predictions')) {
@@ -2182,6 +2270,34 @@ function buildPredictionAccuracyDiagnostics(db: Database.Database): PredictionAc
         AND learning_comparable = 1
     `
   );
+  const hasComparatorColumns = ['comparator_kind', 'comparator_source'].every((columnName) =>
+    tableHasColumn(db, 'predictions', columnName)
+  );
+  const marketComparableEligible = hasComparatorColumns
+    ? safeCount(
+        db,
+        `
+          SELECT COUNT(*) AS c
+          FROM predictions
+          WHERE COALESCE(domain, '') = 'perp'
+            AND model_probability IS NOT NULL
+            AND learning_comparable = 1
+            AND comparator_kind IN ('exogenous_price_climatology', 'exogenous_options_implied')
+        `
+      )
+    : 0;
+  const internalComparableEligible = hasComparatorColumns
+    ? safeCount(
+        db,
+        `
+          SELECT COUNT(*) AS c
+          FROM predictions
+          WHERE COALESCE(domain, '') = 'perp'
+            AND model_probability IS NOT NULL
+            AND comparator_kind = 'internal_segment_history'
+        `
+      )
+    : 0;
   const missingComparatorFromPredictions = safeCount(
     db,
     `
@@ -2208,6 +2324,7 @@ function buildPredictionAccuracyDiagnostics(db: Database.Database): PredictionAc
   let hasComparableForecastExclusions = false;
   let missingComparatorFromCases = 0;
   let insufficientSamples = 0;
+  let byExclusionReason: Array<{ reason: string; count: number }> = [];
   if (tableExists(db, 'learning_cases') && tableHasColumn(db, 'learning_cases', 'exclusion_reason')) {
     hasComparableForecastExclusions =
       safeCount(
@@ -2239,7 +2356,61 @@ function buildPredictionAccuracyDiagnostics(db: Database.Database): PredictionAc
           AND exclusion_reason = 'insufficient_samples'
       `
     );
+    byExclusionReason = (
+      db
+        .prepare(
+          `
+            SELECT COALESCE(exclusion_reason, 'unspecified') AS reason, COUNT(*) AS count
+            FROM learning_cases
+            WHERE case_type = 'comparable_forecast'
+              AND comparable = 0
+              AND exclusion_reason IS NOT NULL
+            GROUP BY COALESCE(exclusion_reason, 'unspecified')
+            ORDER BY reason ASC
+          `
+        )
+        .all() as Array<{ reason: string; count: number }>
+    ).map((row) => ({ reason: String(row.reason), count: Number(row.count ?? 0) }));
   }
+
+  const byComparatorKind =
+    hasComparatorColumns
+      ? (
+          db
+            .prepare(
+              `
+                SELECT COALESCE(comparator_kind, 'missing') AS comparatorKind, COUNT(*) AS count
+                FROM predictions
+                WHERE COALESCE(domain, '') = 'perp'
+                  AND model_probability IS NOT NULL
+                  AND outcome_basis = 'final'
+                  AND outcome IS NOT NULL
+                GROUP BY COALESCE(comparator_kind, 'missing')
+                ORDER BY comparatorKind ASC
+              `
+            )
+            .all() as Array<{ comparatorKind: string; count: number }>
+        ).map((row) => ({ comparatorKind: String(row.comparatorKind), count: Number(row.count ?? 0) }))
+      : [];
+  const byComparatorSource =
+    hasComparatorColumns
+      ? (
+          db
+            .prepare(
+              `
+                SELECT COALESCE(comparator_source, 'missing') AS comparatorSource, COUNT(*) AS count
+                FROM predictions
+                WHERE COALESCE(domain, '') = 'perp'
+                  AND model_probability IS NOT NULL
+                  AND outcome_basis = 'final'
+                  AND outcome IS NOT NULL
+                GROUP BY COALESCE(comparator_source, 'missing')
+                ORDER BY comparatorSource ASC
+              `
+            )
+            .all() as Array<{ comparatorSource: string; count: number }>
+        ).map((row) => ({ comparatorSource: String(row.comparatorSource), count: Number(row.count ?? 0) }))
+      : [];
 
   return {
     totalPredictionsConsidered,
@@ -2250,6 +2421,12 @@ function buildPredictionAccuracyDiagnostics(db: Database.Database): PredictionAc
       : missingComparatorFromPredictions,
     syntheticComparatorBlocked,
     insufficientSamples,
+    marketComparableEligible,
+    internalComparableEligible,
+    internalOnlyFinalPredictions: internalComparableEligible,
+    byComparatorKind,
+    byComparatorSource,
+    byExclusionReason,
   };
 }
 
@@ -2720,6 +2897,14 @@ export function buildDashboardApiPayload(params?: {
       totalFinalPredictions: number;
       diagnostics: PredictionAccuracyDiagnostics;
       global: PredictionAccuracyWindow[];
+      marketComparable: {
+        totalFinalPredictions: number;
+        global: PredictionAccuracyWindow[];
+      };
+      internalComparable: {
+        totalFinalPredictions: number;
+        global: PredictionAccuracyWindow[];
+      };
     };
     learningAudit: LearningAuditSection;
     learningObservability: {

@@ -94,6 +94,11 @@ import {
   resolvePaperMids,
 } from './tool_executor_paper.js';
 import { resolvePerpPredictionBaseline } from './perp_prediction_baselines.js';
+import {
+  resolvePriceClimatologyComparator,
+  type PriceClimatologyCandle,
+  type PriceClimatologyTarget,
+} from './perp_exogenous_comparators.js';
 
 /** Minimal interface for spending limit enforcement used in tool execution */
 export interface ToolSpendingLimiter {
@@ -578,6 +583,83 @@ function isAuditableExplicitComparator(params: {
   );
 }
 
+function parsePriceClimatologyCandles(input: unknown): PriceClimatologyCandle[] {
+  let candidate = input;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  return candidate
+    .map((row): PriceClimatologyCandle | null => {
+      if (!row || typeof row !== 'object') return null;
+      const record = row as Record<string, unknown>;
+      const timestamp = record.timestamp ?? record.time ?? record.t;
+      const open = Number(record.open ?? record.o);
+      const high = Number(record.high ?? record.h);
+      const low = Number(record.low ?? record.l);
+      const close = Number(record.close ?? record.c);
+      if (
+        (typeof timestamp !== 'string' && typeof timestamp !== 'number' && !(timestamp instanceof Date)) ||
+        ![open, high, low, close].every((value) => Number.isFinite(value) && value > 0)
+      ) {
+        return null;
+      }
+      return {
+        timestamp: timestamp as string | number | Date,
+        open,
+        high,
+        low,
+        close,
+        volume: record.volume == null ? null : Number(record.volume),
+      };
+    })
+    .filter((row): row is PriceClimatologyCandle => row != null);
+}
+
+function buildPriceClimatologyTarget(params: {
+  toolInput: Record<string, unknown>;
+  symbol: string;
+  side: 'buy' | 'sell';
+  referencePrice: number | null;
+  horizonMinutes: number | null;
+}): PriceClimatologyTarget | null {
+  const referencePrice = params.referencePrice;
+  if (referencePrice == null || !Number.isFinite(referencePrice) || referencePrice <= 0) {
+    return null;
+  }
+  const thresholdPct = toFiniteNumberOrNull(
+    params.toolInput.prediction_price_threshold_pct ??
+      params.toolInput.prediction_climatology_threshold_pct
+  );
+  const defaultThresholdPct = toFiniteNumberOrNull(
+    (params.toolInput as { prediction_default_threshold_pct?: unknown }).prediction_default_threshold_pct
+  );
+  const resolvedThresholdPct = thresholdPct ?? defaultThresholdPct ?? 0.015;
+  const horizonMinutes = params.horizonMinutes ?? 1440;
+  if (
+    !Number.isFinite(resolvedThresholdPct) ||
+    resolvedThresholdPct <= 0 ||
+    !Number.isFinite(horizonMinutes) ||
+    horizonMinutes <= 0
+  ) {
+    return null;
+  }
+  return {
+    kind: 'price_reaches_directional_threshold_before_horizon',
+    symbol: params.symbol,
+    direction: params.side === 'buy' ? 'up' : 'down',
+    thresholdPct: resolvedThresholdPct,
+    horizonMinutes,
+    referencePrice,
+  };
+}
+
 function parsePredictionSignalTriplet(input: unknown): PredictionSignalTriplet | null {
   let candidate = input;
   if (typeof candidate === 'string') {
@@ -666,29 +748,72 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
         source: explicitComparatorSource,
       }
     : null;
-  const baseline =
-    explicitComparator == null
-      ? resolvePerpPredictionBaseline(params.config, {
-          symbol: params.symbol,
-          side: params.side,
-          signalClass: params.signalClass,
-          marketRegime: params.marketRegime,
-          triggerReason: params.triggerReason,
-          symbolClass: params.symbolClass,
-          session: params.session,
-          volatilityBucket: params.volatilityBucket,
-          liquidityBucket: params.liquidityBucket,
-          forecastTarget: 'positive_net_pnl_before_ttl_or_invalidation',
-        })
+  const internalBaseline = resolvePerpPredictionBaseline(params.config, {
+    symbol: params.symbol,
+    side: params.side,
+    signalClass: params.signalClass,
+    marketRegime: params.marketRegime,
+    triggerReason: params.triggerReason,
+    symbolClass: params.symbolClass,
+    session: params.session,
+    volatilityBucket: params.volatilityBucket,
+    liquidityBucket: params.liquidityBucket,
+    forecastTarget: 'positive_net_pnl_before_ttl_or_invalidation',
+  });
+  const priceClimatologyCandles = parsePriceClimatologyCandles(
+    params.toolInput.prediction_price_climatology_candles ??
+      params.toolInput.prediction_climatology_candles
+  );
+  const priceClimatologyTarget = buildPriceClimatologyTarget({
+    toolInput: params.toolInput,
+    symbol: params.symbol,
+    side: params.side,
+    referencePrice: params.markPrice,
+    horizonMinutes,
+  });
+  const exogenousComparator =
+    explicitComparator == null && priceClimatologyTarget != null && priceClimatologyCandles.length > 0
+      ? resolvePriceClimatologyComparator(
+          params.config,
+          priceClimatologyTarget,
+          { symbol: params.symbol, candles: priceClimatologyCandles }
+        )
       : null;
-  const baselineProbability = baseline != null && isProbabilityInRange(baseline.probability)
-    ? baseline.probability
+  const internalBaselineProbability = isProbabilityInRange(internalBaseline.probability)
+    ? internalBaseline.probability
     : null;
-  const marketProbability = explicitComparator?.probability ?? baselineProbability;
-  const requestedComparable =
+  const exogenousProbability =
+    exogenousComparator != null && isProbabilityInRange(exogenousComparator.probability)
+      ? exogenousComparator.probability
+      : null;
+  const selectedComparator =
     explicitComparator != null
-      ? params.toolInput.prediction_learning_comparable === true
-      : baseline?.comparable === true;
+      ? {
+          probability: explicitComparator.probability,
+          source: explicitComparator.source,
+          kind: 'exogenous_price_climatology',
+          comparable: params.toolInput.prediction_learning_comparable === true,
+          payload: { explicit: true, source: explicitComparator.source },
+        }
+      : exogenousProbability != null
+        ? {
+            probability: exogenousProbability,
+            source: exogenousComparator?.source ?? 'price_climatology',
+            kind: exogenousComparator?.comparatorKind ?? 'exogenous_price_climatology',
+            comparable: exogenousComparator?.comparable === true,
+            payload: exogenousComparator ?? null,
+          }
+        : internalBaselineProbability != null
+          ? {
+              probability: internalBaselineProbability,
+              source: internalBaseline.source,
+              kind: 'internal_segment_history',
+              comparable: false,
+              payload: internalBaseline,
+            }
+          : null;
+  const marketProbability = selectedComparator?.probability ?? null;
+  const requestedComparable = selectedComparator?.comparable === true;
   const learningComparableRequested = requestedComparable && modelProbability != null && marketProbability != null;
   const shouldCreate =
     explicitEnabled === true ||
@@ -701,13 +826,25 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
   }
 
   const predictedOutcome = params.side === 'buy' ? 'YES' : 'NO';
+  const forecastTargetPayload =
+    selectedComparator?.kind === 'exogenous_price_climatology' && priceClimatologyTarget != null
+      ? priceClimatologyTarget
+      : {
+          kind: 'positive_net_pnl_before_ttl_or_invalidation',
+          symbol: params.symbol,
+          side: params.side,
+        };
+  const forecastTargetKind =
+    forecastTargetPayload.kind === 'price_reaches_directional_threshold_before_horizon'
+      ? forecastTargetPayload.kind
+      : 'positive_net_pnl_before_ttl_or_invalidation';
   const learningComparable = normalizeLearningComparableInput({
     domain: 'perp',
     predictedOutcome,
     modelProbability: modelProbability ?? undefined,
     marketProbability: marketProbability ?? undefined,
     learningComparable: learningComparableRequested,
-  });
+  }) && String(selectedComparator?.kind ?? '').startsWith('exogenous_');
   const predictionId = createPrediction({
     marketId: `perp:${params.symbol}`,
     marketTitle,
@@ -718,13 +855,15 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
     signalScores: signalScores ?? undefined,
     signalWeightsSnapshot: signalWeightsSnapshot ?? undefined,
     contextTags:
-      baseline != null
+      selectedComparator?.kind === 'internal_segment_history'
         ? [
-            `perp_baseline_source:${baseline.source}`,
-            ...(baseline.fallbackLevel ? [`perp_baseline_fallback:${baseline.fallbackLevel}`] : []),
+            `perp_baseline_source:${internalBaseline.source}`,
+            ...(internalBaseline.fallbackLevel ? [`perp_baseline_fallback:${internalBaseline.fallbackLevel}`] : []),
           ]
         : explicitComparatorSource
           ? [`perp_comparator_source:${explicitComparatorSource}`]
+          : selectedComparator?.source
+            ? [`perp_comparator_source:${selectedComparator.source}`]
           : undefined,
     sessionTag: sessionTag ?? undefined,
     regimeTag: regimeTag ?? undefined,
@@ -737,6 +876,14 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
     executed: true,
     executionPrice: params.markPrice ?? undefined,
     positionSize: params.size,
+    forecastTargetKind,
+    forecastTargetPayload,
+    comparatorSource: selectedComparator?.source ?? null,
+    comparatorKind: selectedComparator?.kind ?? null,
+    comparatorPayload:
+      selectedComparator?.payload && typeof selectedComparator.payload === 'object'
+        ? (selectedComparator.payload as Record<string, unknown>)
+        : null,
   });
   try {
     createLearningCase({
@@ -745,11 +892,13 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
       entityType: 'symbol',
       entityId: params.symbol,
       comparable: learningComparable,
-      comparatorKind: learningComparable ? 'market_price' : null,
+      comparatorKind: selectedComparator?.kind ?? null,
       exclusionReason:
         learningComparable
           ? null
-          : baseline?.exclusionReason ?? 'missing_comparator',
+          : selectedComparator?.kind === 'internal_segment_history'
+            ? null
+            : exogenousComparator?.exclusionReason ?? internalBaseline.exclusionReason ?? 'missing_comparator',
       sourcePredictionId: predictionId,
       belief: {
         modelProbability,
@@ -757,14 +906,16 @@ function maybeCreatePerpOpenPredictionArtifacts(params: {
       },
       baseline: {
         marketProbability,
-        source: explicitComparator?.source ?? baseline?.source ?? 'missing',
-        fallbackLevel: baseline?.fallbackLevel ?? null,
-        sampleCount: baseline?.sampleCount ?? null,
-        wins: baseline?.wins ?? null,
-        priorProbability: baseline?.priorProbability ?? null,
-        priorStrength: baseline?.priorStrength ?? null,
-        segmentKey: baseline?.segmentKey ?? null,
-        exclusionReason: baseline?.exclusionReason ?? null,
+        source: selectedComparator?.source ?? exogenousComparator?.source ?? internalBaseline.source ?? 'missing',
+        comparatorKind: selectedComparator?.kind ?? null,
+        fallbackLevel: internalBaseline.fallbackLevel ?? null,
+        sampleCount: exogenousComparator?.sampleCount ?? internalBaseline.sampleCount ?? null,
+        wins: exogenousComparator?.wins ?? internalBaseline.wins ?? null,
+        priorProbability: internalBaseline.priorProbability ?? null,
+        priorStrength: internalBaseline.priorStrength ?? null,
+        segmentKey: internalBaseline.segmentKey ?? null,
+        exclusionReason: exogenousComparator?.exclusionReason ?? internalBaseline.exclusionReason ?? null,
+        forecastTarget: forecastTargetPayload,
       },
       context: {
         horizonMinutes,

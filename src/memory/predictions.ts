@@ -42,6 +42,11 @@ export interface PredictionInput {
   modelProbability?: number;    // Thufir's raw estimate — never market price
   marketProbability?: number;   // market-implied price at decision time
   learningComparable?: boolean;
+  forecastTargetKind?: string | null;
+  forecastTargetPayload?: Record<string, unknown> | null;
+  comparatorSource?: string | null;
+  comparatorKind?: string | null;
+  comparatorPayload?: Record<string, unknown> | null;
 }
 
 export interface PredictionRecord {
@@ -80,6 +85,11 @@ export interface PredictionRecord {
   modelProbability?: number | null;
   marketProbability?: number | null;
   learningComparable?: boolean;
+  forecastTargetKind?: string | null;
+  forecastTargetPayload?: Record<string, unknown> | null;
+  comparatorSource?: string | null;
+  comparatorKind?: string | null;
+  comparatorPayload?: Record<string, unknown> | null;
   outcomeBasis?: 'final' | 'estimated' | 'legacy' | null;
 }
 
@@ -189,6 +199,10 @@ export function normalizeLearningComparableInput(
       input.marketProbability != null);
   return learningComparableRequested && !isSyntheticPerpComparableInput(input);
 }
+
+function isMarketComparableComparatorKind(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.startsWith('exogenous_');
+}
 export function createPrediction(input: PredictionInput): string {
   const db = openDatabase();
   const id = randomUUID();
@@ -206,7 +220,11 @@ export function createPrediction(input: PredictionInput): string {
       ? new Date(Date.parse(createdAt) + horizonMinutes * 60_000).toISOString()
       : null);
 
-  const learningComparable = normalizeLearningComparableInput(input);
+  const normalizedLearningComparable = normalizeLearningComparableInput(input);
+  const learningComparable =
+    input.domain === 'perp'
+      ? normalizedLearningComparable && isMarketComparableComparatorKind(input.comparatorKind)
+      : normalizedLearningComparable;
 
   const stmt = db.prepare(`
     INSERT INTO predictions (
@@ -238,7 +256,12 @@ export function createPrediction(input: PredictionInput): string {
       position_size,
       model_probability,
       market_probability,
-      learning_comparable
+      learning_comparable,
+      forecast_target_kind,
+      forecast_target_payload,
+      comparator_source,
+      comparator_kind,
+      comparator_payload
     ) VALUES (
       @id,
       @marketId,
@@ -268,7 +291,12 @@ export function createPrediction(input: PredictionInput): string {
       @positionSize,
       @modelProbability,
       @marketProbability,
-      @learningComparable
+      @learningComparable,
+      @forecastTargetKind,
+      @forecastTargetPayload,
+      @comparatorSource,
+      @comparatorKind,
+      @comparatorPayload
     )
   `);
 
@@ -304,6 +332,11 @@ export function createPrediction(input: PredictionInput): string {
     modelProbability: input.modelProbability ?? null,
     marketProbability: input.marketProbability ?? null,
     learningComparable: learningComparable ? 1 : 0,
+    forecastTargetKind: input.forecastTargetKind ?? null,
+    forecastTargetPayload: serializeObject(input.forecastTargetPayload ?? null),
+    comparatorSource: input.comparatorSource ?? null,
+    comparatorKind: input.comparatorKind ?? null,
+    comparatorPayload: serializeObject(input.comparatorPayload ?? null),
   });
 
   return id;
@@ -353,6 +386,11 @@ export function listPredictions(options?: {
       model_probability as modelProbability,
       market_probability as marketProbability,
       learning_comparable as learningComparable,
+      forecast_target_kind as forecastTargetKind,
+      forecast_target_payload as forecastTargetPayload,
+      comparator_source as comparatorSource,
+      comparator_kind as comparatorKind,
+      comparator_payload as comparatorPayload,
       outcome_basis as outcomeBasis
     FROM predictions
   `;
@@ -408,6 +446,11 @@ export function listPredictions(options?: {
     modelProbability: row.modelProbability as number | null,
     marketProbability: row.marketProbability as number | null,
     learningComparable: Boolean(row.learningComparable),
+    forecastTargetKind: (row.forecastTargetKind as string | null) ?? null,
+    forecastTargetPayload: parseJsonRecord((row.forecastTargetPayload as string | null) ?? null),
+    comparatorSource: (row.comparatorSource as string | null) ?? null,
+    comparatorKind: (row.comparatorKind as string | null) ?? null,
+    comparatorPayload: parseJsonRecord((row.comparatorPayload as string | null) ?? null),
     outcomeBasis: (row.outcomeBasis as 'final' | 'estimated' | 'legacy' | null) ?? null,
   }));
 }
@@ -452,6 +495,11 @@ export function getPrediction(id: string): PredictionRecord | null {
         model_probability as modelProbability,
         market_probability as marketProbability,
         learning_comparable as learningComparable,
+        forecast_target_kind as forecastTargetKind,
+        forecast_target_payload as forecastTargetPayload,
+        comparator_source as comparatorSource,
+        comparator_kind as comparatorKind,
+        comparator_payload as comparatorPayload,
         outcome_basis as outcomeBasis
       FROM predictions
       WHERE id = ?
@@ -504,6 +552,11 @@ export function getPrediction(id: string): PredictionRecord | null {
     modelProbability: row.modelProbability as number | null,
     marketProbability: row.marketProbability as number | null,
     learningComparable: Boolean(row.learningComparable),
+    forecastTargetKind: (row.forecastTargetKind as string | null) ?? null,
+    forecastTargetPayload: parseJsonRecord((row.forecastTargetPayload as string | null) ?? null),
+    comparatorSource: (row.comparatorSource as string | null) ?? null,
+    comparatorKind: (row.comparatorKind as string | null) ?? null,
+    comparatorPayload: parseJsonRecord((row.comparatorPayload as string | null) ?? null),
     outcomeBasis: (row.outcomeBasis as 'final' | 'estimated' | 'legacy' | null) ?? null,
   };
 }

@@ -122,6 +122,43 @@ describe('learning schema migration', () => {
     }
   });
 
+  it('adds comparator target columns and separated comparable views to legacy prediction tables', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-comparator-migration-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE predictions (
+        id TEXT PRIMARY KEY,
+        market_id TEXT NOT NULL,
+        market_title TEXT NOT NULL,
+        predicted_outcome TEXT,
+        domain TEXT,
+        created_at TEXT,
+        model_probability REAL,
+        market_probability REAL,
+        learning_comparable INTEGER NOT NULL DEFAULT 0,
+        outcome_basis TEXT DEFAULT 'legacy'
+      );
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+    const columns = db.prepare("PRAGMA table_info('predictions')").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    expect(names.has('forecast_target_kind')).toBe(true);
+    expect(names.has('forecast_target_payload')).toBe(true);
+    expect(names.has('comparator_source')).toBe(true);
+    expect(names.has('comparator_kind')).toBe(true);
+    expect(names.has('comparator_payload')).toBe(true);
+    expect(
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = 'market_comparable_learning_examples'").get()
+    ).toBeTruthy();
+    expect(
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = 'internal_comparable_learning_examples'").get()
+    ).toBeTruthy();
+  });
+
   it('repairs legacy close finalizer tables before creating close indexes', () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-legacy-close-finalizer-')), 'thufir.sqlite');
     const raw = new Database(dbPath);
