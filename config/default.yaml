@@ -247,6 +247,27 @@ autonomy:
   pauseOnLossStreak: 3         # Pause after N consecutive losses
   dailyReportTime: "20:00"     # Time to send daily P&L report
   maxTradesPerScan: 1          # Concentrate on the single best setup per scan
+  exposure:
+    enabled: true              # Deterministic portfolio guard before LLM entry gate
+    maxGrossLeverage: 3.0      # Total open notional <= 3x account equity/cash
+    maxNetLeverage: 2.0        # Absolute directional net <= 2x account equity/cash
+    maxClusterPercent: 75      # Per-cluster notional cap as % of account equity/cash
+    clusters:
+      crypto-majors: [BTC, ETH, SOL]
+      crypto-alt: [AVAX, DOGE, LINK, MATIC, OP, ARB, APT, SUI, SEI, INJ, FET, TIA, NEAR, UNI, AAVE]
+      us-equity: [SPX, NDX, NASDAQ, DOW, RUSSELL, TSLA, NVDA, AAPL, MSFT, META, AMZN, GOOGL]
+      energy:
+        oil: [CL, BRENTOIL, WTI, BRENT]
+        gas: [NG, NATGAS]
+      metals:
+        gold: [XAU, GOLD]
+        silver: [XAG, SILVER]
+        copper: [HG, COPPER]
+      fx-macro:
+        usd: [DXY, USD]
+        eur: [EUR, EURUSD]
+        jpy: [JPY, USDJPY]
+        gbp: [GBP, GBPUSD]
   tradeContract:
     enabled: false             # Enforce entry trade contract (archetype/invalidation/time stop)
     enforceExitFsm: false      # Require reason-coded reduce-only exits (manual needs emergency override)

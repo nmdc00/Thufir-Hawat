@@ -807,6 +807,17 @@ const ConfigSchema = z.object({
       tradeReadCacheSeconds: z.number().default(10),
       tradeCapBypassMinEdge: z.number().default(0.12),
       dailyDrawdownCapUsd: z.number().default(0),
+      exposure: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxGrossLeverage: z.number().positive().default(3.0),
+          maxNetLeverage: z.number().positive().default(2.0),
+          maxClusterPercent: z.number().positive().default(75),
+          clusters: z
+            .record(z.union([z.array(z.string()), z.record(z.array(z.string()))]))
+            .default({}),
+        })
+        .default({}),
       tradeContract: z
         .object({
           enabled: z.boolean().default(false),
