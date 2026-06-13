@@ -532,6 +532,11 @@ const ConfigSchema = z.object({
       retentionDays: z.number().default(30),
     })
     .default({}),
+  learning: z
+    .object({
+      cleanDataCutoff: z.string().default('2026-06-13'),
+    })
+    .default({}),
   memory: z.object({
     dbPath: z.string().optional(),
     sessionsPath: z.string().optional(),

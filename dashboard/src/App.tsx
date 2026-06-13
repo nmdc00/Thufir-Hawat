@@ -111,6 +111,12 @@ function badgeClass(value: unknown): string {
   return 'badge mixed';
 }
 
+function targetBadge(value: unknown): ReactNode {
+  if (value === true) return <span className="badge good">pass</span>;
+  if (value === false) return <span className="badge bad">fail</span>;
+  return <span className="badge mixed">no data</span>;
+}
+
 function EquityChart({ points }: { points: Array<{ timestamp: string; equity: number }> }) {
   if (!Array.isArray(points) || points.length === 0) {
     return <div className="empty-state">No equity points for this filter window.</div>;
@@ -206,6 +212,36 @@ function PredictionAccuracyTable({ rows, marketLabel, empty }: {
         <span className="mono">{numberText(numericField(row, 'avgEdge'), 4)}</span>,
         <span className="mono">{money(numericField(row, 'totalPnl'))}</span>,
       ])}
+    />
+  );
+}
+
+function OriginatorScorecardTable({ rows }: { rows: Array<Record<string, unknown>> }) {
+  return (
+    <DataTable
+      headers={['Window', 'Null Rate', 'Originated', 'Win Rate', 'Expectancy', 'Quant Exp.', 'Targets', 'Gaps']}
+      empty="No originator scorecard rows yet."
+      rows={rows.map((row) => {
+        const targets = objectField(row, 'targets');
+        return [
+          <span className="mono">{numberText(numericField(row, 'windowDays'), 0)}d</span>,
+          <span className="mono">{percent(numericField(row, 'nullProposalRate') == null ? null : Number(numericField(row, 'nullProposalRate')) * 100)}</span>,
+          <span className="mono">
+            {numberText(numericField(row, 'originatedTrades'), 0)} / {numberText(numericField(row, 'executedTrades'), 0)}
+            {' '}({percent(numericField(row, 'originatedShare') == null ? null : Number(numericField(row, 'originatedShare')) * 100)})
+          </span>,
+          <span className="mono">{percent(numericField(row, 'originatedWinRate') == null ? null : Number(numericField(row, 'originatedWinRate')) * 100)}</span>,
+          <span className="mono">{money(numericField(row, 'originatedExpectancyUsd'))}</span>,
+          <span className="mono">{money(numericField(row, 'quantExpectancyUsd'))}</span>,
+          <div className="badge-cluster">
+            {targetBadge(targets.nullProposalDiscipline)}
+            {targetBadge(targets.originatedShare)}
+            {targetBadge(targets.originatedWinRate)}
+            {targetBadge(targets.beatsQuantExpectancy)}
+          </div>,
+          <span className="mono">{numberText(numericField(row, 'linkageGapCount'), 0)}</span>,
+        ];
+      })}
     />
   );
 }
@@ -447,6 +483,7 @@ export default function App() {
   const policy = payload?.sections.policyState;
   const performance = payload?.sections.performanceBreakdown;
   const closeLearning = payload?.sections.closeLearning;
+  const originatorScorecardRows = payload?.sections.originatorScorecard?.latest ?? [];
   const predictionAccuracy = payload?.sections.predictionAccuracy ?? {};
   const marketAccuracy = objectField(predictionAccuracy, 'marketComparable');
   const internalAccuracy = objectField(predictionAccuracy, 'internalComparable');
@@ -537,6 +574,17 @@ export default function App() {
 
       {tab === 'learning' && (
         <section className="learning-stack">
+          <article className="panel">
+            <div className="panel-head"><h2>Originator Scorecard</h2><p>Latest rolling v1.98 success criteria over post-cutoff execution history.</p></div>
+            <div className="panel-body">
+              <OriginatorScorecardTable rows={originatorScorecardRows} />
+              {originatorScorecardRows.length > 0 && (
+                <div className="footnote">
+                  Targets: null proposals &gt; 60%, originated share &gt; 50%, originated win rate &gt; 25%, originated expectancy above quant.
+                </div>
+              )}
+            </div>
+          </article>
           <article className="panel">
             <div className="panel-head"><h2>Comparable Prediction Accuracy</h2><p>Market-proof rows require an exogenous comparator; internal rows use Thufir's own segment baseline.</p></div>
             <div className="panel-body">

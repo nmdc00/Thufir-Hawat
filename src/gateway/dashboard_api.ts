@@ -7,6 +7,7 @@ import { loadConfig, type ThufirConfig } from '../core/config.js';
 import { getDailyPnLRollup } from '../core/daily_pnl.js';
 import { HyperliquidClient } from '../execution/hyperliquid/client.js';
 import { openDatabase } from '../memory/db.js';
+import { listLatestOriginatorScorecards } from '../memory/originator_scorecard.js';
 import type { PerpTradeJournalEntry } from '../memory/perp_trade_journal.js';
 import { cached, cachedAsync } from './dashboard_cache.js';
 
@@ -262,6 +263,35 @@ type CloseLearningSection = {
     activeAdjustments: Array<Record<string, unknown>>;
     promotionEvents: Array<Record<string, unknown>>;
   };
+};
+
+type OriginatorScorecardSection = {
+  latest: Array<{
+    scorecardDate: string;
+    windowDays: number;
+    cleanDataCutoff: string;
+    windowStartedAt: string;
+    windowEndedAt: string;
+    scanCycles: number;
+    nullProposalRate: number | null;
+    executedTrades: number;
+    originatedTrades: number;
+    quantTrades: number;
+    originatedShare: number | null;
+    originatedWinRate: number | null;
+    originatedExpectancyUsd: number | null;
+    quantWinRate: number | null;
+    quantExpectancyUsd: number | null;
+    linkageGapCount: number;
+    computedAt: string;
+    targets: {
+      nullProposalDiscipline: boolean | null;
+      originatedShare: boolean | null;
+      originatedWinRate: boolean | null;
+      beatsQuantExpectancy: boolean | null;
+    };
+    notes: string | null;
+  }>;
 };
 
 function parseJson<T>(value: unknown): T | null {
@@ -2654,6 +2684,49 @@ function buildCloseLearningSection(db: Database.Database): CloseLearningSection 
   };
 }
 
+function buildOriginatorScorecardSection(db: Database.Database): OriginatorScorecardSection {
+  if (!tableExists(db, 'originator_scorecard')) {
+    return { latest: [] };
+  }
+  try {
+    return {
+      latest: listLatestOriginatorScorecards(db).map((row) => ({
+        scorecardDate: row.scorecardDate,
+        windowDays: row.windowDays,
+        cleanDataCutoff: row.cleanDataCutoff,
+        windowStartedAt: row.windowStartedAt,
+        windowEndedAt: row.windowEndedAt,
+        scanCycles: row.scanCycles,
+        nullProposalRate: row.nullProposalRate,
+        executedTrades: row.executedTrades,
+        originatedTrades: row.originatedTrades,
+        quantTrades: row.quantTrades,
+        originatedShare: row.originatedShare,
+        originatedWinRate: row.originatedWinRate,
+        originatedExpectancyUsd: row.originatedExpectancyUsd,
+        quantWinRate: row.quantWinRate,
+        quantExpectancyUsd: row.quantExpectancyUsd,
+        linkageGapCount: row.linkageGapCount,
+        computedAt: row.computedAt,
+        targets: {
+          nullProposalDiscipline:
+            row.nullProposalRate == null ? null : row.nullProposalRate > 0.6,
+          originatedShare: row.originatedShare == null ? null : row.originatedShare > 0.5,
+          originatedWinRate:
+            row.originatedWinRate == null ? null : row.originatedWinRate > 0.25,
+          beatsQuantExpectancy:
+            row.originatedExpectancyUsd == null || row.quantExpectancyUsd == null
+              ? null
+              : row.originatedExpectancyUsd > row.quantExpectancyUsd,
+        },
+        notes: row.notes,
+      })),
+    };
+  } catch {
+    return { latest: [] };
+  }
+}
+
 function buildGateAttributionSection(db: Database.Database): GateAttributionSection {
   const config = getDashboardConfig();
   const section: GateAttributionSection = {
@@ -2920,6 +2993,7 @@ export function buildDashboardApiPayload(params?: {
       recentAudits: unknown[];
     };
     closeLearning: CloseLearningSection;
+    originatorScorecard: OriginatorScorecardSection;
     gateAttribution: GateAttributionSection;
   };
 } {
@@ -2960,6 +3034,7 @@ export function buildDashboardApiPayload(params?: {
   const learningAudit = buildLearningAuditSection(db);
   const learningObservability = buildLearningObservabilitySection(db);
   const closeLearning = buildCloseLearningSection(db);
+  const originatorScorecard = buildOriginatorScorecardSection(db);
   const gateAttribution = buildGateAttributionSection(db);
 
   return {
@@ -3010,6 +3085,7 @@ export function buildDashboardApiPayload(params?: {
       learningAudit,
       learningObservability,
       closeLearning,
+      originatorScorecard,
       gateAttribution,
     },
   };

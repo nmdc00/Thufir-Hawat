@@ -614,6 +614,11 @@ intel:
     allowTypes: []
     minTrust: medium
     socialOptIn: true
+
+learning:
+  # Excludes pre-v2.5 bug-era/runtime-contaminated rows from originator scorecards.
+  cleanDataCutoff: '2026-06-13'
+
 # Hyperliquid settings
 hyperliquid:
   enabled: true

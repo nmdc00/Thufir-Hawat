@@ -62,6 +62,7 @@ import { installConsoleFileMirror } from '../core/unified-logging.js';
 import { PositionHeartbeatService } from '../core/position_heartbeat.js';
 import { resolveOutcomes } from '../core/resolver.js';
 import { LlmExitConsultant } from '../core/llm_exit_consultant.js';
+import { runOriginatorScorecardJob } from '../core/originator_scorecard_job.js';
 import {
   bootstrapOpenPerpPositionLifecycles,
   startCloseTradeFinalizerWorker,
@@ -856,6 +857,21 @@ if (resolverConfig?.enabled) {
   );
   hasSchedulerJobs = true;
 }
+
+scheduler.registerJob(
+  {
+    name: `gateway:${schedulerNamespace}:originator-scorecard`,
+    schedule: { kind: 'daily', time: '00:20' },
+    leaseMs: 120_000,
+  },
+  async () => {
+    const result = runOriginatorScorecardJob({
+      config: { cleanDataCutoff: config.learning?.cleanDataCutoff },
+    });
+    logger.info(`Originator scorecard computed ${result.rows.length} rolling window(s).`);
+  }
+);
+hasSchedulerJobs = true;
 
 if (hasSchedulerJobs) {
   scheduler.start();

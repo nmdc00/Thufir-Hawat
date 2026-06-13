@@ -75,6 +75,9 @@ export type DashboardPayload = {
         promotionEvents: Array<Record<string, unknown>>;
       };
     };
+    originatorScorecard?: {
+      latest: Array<Record<string, unknown>>;
+    };
   };
 };
 
