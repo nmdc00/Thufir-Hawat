@@ -1,5 +1,7 @@
 # Handoff Document
 
+> Deprecated current-state source: use `STATE.md` for active release status, production SHA, and current success criteria. This file is retained as historical session context.
+
 This document provides everything needed to continue development on Thufir.
 
 ## Latest Session (2026-02-16, Session 16)
