@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { openDatabase } from './db.js';
+import { registerRetentionPolicy } from './retention.js';
 import type { OpportunityRankRecord } from '../core/opportunity_types.js';
 
 export interface OpportunityRankScanInput {
@@ -37,6 +38,12 @@ export interface OpportunityRankScanRecord {
   payload: Record<string, unknown> | null;
   notes: Record<string, unknown> | null;
 }
+
+registerRetentionPolicy({
+  table: 'opportunity_rank_logs',
+  timestampColumn: 'created_at',
+  retainDays: 30,
+});
 
 function serializeJson(value: unknown): string | null {
   if (value == null) return null;
