@@ -56,6 +56,7 @@ memory: {}
     expect(config.paper.liveSymbolsAllowlist).toEqual(['BTC', 'ETH']);
     expect(config.paper.promotionGates.minTrades).toBe(25);
     expect(config.paper.promotionGates.maxDrawdownR).toBe(6);
+    expect(config.learning.cleanDataCutoff).toBe('2026-06-13');
     expect(config.wallet.limits.daily).toBe(100);
     expect(config.agent.persistPlans).toBe(true);
     expect(config.agent.trivial.timeoutMs).toBe(12000);
