@@ -7,7 +7,7 @@ Last updated: 2026-06-13
 - Current release: `release/v2.5`
 - Release PRD/TDD: `release/v2.5-runtime-coherence-and-risk-containment.prd-tdd.md`
 - Swarm manifest: `release/v2.5-swarm-manifest.md`
-- Production branch/SHA: `main` / `1d13f8b7a7ca8deaad64ae63fcf4d6ab148dce7f`
+- Production runtime release SHA: `main` / `1d13f8b7a7ca8deaad64ae63fcf4d6ab148dce7f`
 - Deployment status: deployed 2026-06-13; `thufir.service` active on `77.42.29.26`
 
 ## Production-Visible Success Criteria
