@@ -141,4 +141,22 @@ describe('memory retention registry', () => {
       .get() as { count: number };
     expect(row.count).toBe(2);
   });
+
+  it('does not prune user chat tables through v2.5 retention policies', () => {
+    const db = openDatabase();
+    db.exec(`
+      INSERT INTO chat_messages (id, session_id, role, content, created_at)
+      VALUES
+        ('old-user-chat', 'session-1', 'user', 'keep me', '2020-01-01 00:00:00'),
+        ('old-assistant-chat', 'session-1', 'assistant', 'keep me too', '2020-01-01 00:01:00');
+    `);
+
+    const result = applyRetentionPolicies(db, { now });
+
+    expect(result.countsByTable.chat_messages).toBeUndefined();
+    expect(listRetentionPolicies().some((policy) => policy.table === 'chat_messages')).toBe(false);
+    expect(
+      db.prepare('SELECT id FROM chat_messages ORDER BY created_at').all()
+    ).toEqual([{ id: 'old-user-chat' }, { id: 'old-assistant-chat' }]);
+  });
 });
