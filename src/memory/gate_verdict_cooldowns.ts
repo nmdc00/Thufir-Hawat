@@ -23,13 +23,15 @@ function ensureSchema(): void {
 export function getGateVerdictCooldown(symbol: string, side: string): GateVerdictCooldown | null {
   ensureSchema();
   const db = openDatabase();
-  const row = db
-    .prepare(
-      `SELECT symbol, side, last_reject_at AS lastRejectAt, last_edge AS lastEdge
-       FROM gate_verdict_cooldowns
-       WHERE symbol = @symbol AND side = @side`
-    )
-    .get({ symbol, side }) as GateVerdictCooldown | undefined;
+  const statement = db.prepare(
+    `SELECT symbol, side, last_reject_at AS lastRejectAt, last_edge AS lastEdge
+     FROM gate_verdict_cooldowns
+     WHERE symbol = @symbol AND side = @side`
+  );
+  if (typeof statement.get !== 'function') {
+    return null;
+  }
+  const row = statement.get({ symbol, side }) as GateVerdictCooldown | undefined;
   return row ?? null;
 }
 

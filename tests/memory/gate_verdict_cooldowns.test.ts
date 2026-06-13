@@ -79,4 +79,21 @@ describe('gate verdict cooldowns', () => {
     });
     expect(getGateVerdictCooldown('ETH', 'buy')).toBeNull();
   });
+
+  it('fails open when a legacy test double lacks a prepared get method', async () => {
+    const originalPrepare = fakeDb.prepare;
+    fakeDb.prepare = ((sql: string) => {
+      if (/SELECT symbol, side, last_reject_at AS lastRejectAt/i.test(sql)) {
+        return { run: () => undefined };
+      }
+      return originalPrepare.call(fakeDb, sql);
+    }) as typeof fakeDb.prepare;
+
+    try {
+      const { getGateVerdictCooldown } = await import('../../src/memory/gate_verdict_cooldowns.js');
+      expect(getGateVerdictCooldown('BTC', 'buy')).toBeNull();
+    } finally {
+      fakeDb.prepare = originalPrepare;
+    }
+  });
 });
