@@ -7,8 +7,8 @@ Last updated: 2026-06-13
 - Current release: `release/v2.5`
 - Release PRD/TDD: `release/v2.5-runtime-coherence-and-risk-containment.prd-tdd.md`
 - Swarm manifest: `release/v2.5-swarm-manifest.md`
-- Production branch/SHA: pending v2.5 promotion
-- Deployment status: pending
+- Production branch/SHA: `main` / `1d13f8b7a7ca8deaad64ae63fcf4d6ab148dce7f`
+- Deployment status: deployed 2026-06-13; `thufir.service` active on `77.42.29.26`
 
 ## Production-Visible Success Criteria
 
@@ -23,12 +23,12 @@ v2.5 is complete only when the promoted production SHA proves these runtime cont
 
 ## Latest Scorecard
 
-Pending first v2.5 production nightly run.
+First v2.5 scorecard computed manually after deploy on 2026-06-13. Nightly scheduler will refresh subsequent rows.
 
 | Window | Null Proposal Rate | Originated Share | Originated Win Rate | Originated Expectancy | Quant Expectancy |
 |---:|---:|---:|---:|---:|---:|
-| 7d | pending | pending | pending | pending | pending |
-| 30d | pending | pending | pending | pending | pending |
+| 7d | 100.00% | - | - | - | - |
+| 30d | 100.00% | - | - | - | - |
 
 ## Active Docs
 
