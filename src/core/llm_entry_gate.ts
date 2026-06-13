@@ -3,6 +3,7 @@ import type { LlmClient } from './llm.js';
 import type { ThufirConfig } from './config.js';
 import type { PositionBook } from './position_book.js';
 import { recordEntryGateDecision } from '../memory/llm_entry_gate_log.js';
+import { getGateVerdictCooldown, recordGateVerdictReject } from '../memory/gate_verdict_cooldowns.js';
 import { listPerpTradeJournals } from '../memory/perp_trade_journal.js';
 import { summarizeSignalPerformance, type SignalPerformanceSummary } from './signal_performance.js';
 import { Logger } from './logger.js';
@@ -24,6 +25,7 @@ export interface EntryGateCandidate {
   invalidationPrice?: number | null;
   suggestedTtlMinutes?: number;
   expectedRMultiple?: number;
+  catalystTimestamp?: string;
   marketContext?: EntryGateMarketContext;
 }
 
@@ -38,6 +40,7 @@ export type EntryGateReasonCode =
   | 'no_fresh_catalyst'
   | 'risk_reward_insufficient'
   | 'size_downshift'
+  | 'cooldown_suppressed'
   | 'llm_unavailable'
   | 'invalid_leverage_geometry'
   | 'discretionary_reject';
@@ -333,6 +336,72 @@ function shouldRejectOnBothFail(config: ThufirConfig): boolean {
   return config.autonomy?.llmEntryGate?.rejectOnBothFail !== false;
 }
 
+function deterministicPrechecksEnabled(config: ThufirConfig): boolean {
+  return config.autonomy?.llmEntryGate?.deterministicPrechecks !== false;
+}
+
+function resolveGateCooldownMinutes(config: ThufirConfig): number {
+  return Math.max(0, Number(config.autonomy?.llmEntryGate?.gateCooldownMinutes ?? 60));
+}
+
+function resolveMinEdge(config: ThufirConfig): number {
+  return Math.max(0, Number(config.autonomy?.minEdge ?? 0.05));
+}
+
+function parseTimestampMs(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function shouldBypassCooldownForCandidate(
+  candidate: EntryGateCandidate,
+  cooldown: { lastRejectAt: string; lastEdge: number },
+): boolean {
+  const improvedEdge = Number.isFinite(candidate.edge) && candidate.edge >= cooldown.lastEdge * 1.25;
+  const catalystMs = parseTimestampMs(candidate.catalystTimestamp);
+  const lastRejectMs = parseTimestampMs(cooldown.lastRejectAt);
+  const freshCatalyst = catalystMs != null && lastRejectMs != null && catalystMs > lastRejectMs;
+  return improvedEdge || freshCatalyst;
+}
+
+function recordGateDecision(
+  candidate: EntryGateCandidate,
+  decision: EntryGateDecision,
+  usedFallback: boolean,
+  llmConsulted: boolean,
+): void {
+  recordEntryGateDecision({
+    symbol: candidate.symbol,
+    side: candidate.side,
+    notionalUsd: candidate.notionalUsd,
+    verdict: decision.verdict,
+    reasoning: decision.reasoning,
+    reasonCode: decision.reasonCode,
+    adjustedSizeUsd: decision.adjustedSizeUsd,
+    usedFallback,
+    signalClass: candidate.signalClass,
+    regime: candidate.regime,
+    session: candidate.session,
+    edge: candidate.edge,
+    ...buildObservabilityFields(candidate),
+    stopLevelPrice: decision.stopLevelPrice,
+    equityAtRiskPct: decision.equityAtRiskPct,
+    targetRR: decision.targetRR,
+    suggestedLeverage: decision.suggestedLeverage,
+    llmConsulted,
+  });
+  if (decision.verdict === 'reject' && decision.reasonCode !== 'cooldown_suppressed') {
+    recordGateVerdictReject({
+      symbol: candidate.symbol,
+      side: candidate.side,
+      edge: candidate.edge,
+    });
+  }
+}
+
 function buildPrompt(
   candidate: EntryGateCandidate,
   bookEntries: ReturnType<PositionBook['getAll']>,
@@ -528,6 +597,7 @@ function normalizeReasonCode(
     'no_fresh_catalyst',
     'risk_reward_insufficient',
     'size_downshift',
+    'cooldown_suppressed',
     'llm_unavailable',
     'invalid_leverage_geometry',
     'discretionary_reject',
@@ -597,22 +667,60 @@ export class LlmEntryGate {
         reasoning: 'Opposite-side position already open on this symbol. Cannot open conflicting trade.',
         reasonCode: 'book_conflict',
       };
-      recordEntryGateDecision({
-        symbol: evaluationCandidate.symbol,
-        side: evaluationCandidate.side,
-        notionalUsd: evaluationCandidate.notionalUsd,
-        verdict: decision.verdict,
-        reasoning: decision.reasoning,
-        reasonCode: decision.reasonCode,
-        adjustedSizeUsd: undefined,
-        usedFallback: false,
-        signalClass: evaluationCandidate.signalClass,
-        regime: evaluationCandidate.regime,
-        session: evaluationCandidate.session,
-        edge: evaluationCandidate.edge,
-        ...buildObservabilityFields(evaluationCandidate),
-      });
+      recordGateDecision(evaluationCandidate, decision, false, false);
       return decision;
+    }
+
+    if (deterministicPrechecksEnabled(this.config)) {
+      const sameSidePositionOpen = this.book.hasPosition(evaluationCandidate.symbol, evaluationCandidate.side);
+      if (sameSidePositionOpen) {
+        const decision: EntryGateDecision = {
+          verdict: 'reject',
+          reasoning:
+            `Same-side ${evaluationCandidate.side} position already open on ${evaluationCandidate.symbol}; ` +
+            'deterministic stacking guard suppressed duplicate exposure.',
+          reasonCode: 'same_symbol_stacking',
+        };
+        recordGateDecision(evaluationCandidate, decision, false, false);
+        return decision;
+      }
+
+      const cooldownMinutes = resolveGateCooldownMinutes(this.config);
+      if (cooldownMinutes > 0) {
+        const cooldown = getGateVerdictCooldown(evaluationCandidate.symbol, evaluationCandidate.side);
+        const lastRejectMs = parseTimestampMs(cooldown?.lastRejectAt);
+        const cooldownMs = cooldownMinutes * 60_000;
+        if (
+          cooldown &&
+          lastRejectMs != null &&
+          Date.now() - lastRejectMs < cooldownMs &&
+          !shouldBypassCooldownForCandidate(evaluationCandidate, cooldown)
+        ) {
+          const remainingMs = Math.max(0, cooldownMs - (Date.now() - lastRejectMs));
+          const decision: EntryGateDecision = {
+            verdict: 'reject',
+            reasoning:
+              `Recent reject cooldown active for ${evaluationCandidate.symbol} ${evaluationCandidate.side}; ` +
+              `suppressed repeat gate consult for ${Math.ceil(remainingMs / 60_000)} more minute(s).`,
+            reasonCode: 'cooldown_suppressed',
+          };
+          recordGateDecision(evaluationCandidate, decision, false, false);
+          return decision;
+        }
+      }
+
+      const minEdge = resolveMinEdge(this.config);
+      if (Number.isFinite(evaluationCandidate.edge) && evaluationCandidate.edge < minEdge) {
+        const decision: EntryGateDecision = {
+          verdict: 'reject',
+          reasoning:
+            `Candidate edge ${(evaluationCandidate.edge * 100).toFixed(2)}% is below ` +
+            `the configured ${(minEdge * 100).toFixed(2)}% minimum edge floor.`,
+          reasonCode: 'edge_too_low',
+        };
+        recordGateDecision(evaluationCandidate, decision, false, false);
+        return decision;
+      }
     }
 
     // Reject originator proposals that didn't name a price invalidation level
@@ -622,21 +730,7 @@ export class LlmEntryGate {
         reasoning: 'No price invalidation level set — cannot approve a trade without a concrete stop price.',
         reasonCode: 'invalidation_missing',
       };
-      recordEntryGateDecision({
-        symbol: evaluationCandidate.symbol,
-        side: evaluationCandidate.side,
-        notionalUsd: evaluationCandidate.notionalUsd,
-        verdict: decision.verdict,
-        reasoning: decision.reasoning,
-        reasonCode: decision.reasonCode,
-        adjustedSizeUsd: undefined,
-        usedFallback: false,
-        signalClass: evaluationCandidate.signalClass,
-        regime: evaluationCandidate.regime,
-        session: evaluationCandidate.session,
-        edge: evaluationCandidate.edge,
-        ...buildObservabilityFields(evaluationCandidate),
-      });
+      recordGateDecision(evaluationCandidate, decision, false, false);
       return decision;
     }
     if (
@@ -656,24 +750,7 @@ export class LlmEntryGate {
         evaluationCandidate.invalidationPrice,
         evaluationCandidate.marketContext?.markPrice,
       );
-      recordEntryGateDecision({
-        symbol: evaluationCandidate.symbol,
-        side: evaluationCandidate.side,
-        notionalUsd: evaluationCandidate.notionalUsd,
-        verdict: decision.verdict,
-        reasoning: decision.reasoning,
-        reasonCode: decision.reasonCode,
-        adjustedSizeUsd: undefined,
-        usedFallback: false,
-        signalClass: evaluationCandidate.signalClass,
-        regime: evaluationCandidate.regime,
-        session: evaluationCandidate.session,
-        edge: evaluationCandidate.edge,
-        ...buildObservabilityFields(evaluationCandidate),
-        stopLevelPrice: decision.stopLevelPrice,
-        equityAtRiskPct: decision.equityAtRiskPct,
-        targetRR: decision.targetRR,
-      });
+      recordGateDecision(evaluationCandidate, decision, false, false);
       return decision;
     }
 
@@ -749,25 +826,7 @@ export class LlmEntryGate {
       evaluationCandidate.marketContext,
     );
 
-    recordEntryGateDecision({
-      symbol: evaluationCandidate.symbol,
-      side: evaluationCandidate.side,
-      notionalUsd: evaluationCandidate.notionalUsd,
-      verdict: decision.verdict,
-      reasoning: decision.reasoning,
-      reasonCode: decision.reasonCode,
-      adjustedSizeUsd: decision.adjustedSizeUsd,
-      usedFallback,
-      signalClass: evaluationCandidate.signalClass,
-      regime: evaluationCandidate.regime,
-      session: evaluationCandidate.session,
-      edge: evaluationCandidate.edge,
-      ...buildObservabilityFields(evaluationCandidate),
-      stopLevelPrice: decision.stopLevelPrice,
-      equityAtRiskPct: decision.equityAtRiskPct,
-      targetRR: decision.targetRR,
-      suggestedLeverage: decision.suggestedLeverage,
-    });
+    recordGateDecision(evaluationCandidate, decision, usedFallback, true);
 
     return decision;
   }

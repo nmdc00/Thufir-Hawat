@@ -255,6 +255,7 @@ describe('position heartbeat authorities', () => {
     const orders = calls.filter((call) => call.tool === 'perp_place_order');
     expect(orders).toHaveLength(1);
     expect(orders[0]?.input.side).toBe('sell');
+    expect(orders[0]?.input.close_reason).toBe('emergency_close');
   });
 
   it('tightens invalidation on large extension plus deterioration', async () => {
@@ -304,6 +305,7 @@ describe('position heartbeat authorities', () => {
     expect(orders).toHaveLength(1);
     expect(Number(orders[0]?.input.size)).toBeGreaterThan(0);
     expect(Number(orders[0]?.input.size)).toBeLessThan(1);
+    expect(orders[0]?.input.close_reason).toBe('liquidation_guard');
   });
 
   it('can fully close only on terminal extension failure', async () => {
@@ -332,6 +334,79 @@ describe('position heartbeat authorities', () => {
     const orders = calls.filter((call) => call.tool === 'perp_place_order');
     expect(orders).toHaveLength(1);
     expect(orders[0]?.input.size).toBe(1);
+    expect(orders[0]?.input.close_reason).toBe('liquidation_guard');
     expect(mockClearPolicy).toHaveBeenCalledWith('ETH');
+  });
+
+  it('passes thesis invalidation close attribution through heartbeat order input', async () => {
+    mockGetPolicy.mockReturnValue({
+      symbol: 'ETH',
+      side: 'long',
+      timeStopAtMs: Date.now() + 60_000,
+      invalidationPrice: 101,
+      notes: null,
+    });
+    const { service, calls } = makeSequencedService({
+      mids: [100],
+      getBookEntry: () => makeBookEntry({ entryPrice: 100 }),
+    });
+
+    service.start();
+    await service.tickOnce();
+    service.stop();
+
+    const orders = calls.filter((call) => call.tool === 'perp_place_order');
+    expect(orders).toHaveLength(1);
+    expect(orders[0]?.input.close_reason).toBe('thesis_invalidation');
+  });
+
+  it('passes exit-contract reduce attribution through heartbeat order input', async () => {
+    mockGetPolicy.mockReturnValue({
+      symbol: 'ETH',
+      side: 'long',
+      timeStopAtMs: Date.now() + 60_000,
+      invalidationPrice: null,
+      notes: JSON.stringify({
+        version: 1,
+        thesis: 'test',
+        tradeType: 'tactical',
+        hardRules: [{ metric: 'roe_pct', op: '>=', value: 10, action: 'reduce', reduceToFraction: 0.5, reason: 'take risk down' }],
+        reviewGuidance: [],
+      }),
+    });
+    const { service, calls } = makeSequencedService({
+      mids: [110],
+      positions: [makePosition({ return_on_equity: 12 })],
+      getBookEntry: () => makeBookEntry({ entryPrice: 100 }),
+    });
+
+    service.start();
+    await service.tickOnce();
+    service.stop();
+
+    const orders = calls.filter((call) => call.tool === 'perp_place_order');
+    expect(orders).toHaveLength(1);
+    expect(orders[0]?.input.close_reason).toBe('exit_contract_rule');
+  });
+
+  it('passes llm exit consultant reduce attribution through heartbeat order input', async () => {
+    mockGetPolicy.mockReturnValue(null);
+    const exitConsultant = {
+      shouldConsult: vi.fn().mockReturnValue(true),
+      consult: vi.fn().mockResolvedValue({ action: 'reduce', reasoning: 'risk changed', reduceToFraction: 0.25 }),
+    };
+    const { service, calls } = makeSequencedService({
+      mids: [100],
+      getBookEntry: () => makeBookEntry({ entryAtMs: Date.now() - 2 * 60 * 60 * 1000 }),
+    });
+    (service as any).exitConsultant = exitConsultant;
+
+    service.start();
+    await service.tickOnce();
+    service.stop();
+
+    const orders = calls.filter((call) => call.tool === 'perp_place_order');
+    expect(orders).toHaveLength(1);
+    expect(orders[0]?.input.close_reason).toBe('llm_exit_consult');
   });
 });

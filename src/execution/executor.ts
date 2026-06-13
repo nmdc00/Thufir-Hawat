@@ -1,4 +1,5 @@
 import type { Market } from './markets.js';
+import type { CloseAuthority, ExitReason } from '../core/exit_reasons.js';
 
 export interface TradeDecision {
   action: 'buy' | 'sell' | 'hold';
@@ -10,6 +11,9 @@ export interface TradeDecision {
   price?: number;
   leverage?: number;
   reduceOnly?: boolean;
+  closeReason?: ExitReason;
+  closeAuthority?: CloseAuthority;
+  closeReasonFallback?: boolean;
   orderType?: 'market' | 'limit';
   confidence?: 'low' | 'medium' | 'high';
   reasoning?: string;

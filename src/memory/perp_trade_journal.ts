@@ -1,5 +1,6 @@
 import { openDatabase } from './db.js';
 import { storeDecisionArtifact } from './decision_artifacts.js';
+import type { CloseAuthority, ExitReason } from '../core/exit_reasons.js';
 
 export type PerpTradeJournalOutcome = 'executed' | 'failed' | 'blocked';
 
@@ -14,6 +15,9 @@ export type PerpTradeJournalEntry = {
   leverage?: number | null;
   orderType?: 'market' | 'limit' | null;
   reduceOnly?: boolean | null;
+  closeReason?: ExitReason | null;
+  closeAuthority?: CloseAuthority | null;
+  closeReasonFallback?: boolean | null;
   markPrice?: number | null;
   confidence?: string | null;
   reasoning?: string | null;

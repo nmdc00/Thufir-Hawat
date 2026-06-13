@@ -313,6 +313,31 @@ CREATE INDEX IF NOT EXISTS idx_perp_trades_symbol ON perp_trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_perp_trades_status ON perp_trades(status);
 CREATE INDEX IF NOT EXISTS idx_perp_trades_created ON perp_trades(created_at);
 
+-- Originator scorecard (v2.5)
+CREATE TABLE IF NOT EXISTS originator_scorecard (
+    scorecard_date TEXT NOT NULL,
+    window_days INTEGER NOT NULL CHECK(window_days IN (7, 30)),
+    clean_data_cutoff TEXT NOT NULL,
+    window_started_at TEXT NOT NULL,
+    window_ended_at TEXT NOT NULL,
+    scan_cycles INTEGER NOT NULL,
+    null_proposal_rate REAL,
+    executed_trades INTEGER NOT NULL,
+    originated_trades INTEGER NOT NULL,
+    quant_trades INTEGER NOT NULL,
+    originated_share REAL,
+    originated_win_rate REAL,
+    originated_expectancy_usd REAL,
+    quant_win_rate REAL,
+    quant_expectancy_usd REAL,
+    linkage_gap_count INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (scorecard_date, window_days)
+);
+CREATE INDEX IF NOT EXISTS idx_originator_scorecard_computed
+ON originator_scorecard(computed_at);
+
 -- Learning events
 CREATE TABLE IF NOT EXISTS learning_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -930,5 +955,14 @@ CREATE TABLE IF NOT EXISTS llm_entry_gate_log (
   stop_distance_pct REAL,
   liquidity_score   REAL,
   execution_score   REAL,
-  liquidity_bucket  TEXT
+  liquidity_bucket  TEXT,
+  llm_consulted     INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS gate_verdict_cooldowns (
+  symbol         TEXT NOT NULL,
+  side           TEXT NOT NULL,
+  last_reject_at TEXT NOT NULL,
+  last_edge      REAL NOT NULL,
+  PRIMARY KEY (symbol, side)
 );

@@ -45,11 +45,13 @@ import { getPaperPerpBookSummary } from '../memory/paper_perps.js';
 import { getCashBalance } from '../memory/portfolio.js';
 import { PositionBook } from './position_book.js';
 import { LlmEntryGate, type EntryGateCandidate } from './llm_entry_gate.js';
+import { evaluateExposure, type ExposureVerdict } from './portfolio_exposure.js';
 import { TaSurface } from './ta_surface.js';
 import { OriginationTrigger } from './origination_trigger.js';
 import { LlmTradeOriginator } from './llm_trade_originator.js';
 import { listEvents } from '../memory/events.js';
 import { updateTradeProposalOutcome, updateTradeProposalStatus } from '../memory/llm_trade_proposals.js';
+import { recordEntryGateDecision } from '../memory/llm_entry_gate_log.js';
 import { getSignalWeightsWithFallback, type SignalWeights } from '../memory/learning.js';
 import type { ToolExecutorContext } from './tool-executor.js';
 import { inferTradeSymbolClass } from './trade_symbol_class.js';
@@ -371,6 +373,72 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     };
 
     this.ensureTradesTable();
+  }
+
+  private estimateExposureEquityUsd(): number {
+    const limiterRemaining = this.limiter.getRemainingDaily();
+    const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
+    try {
+      if (executionMode === 'paper') {
+        const paperInitialCash = this.thufirConfig.paper?.initialCashUsdc ?? 200;
+        const freeCash = getPaperPerpBookSummary(paperInitialCash).cashBalanceUsdc;
+        return Math.max(0, Number.isFinite(freeCash) ? freeCash : limiterRemaining);
+      }
+      const cashBalance = getCashBalance();
+      if (cashBalance != null && Number.isFinite(cashBalance)) {
+        return Math.max(0, cashBalance);
+      }
+    } catch { /* fallback */ }
+    return Math.max(0, Number.isFinite(limiterRemaining) ? limiterRemaining : 0);
+  }
+
+  private formatExposureRejection(verdict: ExposureVerdict): string {
+    const reason = verdict.reason ?? 'exposure_guard';
+    const cluster = verdict.detail.candidate.cluster;
+    const clusterAfter = verdict.detail.after.clusterUsd[cluster] ?? 0;
+    return [
+      `Portfolio exposure guard rejected: ${reason}`,
+      `gross=${verdict.detail.after.grossUsd.toFixed(2)}/${verdict.detail.caps.maxGrossUsd.toFixed(2)}`,
+      `net=${verdict.detail.after.absNetUsd.toFixed(2)}/${verdict.detail.caps.maxNetUsd.toFixed(2)}`,
+      `cluster=${cluster}:${clusterAfter.toFixed(2)}/${verdict.detail.caps.maxClusterUsd.toFixed(2)}`,
+    ].join(' ');
+  }
+
+  private evaluateAndJournalExposureGate(candidate: EntryGateCandidate): { allowed: true } | { allowed: false; reasoning: string; reasonCode: string } {
+    const exposureCfg = this.thufirConfig.autonomy?.exposure;
+    if (exposureCfg?.enabled === false) {
+      return { allowed: true };
+    }
+    const verdict = evaluateExposure(
+      PositionBook.getInstance().getAll(),
+      {
+        symbol: candidate.symbol,
+        side: candidate.side,
+        notionalUsd: candidate.notionalUsd,
+      },
+      this.estimateExposureEquityUsd(),
+      exposureCfg ?? {},
+    );
+    if (verdict.allowed) {
+      return { allowed: true };
+    }
+    const reasoning = this.formatExposureRejection(verdict);
+    recordEntryGateDecision({
+      symbol: candidate.symbol,
+      side: candidate.side,
+      notionalUsd: candidate.notionalUsd,
+      verdict: 'reject',
+      reasoning,
+      reasonCode: verdict.reason,
+      adjustedSizeUsd: undefined,
+      usedFallback: false,
+      signalClass: candidate.signalClass,
+      regime: candidate.regime,
+      session: candidate.session,
+      edge: candidate.edge,
+      llmConsulted: false,
+    });
+    return { allowed: false, reasoning, reasonCode: verdict.reason ?? 'exposure_guard' };
   }
 
   /**
@@ -884,6 +952,21 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       marketContext: gateContext.marketContext,
     };
 
+    await PositionBook.getInstance().refresh();
+    const exposureGate = this.evaluateAndJournalExposureGate(gateCandidate);
+    if (!exposureGate.allowed) {
+      if (proposal.proposalRecordId != null) {
+        updateTradeProposalStatus(proposal.proposalRecordId, {
+          executeTrades: true,
+          originatorExitStage: 'risk_blocked',
+          originatorExitReason: exposureGate.reasoning,
+          requestedLeverage: targetLeverage,
+        });
+      }
+      this.limiter.release(probeUsd);
+      return `${symbol}: Originator proposal blocked (${exposureGate.reasoning})`;
+    }
+
     let originatorGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
     let originatorGateReasonCode: string | null = null;
     let finalInvalidationPrice = toFiniteNumberOrNull(proposal.invalidationPrice);
@@ -1381,6 +1464,11 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         entryReasoning: expr.expectedMove ?? '',
         invalidationPrice: expressionInvalidationPrice,
       };
+      const exposureGate = this.evaluateAndJournalExposureGate(gateCandidate);
+      if (!exposureGate.allowed) {
+        outputs.push(`${symbol}: Blocked (${exposureGate.reasoning})`);
+        continue;
+      }
       let entryGateVerdict: 'approve' | 'reject' | 'resize' | null = null;
       let entryGateReasonCode: string | null = null;
       let finalInvalidationPrice = expressionInvalidationPrice;

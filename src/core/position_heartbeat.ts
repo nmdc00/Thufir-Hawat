@@ -30,6 +30,7 @@ import {
   evaluateDynamicProfitProtection,
   type DynamicProfitProtectionConfig,
 } from './dynamic_profit_protection.js';
+import type { ExitReason } from './exit_reasons.js';
 
 type ToolExecutorFn = (
   toolName: string,
@@ -205,7 +206,8 @@ export class PositionHeartbeatService {
                 decision.reduceToFraction,
                 `ttl_review (${decision.reasoning})`,
                 liqDistPct,
-                nowIso
+                nowIso,
+                'llm_exit_consult'
               );
               upsertPositionExitPolicy(
                 pos.symbol,
@@ -273,7 +275,8 @@ export class PositionHeartbeatService {
             pos,
             `thesis_invalidation (mark ${midStr} crossed ${invStr})`,
             liqDistPct,
-            nowIso
+            nowIso,
+            'thesis_invalidation'
           );
           try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
           continue;
@@ -286,12 +289,12 @@ export class PositionHeartbeatService {
         liqDistPct,
       });
       if (exitContractDecision?.action === 'close') {
-        await this.executePolicyClose(pos, `exit_contract (${exitContractDecision.reason})`, liqDistPct, nowIso);
+        await this.executePolicyClose(pos, `exit_contract (${exitContractDecision.reason})`, liqDistPct, nowIso, 'exit_contract_rule');
         try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
         continue;
       }
       if (exitContractDecision?.action === 'reduce') {
-        await this.executeContractReduce(pos, exitContractDecision.reduceToFraction, exitContractDecision.reason, liqDistPct, nowIso);
+        await this.executeContractReduce(pos, exitContractDecision.reduceToFraction, exitContractDecision.reason, liqDistPct, nowIso, 'exit_contract_rule');
         continue;
       }
 
@@ -316,7 +319,14 @@ export class PositionHeartbeatService {
               if (reduceSize > 0) {
                 await this.toolExec(
                   'perp_place_order',
-                  { symbol: pos.symbol, side, size: reduceSize, reduce_only: true, order_type: 'market' },
+                  {
+                    symbol: pos.symbol,
+                    side,
+                    size: reduceSize,
+                    reduce_only: true,
+                    order_type: 'market',
+                    close_reason: 'llm_exit_consult',
+                  },
                   this.toolContext
                 );
                 this.logger.info(
@@ -370,7 +380,16 @@ export class PositionHeartbeatService {
         let liqFillError: string | null = null;
         try {
           placePaperPerpOrder(
-            { symbol: pos.symbol, side: liqSide, size: pos.size, orderType: 'market', markPrice: liqPrice, reduceOnly: true },
+            {
+              symbol: pos.symbol,
+              side: liqSide,
+              size: pos.size,
+              orderType: 'market',
+              markPrice: liqPrice,
+              reduceOnly: true,
+              closeReason: 'paper_liquidation',
+              authority: 'autonomous',
+            },
             { initialCashUsdc: (this.config as any).paper?.initialCashUsdc ?? 200 }
           );
           liqFillSuccess = true;
@@ -389,7 +408,12 @@ export class PositionHeartbeatService {
           symbol: pos.symbol,
           timestamp: nowIso,
           triggers: [],
-          decision: { action: 'close_entirely', reason: `[Paper] Liquidation: mark ${midStr} crossed liq price ${liqStr}` },
+          decision: {
+            action: 'close_entirely',
+            reason: `[Paper] Liquidation: mark ${midStr} crossed liq price ${liqStr}`,
+            closeReason: 'paper_liquidation',
+            authority: 'autonomous',
+          },
           outcome: liqFillSuccess ? 'ok' : 'failed',
           snapshot: { liqDistPct, liqPrice, mid },
           error: liqFillError,
@@ -447,7 +471,8 @@ export class PositionHeartbeatService {
             dynamicDecision.reduceToFraction,
             dynamicDecision.reason,
             liqDistPct,
-            nowIso
+            nowIso,
+            'liquidation_guard'
           );
         } else if (dynamicDecision?.action === 'tighten_and_reduce' && bookEntry) {
           upsertPositionExitPolicy(
@@ -462,10 +487,11 @@ export class PositionHeartbeatService {
             dynamicDecision.reduceToFraction,
             dynamicDecision.reason,
             liqDistPct,
-            nowIso
+            nowIso,
+            'liquidation_guard'
           );
         } else if (dynamicDecision?.action === 'close') {
-          await this.executePolicyClose(pos, dynamicDecision.reason, liqDistPct, nowIso);
+          await this.executePolicyClose(pos, dynamicDecision.reason, liqDistPct, nowIso, 'liquidation_guard');
           try { clearPositionExitPolicy(pos.symbol); } catch { /* best-effort */ }
         } else {
           this.recordInfo(pos.symbol, nowIso, fired, null);
@@ -476,7 +502,14 @@ export class PositionHeartbeatService {
       const side = pos.side === 'long' ? 'sell' : 'buy';
       const tool = await this.toolExec(
         'perp_place_order',
-        { symbol: pos.symbol, side, size: pos.size, reduce_only: true, order_type: 'market' },
+        {
+          symbol: pos.symbol,
+          side,
+          size: pos.size,
+          reduce_only: true,
+          order_type: 'market',
+          close_reason: 'emergency_close',
+        },
         this.toolContext
       );
 
@@ -488,6 +521,8 @@ export class PositionHeartbeatService {
         decision: {
           action: 'close_entirely',
           reason: `Emergency close: liqDistPct=${liqDistPct ?? 'n/a'}`,
+          closeReason: 'emergency_close',
+          authority: 'autonomous',
         },
         outcome: tool.success ? 'ok' : 'failed',
         snapshot: { liqDistPct, tool },
@@ -514,13 +549,14 @@ export class PositionHeartbeatService {
     pos: PositionSnapshot,
     reason: string,
     liqDistPct: number | null,
-    timestamp: string
+    timestamp: string,
+    closeReason: ExitReason
   ): Promise<void> {
     const side = pos.side === 'long' ? 'sell' : 'buy';
     const roe = pos.roePct != null ? `${pos.roePct.toFixed(2)}%` : 'n/a';
     const tool = await this.toolExec(
       'perp_place_order',
-      { symbol: pos.symbol, side, size: pos.size, reduce_only: true, order_type: 'market' },
+      { symbol: pos.symbol, side, size: pos.size, reduce_only: true, order_type: 'market', close_reason: closeReason },
       this.toolContext
     );
     this.logger.info(
@@ -532,7 +568,7 @@ export class PositionHeartbeatService {
       symbol: pos.symbol,
       timestamp,
       triggers: [],
-      decision: { action: 'close_entirely', reason },
+      decision: { action: 'close_entirely', reason, closeReason, authority: 'autonomous' },
       outcome: tool.success ? 'ok' : 'failed',
       snapshot: { liqDistPct },
       error: tool.success ? null : tool.error,
@@ -554,7 +590,8 @@ export class PositionHeartbeatService {
     reduceToFraction: number,
     reason: string,
     liqDistPct: number | null,
-    timestamp: string
+    timestamp: string,
+    closeReason: ExitReason
   ): Promise<void> {
     const boundedFraction = Math.max(0, Math.min(1, reduceToFraction));
     const reduceSize = pos.size * (1 - boundedFraction);
@@ -563,7 +600,7 @@ export class PositionHeartbeatService {
     const side = pos.side === 'long' ? 'sell' : 'buy';
     const tool = await this.toolExec(
       'perp_place_order',
-      { symbol: pos.symbol, side, size: reduceSize, reduce_only: true, order_type: 'market' },
+      { symbol: pos.symbol, side, size: reduceSize, reduce_only: true, order_type: 'market', close_reason: closeReason },
       this.toolContext
     );
 
@@ -576,7 +613,7 @@ export class PositionHeartbeatService {
       symbol: pos.symbol,
       timestamp,
       triggers: [],
-      decision: { action: 'take_partial_profit', reason: `exit_contract (${reason})` },
+      decision: { action: 'take_partial_profit', reason: `exit_contract (${reason})`, closeReason, authority: 'autonomous' },
       outcome: tool.success ? 'ok' : 'failed',
       snapshot: { liqDistPct, reduceToFraction: boundedFraction },
       error: tool.success ? null : tool.error,

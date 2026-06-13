@@ -39,6 +39,11 @@ async function resolveQmdCommand(): Promise<string | null> {
   return null;
 }
 import { Logger } from '../core/logger.js';
+import { openDatabase } from '../memory/db.js';
+import { applyRetentionPolicies } from '../memory/retention.js';
+import '../memory/decision_artifacts.js';
+import '../memory/opportunity_rank_logs.js';
+import '../memory/llm_entry_gate_log.js';
 import { TelegramAdapter } from '../interface/telegram.js';
 import { WhatsAppAdapter } from '../interface/whatsapp.js';
 import { runIntelPipelineDetailed } from '../intel/pipeline.js';
@@ -57,6 +62,7 @@ import { installConsoleFileMirror } from '../core/unified-logging.js';
 import { PositionHeartbeatService } from '../core/position_heartbeat.js';
 import { resolveOutcomes } from '../core/resolver.js';
 import { LlmExitConsultant } from '../core/llm_exit_consultant.js';
+import { runOriginatorScorecardJob } from '../core/originator_scorecard_job.js';
 import {
   bootstrapOpenPerpPositionLifecycles,
   startCloseTradeFinalizerWorker,
@@ -476,6 +482,26 @@ for (const rec of listActiveScheduledTasks()) {
   hasSchedulerJobs = true;
 }
 
+scheduler.registerJob(
+  {
+    name: `gateway:${schedulerNamespace}:retention`,
+    schedule: { kind: 'daily', time: '03:20' },
+    leaseMs: 10 * 60 * 1000,
+  },
+  async () => {
+    const result = applyRetentionPolicies(openDatabase(config.memory?.dbPath));
+    logger.info(
+      `Retention policies applied: ${JSON.stringify(result.countsByTable)}; vacuum=${result.vacuum.message}`
+    );
+    for (const policy of result.policies) {
+      if (policy.skipped) {
+        logger.info(`Retention skipped ${policy.table}: ${policy.reason ?? 'unknown'}`);
+      }
+    }
+  }
+);
+hasSchedulerJobs = true;
+
 const briefingConfig = config.notifications?.briefing;
 let lastBriefingDate = '';
 if (briefingConfig?.enabled) {
@@ -831,6 +857,21 @@ if (resolverConfig?.enabled) {
   );
   hasSchedulerJobs = true;
 }
+
+scheduler.registerJob(
+  {
+    name: `gateway:${schedulerNamespace}:originator-scorecard`,
+    schedule: { kind: 'daily', time: '00:20' },
+    leaseMs: 120_000,
+  },
+  async () => {
+    const result = runOriginatorScorecardJob({
+      config: { cleanDataCutoff: config.learning?.cleanDataCutoff },
+    });
+    logger.info(`Originator scorecard computed ${result.rows.length} rolling window(s).`);
+  }
+);
+hasSchedulerJobs = true;
 
 if (hasSchedulerJobs) {
   scheduler.start();

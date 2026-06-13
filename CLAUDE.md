@@ -53,6 +53,7 @@ hotfix/<slug>  →  develop  →  main  →  deploy
 - Branch is cut from correct base
 - `git diff --name-only <base>...<branch>` shows expected files only
 - Required tests pass (`pnpm test` and `pnpm typecheck`)
+- `STATE.md` is updated when the PR changes production-visible release status, success criteria, or promoted SHA
 - PR body includes: scope, changed files, tests run, risks
 
 ## Commands
