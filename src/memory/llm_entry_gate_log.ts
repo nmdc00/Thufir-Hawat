@@ -1,4 +1,5 @@
 import { openDatabase } from './db.js';
+import { registerRetentionPolicy } from './retention.js';
 
 export interface EntryGateLogEntry {
   symbol: string;
@@ -23,6 +24,13 @@ export interface EntryGateLogEntry {
   executionScore?: number | null;
   liquidityBucket?: string | null;
 }
+
+registerRetentionPolicy({
+  table: 'llm_entry_gate_log',
+  timestampColumn: 'created_at',
+  retainDays: 90,
+  whereSql: "verdict NOT IN ('approve', 'resize')",
+});
 
 function ensureSchema(): void {
   const db = openDatabase();
