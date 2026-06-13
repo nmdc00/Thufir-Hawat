@@ -99,6 +99,12 @@ import {
   type PriceClimatologyCandle,
   type PriceClimatologyTarget,
 } from './perp_exogenous_comparators.js';
+import {
+  normalizeCloseAuthority,
+  normalizeExitReason,
+  type CloseAuthority,
+  type ExitReason,
+} from './exit_reasons.js';
 
 /** Minimal interface for spending limit enforcement used in tool execution */
 export interface ToolSpendingLimiter {
@@ -414,6 +420,21 @@ function toFiniteNumberOrNull(input: unknown): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function inferCloseReasonFromExitMode(exitMode: PerpExitMode | null): ExitReason | null {
+  switch (exitMode) {
+    case 'thesis_invalidation':
+      return 'thesis_invalidation';
+    case 'manual':
+      return 'manual_command';
+    case 'risk_reduction':
+    case 'take_profit':
+    case 'time_exit':
+    case 'unknown':
+    case null:
+      return null;
+  }
+}
+
 function buildPerpTradeSnapshot(params: {
   capturedAtMs: number;
   bookMode: PerpBookMode;
@@ -422,6 +443,9 @@ function buildPerpTradeSnapshot(params: {
   size: number;
   requestedSize: number;
   reduceOnly: boolean;
+  closeReason?: ExitReason | null;
+  closeAuthority?: CloseAuthority | null;
+  closeReasonFallback?: boolean | null;
   markPrice: number | null;
   hypothesisId: string | null;
   direction?: 'buy' | 'sell' | 'long' | 'short' | null;
@@ -464,6 +488,9 @@ function buildPerpTradeSnapshot(params: {
     requestedSize: params.requestedSize,
     effectiveSize: params.size,
     reduceOnly: params.reduceOnly,
+    closeReason: params.closeReason ?? null,
+    closeAuthority: params.closeAuthority ?? null,
+    closeReasonFallback: params.closeReasonFallback ?? null,
     tradeId: params.lifecycleTradeId ?? null,
     markPrice: params.markPrice,
     hypothesisId: params.hypothesisId,
@@ -2012,6 +2039,37 @@ export async function executeToolCall(
           thesisInvalidationHit,
           exitMode,
         });
+        // `exit_mode` remains the lifecycle/FSM assessment label used for close
+        // safety, scoring, and legacy learning compatibility. `closeReason` is
+        // the v2.5 attribution authority that explains which actor/branch caused
+        // a reduce-only close. Attribution must never block a risk-reducing close.
+        const explicitCloseReason =
+          (toolInput as Record<string, unknown>).close_reason ??
+          (toolInput as Record<string, unknown>).closeReason ??
+          null;
+        const inferredCloseReason =
+          explicitCloseReason != null
+            ? explicitCloseReason
+            : reduceOnly
+              ? inferCloseReasonFromExitMode(exitAssessment.exitMode)
+              : null;
+        const closeAttribution = reduceOnly
+          ? normalizeExitReason(inferredCloseReason, `perp_place_order:${symbol}`)
+          : { closeReason: null, fallback: false };
+        const closeAuthority = reduceOnly
+          ? normalizeCloseAuthority(
+              (toolInput as Record<string, unknown>).close_authority ??
+              (toolInput as Record<string, unknown>).closeAuthority ??
+              (closeAttribution.closeReason === 'manual_command' ? 'manual' : 'autonomous')
+            )
+          : null;
+        const closeAttributionJournalFields = reduceOnly
+          ? {
+              closeReason: closeAttribution.closeReason,
+              closeAuthority,
+              closeReasonFallback: closeAttribution.fallback,
+            }
+          : {};
         // Resolve the matching entry journal early so both the failed and executed
         // close paths can inherit signalClass from the original open record.
         let closeReference: ReturnType<typeof resolveClosedTradeReference> = null;
@@ -2151,6 +2209,13 @@ export async function executeToolCall(
             size: requestedSize,
             requestedSize,
             reduceOnly,
+            ...(reduceOnly
+              ? {
+                  closeReason: closeAttribution.closeReason,
+                  closeAuthority,
+                  closeReasonFallback: closeAttribution.fallback,
+                }
+              : {}),
             markPrice: market.markPrice ?? null,
             hypothesisId,
             signalClass: effectiveSignalClass,
@@ -2184,6 +2249,7 @@ export async function executeToolCall(
               leverage: leverage ?? null,
               orderType,
               reduceOnly,
+              ...closeAttributionJournalFields,
               markPrice: market.markPrice ?? null,
               confidence: null,
               reasoning: `Policy gate blocked: ${policyGate.reason ?? 'policy constraints active'}`,
@@ -2260,6 +2326,13 @@ export async function executeToolCall(
             size,
             requestedSize,
             reduceOnly,
+            ...(reduceOnly
+              ? {
+                  closeReason: closeAttribution.closeReason,
+                  closeAuthority,
+                  closeReasonFallback: closeAttribution.fallback,
+                }
+              : {}),
             markPrice: market.markPrice ?? null,
             hypothesisId,
             signalClass: effectiveSignalClass,
@@ -2293,6 +2366,7 @@ export async function executeToolCall(
               leverage: leverage ?? null,
               orderType,
               reduceOnly,
+              ...closeAttributionJournalFields,
               markPrice: market.markPrice ?? null,
               confidence: null,
               reasoning:
@@ -2379,6 +2453,13 @@ export async function executeToolCall(
               size,
               requestedSize,
               reduceOnly,
+              ...(reduceOnly
+                ? {
+                    closeReason: closeAttribution.closeReason,
+                    closeAuthority,
+                    closeReasonFallback: closeAttribution.fallback,
+                  }
+                : {}),
               markPrice: market.markPrice ?? null,
               hypothesisId,
               signalClass: effectiveSignalClass,
@@ -2412,6 +2493,7 @@ export async function executeToolCall(
                 leverage: leverage ?? null,
                 orderType,
                 reduceOnly,
+                ...closeAttributionJournalFields,
                 markPrice: market.markPrice ?? null,
                 confidence: null,
                 reasoning:
@@ -2466,6 +2548,9 @@ export async function executeToolCall(
           price,
           leverage,
           reduceOnly,
+          closeReason: reduceOnly ? (closeAttribution.closeReason ?? undefined) : undefined,
+          closeAuthority: closeAuthority ?? undefined,
+          closeReasonFallback: reduceOnly ? closeAttribution.fallback : undefined,
           confidence: 'medium' as const,
           modelProbability:
             toolInput.confidence != null && Number.isFinite(Number(toolInput.confidence))
@@ -2527,6 +2612,13 @@ export async function executeToolCall(
               size,
               requestedSize,
               reduceOnly,
+              ...(reduceOnly
+                ? {
+                    closeReason: closeAttribution.closeReason,
+                    closeAuthority,
+                    closeReasonFallback: closeAttribution.fallback,
+                  }
+                : {}),
               markPrice: market.markPrice ?? null,
               hypothesisId,
               signalClass: effectiveSignalClass,
@@ -2560,6 +2652,7 @@ export async function executeToolCall(
               leverage: leverage ?? null,
               orderType,
               reduceOnly,
+              ...closeAttributionJournalFields,
               markPrice: market.markPrice ?? null,
               confidence: 'medium',
               reasoning: policyReasoning,
@@ -2741,6 +2834,13 @@ export async function executeToolCall(
           size,
           requestedSize,
           reduceOnly,
+          ...(reduceOnly
+            ? {
+                closeReason: closeAttribution.closeReason,
+                closeAuthority,
+                closeReasonFallback: closeAttribution.fallback,
+              }
+            : {}),
           markPrice: market.markPrice ?? null,
           hypothesisId,
           direction: learningScopeContext.direction,
@@ -2786,6 +2886,7 @@ export async function executeToolCall(
             leverage: leverage ?? null,
             orderType,
             reduceOnly,
+            ...closeAttributionJournalFields,
             markPrice: market.markPrice ?? null,
             confidence: 'medium',
             reasoning: policyReasoning,
@@ -2926,12 +3027,18 @@ export async function executeToolCall(
               exitPrice: market.markPrice ?? null,
               exitMode: exitAssessment.exitMode,
               thesisInvalidationHit: exitAssessment.thesisInvalidationHit,
-              sourceAuthority: 'perp_place_order',
+              sourceAuthority: closeAuthority ?? 'autonomous',
               entryJournalPayload: closeReference as unknown as Record<string, unknown> | null,
               closeJournalPayload: {
                 symbol,
                 side,
                 size,
+                executorPath: 'perp_place_order',
+                closeReason: closeAttribution.closeReason,
+                reason: closeAttribution.closeReason,
+                closeAuthority,
+                authority: closeAuthority,
+                closeReasonFallback: closeAttribution.fallback,
                 signalClass: effectiveSignalClass,
                 marketRegime,
                 volatilityBucket,
@@ -2954,6 +3061,7 @@ export async function executeToolCall(
               snapshotPayload: {
                 ...executedSnapshot,
                 predictionId: null,
+                executorPath: 'perp_place_order',
               },
               bootstrapQuality: lifecycleTradeId != null ? 'linked_lifecycle' : 'snapshot_only',
             });
@@ -3717,6 +3825,7 @@ export async function executeToolCall(
                 order_type: f.orderType,
                 filled_at: f.createdAt,
                 order_id: f.orderId,
+                metadata: f.metadata,
               })),
               summary: {
                 count: fills.length,

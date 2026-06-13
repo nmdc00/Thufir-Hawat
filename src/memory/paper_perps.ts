@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
 import { openDatabase } from './db.js';
+import {
+  normalizeCloseAuthority,
+  normalizeExitReason,
+  type CloseAuthority,
+  type ExitReason,
+} from '../core/exit_reasons.js';
 
 export type PaperPerpBookSummary = {
   startingCashUsdc: number;
@@ -33,6 +39,7 @@ export type PaperPerpFill = {
   createdAt: string;
   leverage: number | null;
   orderType: 'market' | 'limit';
+  metadata: Record<string, unknown> | null;
 };
 
 export type PaperPerpOpenOrder = {
@@ -58,6 +65,10 @@ type PlacePaperPerpOrderInput = {
   leverage?: number | null;
   reduceOnly?: boolean;
   feeRate?: number;
+  closeReason?: ExitReason | string | null;
+  closeReasonFallback?: boolean | null;
+  authority?: CloseAuthority | string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type PaperPerpFillResult = {
@@ -321,8 +332,10 @@ export function listPaperPerpFills(
   return rows.map((row) => {
     let leverage: number | null = null;
     let orderType: 'market' | 'limit' = 'market';
+    let metadata: Record<string, unknown> | null = null;
     try {
       const meta = JSON.parse(String(row.metadata ?? '{}')) as Record<string, unknown>;
+      metadata = meta;
       leverage = meta.leverage != null ? Number(meta.leverage) : null;
       orderType = meta.orderType === 'limit' ? 'limit' : 'market';
     } catch {
@@ -343,6 +356,7 @@ export function listPaperPerpFills(
       createdAt: String(row.created_at ?? ''),
       leverage,
       orderType,
+      metadata,
     };
   });
 }
@@ -394,6 +408,10 @@ export function placePaperPerpOrder(
   const reduceOnly = Boolean(input.reduceOnly ?? false);
   const leverage = input.leverage == null ? null : Number(input.leverage);
   const feeRate = Number.isFinite(Number(input.feeRate)) ? Math.max(0, Number(input.feeRate)) : 0.0005;
+  const closeAttribution = reduceOnly
+    ? normalizeExitReason(input.closeReason, `paper_perps:${symbol}`)
+    : null;
+  const closeAuthority = reduceOnly ? normalizeCloseAuthority(input.authority) : null;
 
   if (!symbol || !Number.isFinite(size) || size <= 0) {
     throw new Error('Invalid paper order: missing symbol or size');
@@ -589,7 +607,20 @@ export function placePaperPerpOrder(
       reduceOnly: reduceOnly ? 1 : 0,
       realizedPnlUsd,
       feeUsd,
-      metadata: JSON.stringify({ leverage, orderType }),
+      metadata: JSON.stringify({
+        ...(input.metadata ?? {}),
+        leverage,
+        orderType,
+        ...(reduceOnly
+          ? {
+              reason: closeAttribution?.closeReason ?? 'unattributed',
+              closeReason: closeAttribution?.closeReason ?? 'unattributed',
+              authority: closeAuthority ?? 'autonomous',
+              closeAuthority: closeAuthority ?? 'autonomous',
+              attributionFallback: Boolean(input.closeReasonFallback ?? closeAttribution?.fallback ?? false),
+            }
+          : {}),
+      }),
     });
 
     return {
