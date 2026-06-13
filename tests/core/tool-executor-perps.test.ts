@@ -12,6 +12,7 @@ import { countFinalPredictions } from '../../src/memory/calibration.js';
 import { openDatabase } from '../../src/memory/db.js';
 import { listLearningCases } from '../../src/memory/learning_cases.js';
 import { listLearningSignalAudits } from '../../src/memory/learning_observability.js';
+import { listPaperPerpFills } from '../../src/memory/paper_perps.js';
 import { createPrediction, getPrediction } from '../../src/memory/predictions.js';
 import { listTradePolicyAdjustments } from '../../src/memory/trade_policy_adjustments.js';
 import * as perpPredictionBaselines from '../../src/core/perp_prediction_baselines.js';
@@ -122,6 +123,114 @@ describe('tool-executor perps', () => {
       expect(post?.close_complete).toBe(true);
       expect(post?.after_size).toBe(0);
     }
+  });
+
+  it('persists canonical close reason and authority into paper fill metadata and journal', async () => {
+    const ctx = createPaperPerpContext();
+    const symbol = 'BTCCLOSEREASON';
+
+    expect(
+      await executeToolCall('perp_place_order', { symbol, side: 'buy', size: 0.01, mode: 'paper' }, ctx)
+    ).toMatchObject({ success: true });
+
+    expect(
+      await executeToolCall(
+        'perp_place_order',
+        {
+          symbol,
+          side: 'sell',
+          size: 0.01,
+          reduce_only: true,
+          mode: 'paper',
+          close_reason: 'thesis_invalidation',
+        },
+        ctx
+      )
+    ).toMatchObject({ success: true });
+
+    const closeFill = listPaperPerpFills({ symbol, limit: 5 }, 200).find((fill) => fill.reduceOnly);
+    expect(closeFill?.metadata).toMatchObject({
+      reason: 'thesis_invalidation',
+      closeReason: 'thesis_invalidation',
+      authority: 'autonomous',
+      closeAuthority: 'autonomous',
+      attributionFallback: false,
+    });
+
+    const listRes = await executeToolCall('perp_trade_journal_list', { symbol, limit: 20 }, ctx);
+    expect(listRes.success).toBe(true);
+    const closeJournal = ((listRes as any).data?.entries ?? []).find(
+      (entry: Record<string, unknown>) => entry.reduceOnly === true && entry.outcome === 'executed'
+    );
+    expect(closeJournal).toMatchObject({
+      closeReason: 'thesis_invalidation',
+      closeAuthority: 'autonomous',
+      closeReasonFallback: false,
+    });
+  });
+
+  it('fails open to unattributed close reason for invalid reduce-only attribution', async () => {
+    const ctx = createPaperPerpContext();
+    const symbol = 'BTCBADREASON';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(
+      await executeToolCall('perp_place_order', { symbol, side: 'buy', size: 0.01, mode: 'paper' }, ctx)
+    ).toMatchObject({ success: true });
+    expect(
+      await executeToolCall(
+        'perp_place_order',
+        {
+          symbol,
+          side: 'sell',
+          size: 0.01,
+          reduce_only: true,
+          mode: 'paper',
+          close_reason: 'not_a_real_reason',
+        },
+        ctx
+      )
+    ).toMatchObject({ success: true });
+
+    const closeFill = listPaperPerpFills({ symbol, limit: 5 }, 200).find((fill) => fill.reduceOnly);
+    expect(closeFill?.metadata).toMatchObject({
+      reason: 'unattributed',
+      attributionFallback: true,
+    });
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('lifecycle open to close persists close metadata in SQL fill rows', async () => {
+    const ctx = createPaperPerpContext();
+    const symbol = 'BTCLIFEREASON';
+
+    expect(
+      await executeToolCall('perp_place_order', { symbol, side: 'buy', size: 0.02, mode: 'paper' }, ctx)
+    ).toMatchObject({ success: true });
+    expect(
+      await executeToolCall(
+        'perp_place_order',
+        { symbol, side: 'sell', size: 0.02, reduce_only: true, mode: 'paper', close_reason: 'thesis_invalidation' },
+        ctx
+      )
+    ).toMatchObject({ success: true });
+
+    const db = openDatabase();
+    const row = db
+      .prepare(
+        `
+          SELECT json_extract(metadata, '$.reason') AS reason,
+                 json_extract(metadata, '$.authority') AS authority
+          FROM paper_perp_fills
+          WHERE symbol = ? AND reduce_only = 1
+          ORDER BY id DESC
+          LIMIT 1
+        `
+      )
+      .get(symbol) as { reason?: string; authority?: string } | undefined;
+
+    expect(row?.reason).toBe('thesis_invalidation');
+    expect(row?.authority).toBe('autonomous');
   });
 
   it('resolves an open perp prediction on full close using realized net pnl', async () => {

@@ -42,6 +42,8 @@ export class ThufirAgent {
   private autonomous: AutonomousManager;
   private toolContext: ToolExecutorContext;
   private tradeManagement?: TradeManagementService;
+  private heartbeatLastWarnMs = 0;
+  private heartbeatLastEscalationMs = 0;
 
   constructor(private config: ThufirConfig, logger?: Logger) {
     this.logger = logger ?? new Logger('info');
@@ -716,27 +718,45 @@ Just type naturally to chat about markets, risks, or positioning.
   async handleHeartbeat(text: string): Promise<string> {
     const timeoutMs = Math.max(
       500,
-      Number(this.config.notifications?.heartbeat?.timeoutMs ?? 10_000) || 10_000
+      Number(this.config.notifications?.heartbeat?.timeoutMs ?? 30_000) || 30_000
     );
     const degradedMode = this.config.notifications?.heartbeat?.degradedMode ?? 'ok';
-    const storeHistory = this.config.notifications?.heartbeat?.storeHistory ?? false;
+    const heartbeatLlm = this.infoLlm ?? this.llm;
     try {
-      return await this.conversation.chat(
-        '__heartbeat__',
-        text,
-        undefined,
+      const response = await withExecutionContext(
         {
-          mode: 'heartbeat',
-          timeoutMs,
-          storeHistory,
-        }
+          mode: 'FULL_AGENT',
+          critical: false,
+          reason: 'heartbeat_liveness',
+          source: 'heartbeat',
+        },
+        async () =>
+          heartbeatLlm.complete(
+            [
+              {
+                role: 'system',
+                content:
+                  'You are the scheduled Thufir heartbeat liveness checker. Do not call tools. Return HEARTBEAT_OK unless the operator must be notified. If notification is needed, return HEARTBEAT_ACTION: followed by one concise reason.',
+              },
+              {
+                role: 'user',
+                content: `Heartbeat input:\n${text}`,
+              },
+            ],
+            { temperature: 0, timeoutMs, maxTokens: 96 }
+          )
       );
+      const content = response.content.trim();
+      return content.length > 0 ? content : 'HEARTBEAT_OK';
     } catch (error) {
-      this.logger.error('Heartbeat conversation error', error);
+      this.logHeartbeatFailure(error);
       if (degradedMode === 'silent') {
         return '';
       }
       if (degradedMode === 'notify') {
+        if (!this.shouldEscalateHeartbeatFailure()) {
+          return 'HEARTBEAT_OK';
+        }
         const reason =
           error instanceof Error && error.message.trim().length > 0
             ? error.message.trim()
@@ -745,6 +765,26 @@ Just type naturally to chat about markets, risks, or positioning.
       }
       return 'HEARTBEAT_OK';
     }
+  }
+
+  private logHeartbeatFailure(error: unknown): void {
+    const now = Date.now();
+    const warnThrottleMs = 60 * 60 * 1000;
+    if (now - this.heartbeatLastWarnMs < warnThrottleMs) {
+      return;
+    }
+    this.heartbeatLastWarnMs = now;
+    this.logger.warn('Heartbeat liveness LLM failed', error);
+  }
+
+  private shouldEscalateHeartbeatFailure(): boolean {
+    const now = Date.now();
+    const escalationThrottleMs = 6 * 60 * 60 * 1000;
+    if (now - this.heartbeatLastEscalationMs < escalationThrottleMs) {
+      return false;
+    }
+    this.heartbeatLastEscalationMs = now;
+    return true;
   }
 
   private async autonomousScan(): Promise<string> {

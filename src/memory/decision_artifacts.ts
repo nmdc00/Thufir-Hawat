@@ -1,4 +1,5 @@
 import { openDatabase } from './db.js';
+import { registerRetentionPolicy } from './retention.js';
 
 export interface DecisionArtifact {
   id: number;
@@ -26,6 +27,18 @@ export interface DecisionArtifactInput {
   payload?: unknown | null;
   notes?: Record<string, unknown> | null;
 }
+
+registerRetentionPolicy({
+  table: 'decision_artifacts',
+  timestampColumn: 'created_at',
+  expirationColumn: 'expires_at',
+  retainDays: 21,
+  kindColumn: 'kind',
+  kindRule: {
+    mode: 'include',
+    values: ['position_heartbeat_journal', 'expression', 'hypothesis', 'signal_cluster'],
+  },
+});
 
 function ensureDecisionArtifactsTable(): void {
   const db = openDatabase();
