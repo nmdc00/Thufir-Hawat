@@ -933,3 +933,11 @@ CREATE TABLE IF NOT EXISTS llm_entry_gate_log (
   liquidity_bucket  TEXT,
   llm_consulted     INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS gate_verdict_cooldowns (
+  symbol         TEXT NOT NULL,
+  side           TEXT NOT NULL,
+  last_reject_at TEXT NOT NULL,
+  last_edge      REAL NOT NULL,
+  PRIMARY KEY (symbol, side)
+);

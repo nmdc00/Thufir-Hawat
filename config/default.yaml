@@ -293,6 +293,8 @@ autonomy:
     enabled: true
     timeoutMs: 5000
     rejectOnBothFail: true
+    gateCooldownMinutes: 60
+    deterministicPrechecks: true
   ta:
     oiSpikePct: 4
     fundingExtremeAnnual: 25

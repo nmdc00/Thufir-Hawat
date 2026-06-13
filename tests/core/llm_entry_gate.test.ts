@@ -19,9 +19,16 @@ import type { SignalPerformanceSummary } from '../../src/core/signal_performance
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const mockRecordEntryGateDecision = vi.fn();
+const mockGetGateVerdictCooldown = vi.fn();
+const mockRecordGateVerdictReject = vi.fn();
 
 vi.mock('../../src/memory/llm_entry_gate_log.js', () => ({
   recordEntryGateDecision: (...args: unknown[]) => mockRecordEntryGateDecision(...args),
+}));
+
+vi.mock('../../src/memory/gate_verdict_cooldowns.js', () => ({
+  getGateVerdictCooldown: (...args: unknown[]) => mockGetGateVerdictCooldown(...args),
+  recordGateVerdictReject: (...args: unknown[]) => mockRecordGateVerdictReject(...args),
 }));
 
 const mockLoggerWarn = vi.fn();
@@ -149,6 +156,7 @@ describe('LlmEntryGate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     notify = vi.fn().mockResolvedValue(undefined);
+    mockGetGateVerdictCooldown.mockReturnValue(null);
     mockListPerpTradeJournals.mockReturnValue([]);
     mockSummarizeSignalPerformance.mockImplementation(
       (_entries: PerpTradeJournalEntry[], signalClass: string): SignalPerformanceSummary => ({
@@ -199,6 +207,131 @@ describe('LlmEntryGate', () => {
       expect(call.verdict).toBe('reject');
       expect(call.symbol).toBe('ETH');
       expect(call.reasonCode).toBe('book_conflict');
+      expect(call.llmConsulted).toBe(false);
+    });
+  });
+
+  describe('deterministic prechecks', () => {
+    it('suppresses repeated rejects during cooldown without calling LLM', async () => {
+      const lastRejectAt = new Date(Date.now() - 10 * 60_000).toISOString();
+      mockGetGateVerdictCooldown.mockReturnValue({
+        symbol: 'BTC',
+        side: 'buy',
+        lastRejectAt,
+        lastEdge: 0.08,
+      });
+      const book = makeBook();
+      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fine' });
+      const fallbackLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fine' });
+      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, book, {
+        autonomy: { minEdge: 0.05, llmEntryGate: { gateCooldownMinutes: 60, deterministicPrechecks: true } },
+      } as any);
+
+      const result = await gate.evaluate(makeCandidate({ edge: 0.08 }), markPrice);
+
+      expect(result.verdict).toBe('reject');
+      expect(result.reasonCode).toBe('cooldown_suppressed');
+      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+      expect((fallbackLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+      expect(mockRecordEntryGateDecision).toHaveBeenCalledOnce();
+      expect(mockRecordEntryGateDecision.mock.calls[0][0]).toMatchObject({
+        reasonCode: 'cooldown_suppressed',
+        llmConsulted: false,
+      });
+      expect(mockRecordGateVerdictReject).not.toHaveBeenCalled();
+    });
+
+    it('bypasses cooldown when edge improved by at least 25 percent', async () => {
+      mockGetGateVerdictCooldown.mockReturnValue({
+        symbol: 'BTC',
+        side: 'buy',
+        lastRejectAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        lastEdge: 0.08,
+      });
+      const book = makeBook();
+      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'edge improved' });
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, {
+        autonomy: { minEdge: 0.05, llmEntryGate: { gateCooldownMinutes: 60, deterministicPrechecks: true } },
+      } as any);
+
+      const result = await gate.evaluate(makeCandidate({ edge: 0.1 }), markPrice);
+
+      expect(result.verdict).toBe('approve');
+      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
+      expect(mockRecordEntryGateDecision.mock.calls[0][0].llmConsulted).toBe(true);
+    });
+
+    it('bypasses cooldown when a fresh catalyst timestamp is newer than the reject', async () => {
+      const lastRejectAt = new Date(Date.now() - 10 * 60_000);
+      mockGetGateVerdictCooldown.mockReturnValue({
+        symbol: 'BTC',
+        side: 'buy',
+        lastRejectAt: lastRejectAt.toISOString(),
+        lastEdge: 0.08,
+      });
+      const book = makeBook();
+      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fresh catalyst' });
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, {
+        autonomy: { minEdge: 0.05, llmEntryGate: { gateCooldownMinutes: 60, deterministicPrechecks: true } },
+      } as any);
+
+      const result = await gate.evaluate(
+        makeCandidate({
+          edge: 0.08,
+          catalystTimestamp: new Date(lastRejectAt.getTime() + 60_000).toISOString(),
+        }),
+        markPrice,
+      );
+
+      expect(result.verdict).toBe('approve');
+      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
+      expect(mockRecordEntryGateDecision.mock.calls[0][0].llmConsulted).toBe(true);
+    });
+
+    it('rejects same-side stacking without calling LLM', async () => {
+      const book = makeBook({ hasPosition: true });
+      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fine' });
+      const fallbackLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fine' });
+      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, book, dummyConfig);
+
+      const result = await gate.evaluate(makeCandidate(), markPrice);
+
+      expect(result.verdict).toBe('reject');
+      expect(result.reasonCode).toBe('same_symbol_stacking');
+      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+      expect((fallbackLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+      expect(mockRecordEntryGateDecision.mock.calls[0][0].llmConsulted).toBe(false);
+    });
+
+    it('rejects candidates below the edge floor without calling LLM', async () => {
+      const book = makeBook();
+      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fine' });
+      const fallbackLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fine' });
+      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, book, {
+        autonomy: { minEdge: 0.05, llmEntryGate: { deterministicPrechecks: true } },
+      } as any);
+
+      const result = await gate.evaluate(makeCandidate({ edge: 0.049 }), markPrice);
+
+      expect(result.verdict).toBe('reject');
+      expect(result.reasonCode).toBe('edge_too_low');
+      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+      expect((fallbackLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+      expect(mockRecordEntryGateDecision.mock.calls[0][0].llmConsulted).toBe(false);
+    });
+
+    it('still consults the LLM once for a clean approval candidate', async () => {
+      const book = makeBook();
+      const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'clean setup' });
+      const fallbackLlm = makeLlmClient({ verdict: 'approve', reasoning: 'fallback' });
+      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, book, dummyConfig);
+
+      const result = await gate.evaluate(makeCandidate(), markPrice);
+
+      expect(result.verdict).toBe('approve');
+      expect((mainLlm.complete as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
+      expect((fallbackLlm.complete as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+      expect(mockRecordEntryGateDecision.mock.calls[0][0].llmConsulted).toBe(true);
     });
   });
 
@@ -817,11 +950,13 @@ describe('LlmEntryGate', () => {
     it('includes concentration warning in prompt when same-side position exists', async () => {
       const book = makeBook({ hasPosition: true });
       const completeFn = vi.fn().mockResolvedValue({
-        content: JSON.stringify({ verdict: 'reject', reasoning: 'stacking risk' }),
+        content: JSON.stringify({ verdict: 'reject', reasoning: 'stacking risk', stopLevelPrice: null, equityAtRiskPct: 0, targetRR: 0 }),
         model: 'test-main',
       });
       const mainLlm: LlmClient = { complete: completeFn } as unknown as LlmClient;
-      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, {
+        autonomy: { llmEntryGate: { deterministicPrechecks: false } },
+      } as any);
 
       await gate.evaluate(makeCandidate({ symbol: 'HYPE', side: 'sell' }), markPrice);
 
@@ -836,7 +971,13 @@ describe('LlmEntryGate', () => {
     it('does not include concentration warning when no same-side position exists', async () => {
       const book = makeBook({ hasPosition: false });
       const completeFn = vi.fn().mockResolvedValue({
-        content: JSON.stringify({ verdict: 'approve', reasoning: 'clean entry' }),
+        content: JSON.stringify({
+          verdict: 'approve',
+          reasoning: 'clean entry',
+          stopLevelPrice: 48000,
+          equityAtRiskPct: 1,
+          targetRR: 2,
+        }),
         model: 'test-main',
       });
       const mainLlm: LlmClient = { complete: completeFn } as unknown as LlmClient;
@@ -852,7 +993,9 @@ describe('LlmEntryGate', () => {
     it('still lets the LLM approve when same-side warning is present (no auto-reject)', async () => {
       const book = makeBook({ hasPosition: true });
       const mainLlm = makeLlmClient({ verdict: 'approve', reasoning: 'strong specific reason' });
-      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, {
+        autonomy: { llmEntryGate: { deterministicPrechecks: false } },
+      } as any);
 
       const result = await gate.evaluate(makeCandidate(), markPrice);
 

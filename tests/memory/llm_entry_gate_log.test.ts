@@ -172,7 +172,7 @@ describe('recordEntryGateDecision schema migration', () => {
       liquidityScore: 0.82,
       executionScore: 0.91,
       liquidityBucket: 'deep',
-      llmConsulted: 1,
+      llmConsulted: false,
     });
 
     expect(fakeDb.insertedRows).toHaveLength(1);
@@ -189,6 +189,7 @@ describe('recordEntryGateDecision schema migration', () => {
       liquidityScore: 0.82,
       executionScore: 0.91,
       liquidityBucket: 'deep',
+      llmConsulted: 0,
     });
   });
 
