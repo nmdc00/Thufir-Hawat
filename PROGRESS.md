@@ -2,6 +2,8 @@
 
 Last updated: 2026-02-16
 
+> Deprecated current-state source: use `STATE.md` for active release status, production SHA, and current success criteria. This file is retained as historical planning context.
+
 > Note: this file contains historical planning context. Current implementation status lives in `docs/PROGRESS.md` (updated 2026-02-16).
 
 ## North Star
