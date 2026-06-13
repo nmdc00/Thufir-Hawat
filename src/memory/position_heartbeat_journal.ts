@@ -1,4 +1,5 @@
 import { storeDecisionArtifact } from './decision_artifacts.js';
+import type { CloseAuthority, ExitReason } from '../core/exit_reasons.js';
 
 export type PositionHeartbeatOutcome = 'ok' | 'failed' | 'rejected' | 'skipped' | 'info';
 
@@ -10,6 +11,8 @@ export type PositionHeartbeatDecision = {
     | 'take_partial_profit'
     | 'close_entirely';
   reason: string;
+  closeReason?: ExitReason;
+  authority?: CloseAuthority;
 };
 
 export type PositionHeartbeatJournalEntry = {
@@ -33,4 +36,3 @@ export function recordPositionHeartbeatDecision(entry: PositionHeartbeatJournalE
     payload: entry,
   });
 }
-

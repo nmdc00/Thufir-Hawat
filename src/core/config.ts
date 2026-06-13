@@ -532,6 +532,11 @@ const ConfigSchema = z.object({
       retentionDays: z.number().default(30),
     })
     .default({}),
+  learning: z
+    .object({
+      cleanDataCutoff: z.string().default('2026-06-13'),
+    })
+    .default({}),
   memory: z.object({
     dbPath: z.string().optional(),
     sessionsPath: z.string().optional(),
@@ -807,6 +812,17 @@ const ConfigSchema = z.object({
       tradeReadCacheSeconds: z.number().default(10),
       tradeCapBypassMinEdge: z.number().default(0.12),
       dailyDrawdownCapUsd: z.number().default(0),
+      exposure: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxGrossLeverage: z.number().positive().default(3.0),
+          maxNetLeverage: z.number().positive().default(2.0),
+          maxClusterPercent: z.number().positive().default(75),
+          clusters: z
+            .record(z.union([z.array(z.string()), z.record(z.array(z.string()))]))
+            .default({}),
+        })
+        .default({}),
       tradeContract: z
         .object({
           enabled: z.boolean().default(false),
@@ -892,6 +908,8 @@ const ConfigSchema = z.object({
           enabled: z.boolean().default(true),
           timeoutMs: z.number().default(5000),
           rejectOnBothFail: z.boolean().default(true),
+          gateCooldownMinutes: z.number().default(60),
+          deterministicPrechecks: z.boolean().default(true),
         })
         .default({}),
       ta: z
@@ -1054,7 +1072,7 @@ const ConfigSchema = z.object({
         .object({
           enabled: z.boolean().default(false),
           intervalMinutes: z.number().default(30),
-          timeoutMs: z.number().default(10000),
+          timeoutMs: z.number().default(30000),
           degradedMode: z.enum(['ok', 'silent', 'notify']).default('ok'),
           storeHistory: z.boolean().default(false),
           includeProactiveSummary: z.boolean().default(true),

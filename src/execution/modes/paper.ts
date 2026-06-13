@@ -52,6 +52,9 @@ export class PaperExecutor implements ExecutionAdapter {
           markPrice,
           leverage: decision.leverage ?? null,
           reduceOnly: decision.reduceOnly ?? false,
+          closeReason: decision.closeReason,
+          closeReasonFallback: decision.closeReasonFallback,
+          authority: decision.closeAuthority,
         },
         { initialCashUsdc: this.initialCashUsdc }
       );

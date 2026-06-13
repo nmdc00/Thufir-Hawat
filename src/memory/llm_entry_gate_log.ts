@@ -1,4 +1,5 @@
 import { openDatabase } from './db.js';
+import { registerRetentionPolicy } from './retention.js';
 
 export interface EntryGateLogEntry {
   symbol: string;
@@ -22,7 +23,15 @@ export interface EntryGateLogEntry {
   liquidityScore?: number | null;
   executionScore?: number | null;
   liquidityBucket?: string | null;
+  llmConsulted?: boolean;
 }
+
+registerRetentionPolicy({
+  table: 'llm_entry_gate_log',
+  timestampColumn: 'created_at',
+  retainDays: 90,
+  whereSql: "verdict NOT IN ('approve', 'resize')",
+});
 
 function ensureSchema(): void {
   const db = openDatabase();
@@ -50,7 +59,8 @@ function ensureSchema(): void {
       stop_distance_pct   REAL,
       liquidity_score     REAL,
       execution_score     REAL,
-      liquidity_bucket    TEXT
+      liquidity_bucket    TEXT,
+      llm_consulted       INTEGER NOT NULL DEFAULT 1
     )
   `);
 
@@ -74,6 +84,7 @@ function ensureSchema(): void {
   addColumnIfMissing('liquidity_score', 'liquidity_score REAL');
   addColumnIfMissing('execution_score', 'execution_score REAL');
   addColumnIfMissing('liquidity_bucket', 'liquidity_bucket TEXT');
+  addColumnIfMissing('llm_consulted', 'llm_consulted INTEGER NOT NULL DEFAULT 1');
 }
 
 export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
@@ -81,9 +92,9 @@ export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
   const db = openDatabase();
   db.prepare(
     `INSERT INTO llm_entry_gate_log
-       (symbol, side, notional_usd, verdict, reasoning, reason_code, adjusted_size_usd, used_fallback, signal_class, regime, session, edge, stop_level_price, equity_at_risk_pct, target_rr, suggested_leverage, mechanical_leverage_ceiling, stop_distance_pct, liquidity_score, execution_score, liquidity_bucket)
+       (symbol, side, notional_usd, verdict, reasoning, reason_code, adjusted_size_usd, used_fallback, signal_class, regime, session, edge, stop_level_price, equity_at_risk_pct, target_rr, suggested_leverage, mechanical_leverage_ceiling, stop_distance_pct, liquidity_score, execution_score, liquidity_bucket, llm_consulted)
      VALUES
-       (@symbol, @side, @notionalUsd, @verdict, @reasoning, @reasonCode, @adjustedSizeUsd, @usedFallback, @signalClass, @regime, @session, @edge, @stopLevelPrice, @equityAtRiskPct, @targetRR, @suggestedLeverage, @mechanicalLeverageCeiling, @stopDistancePct, @liquidityScore, @executionScore, @liquidityBucket)`
+       (@symbol, @side, @notionalUsd, @verdict, @reasoning, @reasonCode, @adjustedSizeUsd, @usedFallback, @signalClass, @regime, @session, @edge, @stopLevelPrice, @equityAtRiskPct, @targetRR, @suggestedLeverage, @mechanicalLeverageCeiling, @stopDistancePct, @liquidityScore, @executionScore, @liquidityBucket, @llmConsulted)`
   ).run({
     symbol: entry.symbol,
     side: entry.side,
@@ -106,5 +117,6 @@ export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
     liquidityScore: entry.liquidityScore ?? null,
     executionScore: entry.executionScore ?? null,
     liquidityBucket: entry.liquidityBucket ?? null,
+    llmConsulted: entry.llmConsulted === false ? 0 : 1,
   });
 }

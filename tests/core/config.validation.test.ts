@@ -56,6 +56,7 @@ memory: {}
     expect(config.paper.liveSymbolsAllowlist).toEqual(['BTC', 'ETH']);
     expect(config.paper.promotionGates.minTrades).toBe(25);
     expect(config.paper.promotionGates.maxDrawdownR).toBe(6);
+    expect(config.learning.cleanDataCutoff).toBe('2026-06-13');
     expect(config.wallet.limits.daily).toBe(100);
     expect(config.agent.persistPlans).toBe(true);
     expect(config.agent.trivial.timeoutMs).toBe(12000);
@@ -79,7 +80,7 @@ memory: {}
     expect(config.heartbeat.llmExitConsult.roeThresholds).toEqual([3, 7, 15]);
     expect(config.heartbeat.llmExitConsult.approachTtlMinutes).toBe(15);
     expect(config.heartbeat.llmExitConsult.timeoutMs).toBe(8000);
-    expect(config.notifications.heartbeat.timeoutMs).toBe(10000);
+    expect(config.notifications.heartbeat.timeoutMs).toBe(30000);
     expect(config.notifications.heartbeat.degradedMode).toBe('ok');
     expect(config.notifications.heartbeat.storeHistory).toBe(false);
     expect(config.notifications.heartbeat.includeProactiveSummary).toBe(true);

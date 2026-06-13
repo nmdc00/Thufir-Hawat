@@ -122,6 +122,7 @@ describe('dashboard api payload', () => {
     expect(payload.sections.predictionAccuracy.totalFinalPredictions).toBe(0);
     expect(payload.sections.closeLearning.finalizer.totalJobs).toBe(0);
     expect(payload.sections.closeLearning.tradeCloses.recent).toEqual([]);
+    expect(payload.sections.originatorScorecard.latest).toEqual([]);
     expect(typeof payload.meta.recordCounts.perpTrades).toBe('number');
     expect(typeof payload.meta.recordCounts.journals).toBe('number');
   });
