@@ -79,7 +79,7 @@ memory: {}
     expect(config.heartbeat.llmExitConsult.roeThresholds).toEqual([3, 7, 15]);
     expect(config.heartbeat.llmExitConsult.approachTtlMinutes).toBe(15);
     expect(config.heartbeat.llmExitConsult.timeoutMs).toBe(8000);
-    expect(config.notifications.heartbeat.timeoutMs).toBe(10000);
+    expect(config.notifications.heartbeat.timeoutMs).toBe(30000);
     expect(config.notifications.heartbeat.degradedMode).toBe('ok');
     expect(config.notifications.heartbeat.storeHistory).toBe(false);
     expect(config.notifications.heartbeat.includeProactiveSummary).toBe(true);
