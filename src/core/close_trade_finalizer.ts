@@ -159,6 +159,18 @@ export function finalizeCloseEvent(params: {
     linkedLearningCase?.context?.triggerReason,
     linkedLearningCase?.context?.entryTrigger
   );
+  const closeReason = firstString(
+    closePayload.closeReason,
+    closePayload.reason,
+    snapshot.closeReason,
+    event.exitMode
+  );
+  const closeAuthority = firstString(
+    closePayload.closeAuthority,
+    closePayload.authority,
+    snapshot.closeAuthority,
+    event.sourceAuthority
+  );
   const entryPrice = num(snapshot.entryPrice ?? closePayload.entryPrice ?? entryPayload.markPrice);
   const exitPrice = event.exitPrice ?? num(snapshot.exitPrice ?? closePayload.markPrice);
   const feesUsd = event.realizedFeeUsd ?? num(closePayload.realizedFeeUsd ?? closePayload.realized_fee_usd);
@@ -210,10 +222,21 @@ export function finalizeCloseEvent(params: {
     deterministicStatus: 'finalized',
     llmReflectionStatus: 'not_requested',
     facts: {
+      closeReason,
+      closeAuthority,
       closeEvent: event,
-      closeJournal: { ...closePayload, signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason },
+      closeJournal: {
+        ...closePayload,
+        closeReason,
+        closeAuthority,
+        signalClass,
+        marketRegime,
+        volatilityBucket,
+        liquidityBucket,
+        triggerReason,
+      },
       entryJournal: entryPayload,
-      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason },
+      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason, closeReason, closeAuthority },
       learningCaseId: linkedLearningCase?.id ?? null,
     },
   });
@@ -239,6 +262,8 @@ export function finalizeCloseEvent(params: {
       compositeScore,
       thesisCorrect,
       exitMode: event.exitMode,
+      closeReason,
+      closeAuthority,
     },
     confidence: compositeScore,
   });
@@ -250,8 +275,8 @@ export function finalizeCloseEvent(params: {
       symbol: event.symbol,
       regretType: 'negative_r_close',
       severity: Math.min(1, Math.abs(capturedR)),
-      evidence: { capturedR, thesisCorrect, exitMode: event.exitMode },
-      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason },
+      evidence: { capturedR, thesisCorrect, exitMode: event.exitMode, closeReason, closeAuthority },
+      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason, closeReason, closeAuthority },
     });
   }
   if (leftOnTableR != null && leftOnTableR > 1) {
@@ -261,8 +286,8 @@ export function finalizeCloseEvent(params: {
       symbol: event.symbol,
       regretType: 'closed_too_early',
       severity: Math.min(1, leftOnTableR / 3),
-      evidence: { leftOnTableR, capturedR },
-      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason },
+      evidence: { leftOnTableR, capturedR, closeReason, closeAuthority },
+      policyEvidence: { signalClass, marketRegime, volatilityBucket, liquidityBucket, triggerReason, closeReason, closeAuthority },
     });
   }
 
