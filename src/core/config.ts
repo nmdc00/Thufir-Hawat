@@ -892,6 +892,8 @@ const ConfigSchema = z.object({
           enabled: z.boolean().default(true),
           timeoutMs: z.number().default(5000),
           rejectOnBothFail: z.boolean().default(true),
+          gateCooldownMinutes: z.number().default(60),
+          deterministicPrechecks: z.boolean().default(true),
         })
         .default({}),
       ta: z

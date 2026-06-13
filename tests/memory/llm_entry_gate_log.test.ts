@@ -57,6 +57,7 @@ const fakeDb = vi.hoisted(() => {
           'liquidity_score',
           'execution_score',
           'liquidity_bucket',
+          'llm_consulted',
         ];
         for (const column of expectedColumns) {
           state.columns.add(column);
@@ -131,6 +132,7 @@ describe('recordEntryGateDecision schema migration', () => {
     expect(fakeDb.columns.has('liquidity_score')).toBe(true);
     expect(fakeDb.columns.has('execution_score')).toBe(true);
     expect(fakeDb.columns.has('liquidity_bucket')).toBe(true);
+    expect(fakeDb.columns.has('llm_consulted')).toBe(true);
 
     expect(fakeDb.insertedRows).toHaveLength(1);
     expect(fakeDb.insertedRows[0]).toMatchObject({
@@ -150,6 +152,7 @@ describe('recordEntryGateDecision schema migration', () => {
       liquidityScore: null,
       executionScore: null,
       liquidityBucket: null,
+      llmConsulted: 1,
     });
   });
 
@@ -169,6 +172,7 @@ describe('recordEntryGateDecision schema migration', () => {
       liquidityScore: 0.82,
       executionScore: 0.91,
       liquidityBucket: 'deep',
+      llmConsulted: false,
     });
 
     expect(fakeDb.insertedRows).toHaveLength(1);
@@ -185,6 +189,7 @@ describe('recordEntryGateDecision schema migration', () => {
       liquidityScore: 0.82,
       executionScore: 0.91,
       liquidityBucket: 'deep',
+      llmConsulted: 0,
     });
   });
 
@@ -197,5 +202,6 @@ describe('recordEntryGateDecision schema migration', () => {
     expect(schemaSql).toContain('liquidity_score   REAL');
     expect(schemaSql).toContain('execution_score   REAL');
     expect(schemaSql).toContain('liquidity_bucket  TEXT');
+    expect(schemaSql).toContain('llm_consulted     INTEGER NOT NULL DEFAULT 1');
   });
 });
