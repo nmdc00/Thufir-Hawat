@@ -234,6 +234,7 @@ const executeToolCall = vi.hoisted(() =>
       data: {
         executed: true,
         message: 'paper ok',
+        trade_id: 1234,
         positionSize: input.size,
         executionPrice: 70000,
       },
@@ -395,7 +396,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
       originatorExitReason: 'paper ok',
       requestedLeverage: 5,
     }));
-    expect(mocks.updateTradeProposalOutcome).toHaveBeenCalledWith(42, 'approve', true);
+    expect(mocks.updateTradeProposalOutcome).toHaveBeenCalledWith(42, 'approve', true, '1234');
 
     expect(llm.complete).toHaveBeenCalledTimes(1);
     const messages = llm.complete.mock.calls[0]![0] as Array<{ role: string; content: string }>;
