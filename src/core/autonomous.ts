@@ -1091,13 +1091,20 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       prediction_reasoning: proposal.thesisText,
     });
     if (proposal.proposalRecordId != null) {
+      const tradeId =
+        tradeResult.data?.trade_id != null ? String(tradeResult.data.trade_id) : undefined;
       updateTradeProposalStatus(proposal.proposalRecordId, {
         executeTrades: true,
         originatorExitStage: tradeResult.executed ? 'executed' : 'execution_failed',
         originatorExitReason: tradeResult.message,
         requestedLeverage: targetLeverage,
       });
-      updateTradeProposalOutcome(proposal.proposalRecordId, 'approve', tradeResult.executed);
+      updateTradeProposalOutcome(
+        proposal.proposalRecordId,
+        'approve',
+        tradeResult.executed,
+        tradeId
+      );
     }
     if (tradeResult.executed) {
       if (this.notify) {
