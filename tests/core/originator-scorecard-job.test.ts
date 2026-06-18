@@ -125,6 +125,27 @@ describe('originator scorecard job', () => {
     expect(persisted.c).toBe(2);
   });
 
+  it('counts open position rows as successful executed opens for originator share', () => {
+    const now = new Date('2026-06-20T00:00:00.000Z');
+    const inWindow = '2026-06-19T12:00:00.000Z';
+
+    insertTrade({ id: 21, createdAt: inWindow, status: 'position_open' });
+    insertTrade({ id: 22, createdAt: inWindow, status: 'position_open' });
+    insertProposal({ createdAt: inWindow, proposed: true, executed: true, tradeId: 21 });
+    insertProposal({ createdAt: inWindow, proposed: false });
+
+    const result = runOriginatorScorecardJob({
+      now,
+      config: { cleanDataCutoff: '2026-06-13T00:00:00.000Z' },
+    });
+    const seven = result.rows.find((row) => row.windowDays === 7)!;
+
+    expect(seven.executedTrades).toBe(2);
+    expect(seven.originatedTrades).toBe(1);
+    expect(seven.quantTrades).toBe(1);
+    expect(seven.originatedShare).toBeCloseTo(0.5);
+  });
+
   it('excludes proposal, trade, and close rows before the clean data cutoff', () => {
     const now = new Date('2026-06-20T00:00:00.000Z');
     insertTrade({ id: 10, createdAt: '2026-06-12T12:00:00.000Z', pnl: 100 });
