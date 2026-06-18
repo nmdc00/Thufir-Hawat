@@ -91,7 +91,7 @@ function computeWindow(params: {
                          AND p.proposed = 1
                      ) THEN 1 ELSE 0 END) AS originatedTrades
               FROM perp_trades pt
-              WHERE LOWER(COALESCE(pt.status, '')) = 'executed'
+              WHERE LOWER(COALESCE(pt.status, '')) IN ('executed', 'position_open')
                 AND datetime(pt.created_at) >= datetime(@lowerBound)
                 AND datetime(pt.created_at) < datetime(@windowEndedAt)
             `
@@ -101,7 +101,7 @@ function computeWindow(params: {
               SELECT COUNT(*) AS executedTrades,
                      0 AS originatedTrades
               FROM perp_trades pt
-              WHERE LOWER(COALESCE(pt.status, '')) = 'executed'
+              WHERE LOWER(COALESCE(pt.status, '')) IN ('executed', 'position_open')
                 AND datetime(pt.created_at) >= datetime(@lowerBound)
                 AND datetime(pt.created_at) < datetime(@windowEndedAt)
             `
