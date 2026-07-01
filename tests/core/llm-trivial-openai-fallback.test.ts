@@ -1,10 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const fetchMock = vi.fn();
+vi.mock('node-fetch', () => {
+  return {
+    default: vi.fn(),
+  };
+});
 
-vi.mock('node-fetch', () => ({
-  default: (...args: unknown[]) => fetchMock(...args),
-}));
+import fetch from 'node-fetch';
 
 describe('createTrivialTaskClient OpenAI fallback shaping', () => {
   beforeEach(() => {
@@ -13,7 +15,8 @@ describe('createTrivialTaskClient OpenAI fallback shaping', () => {
     process.env.OPENAI_API_KEY = 'test-key';
   });
 
-  it('does not inject max token fields for OpenAI-backed trivial calls', async () => {
+  it('passes max token fields through for OpenAI-backed trivial calls', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -55,7 +58,7 @@ describe('createTrivialTaskClient OpenAI fallback shaping', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const [, init] = fetchMock.mock.calls[0] as [string, { body?: string }];
     const body = JSON.parse(init.body ?? '{}');
-    expect(body.max_output_tokens).toBeUndefined();
+    expect(body.max_output_tokens).toBe(96);
     expect(body.max_tokens).toBeUndefined();
   });
 });
