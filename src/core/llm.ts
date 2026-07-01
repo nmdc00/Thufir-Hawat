@@ -835,9 +835,7 @@ class TrivialTaskClient implements LlmClient {
     return this.inner.complete(messages, {
       temperature: options?.temperature ?? this.defaults.temperature,
       timeoutMs: options?.timeoutMs ?? this.defaults.timeoutMs,
-      ...(this.meta?.provider !== 'openai' && typeof resolvedMaxTokens === 'number'
-        ? { maxTokens: resolvedMaxTokens }
-        : {}),
+      ...(typeof resolvedMaxTokens === 'number' ? { maxTokens: resolvedMaxTokens } : {}),
     });
   }
 }

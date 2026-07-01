@@ -95,8 +95,8 @@ const ConfigSchema = z.object({
         temperature: z.number().default(0.2),
         // Keep this bounded so interactive handlers don't block on trivial calls.
         timeoutMs: z.number().default(12000),
-        // Local trivial calls should fail fast and fall back when cold/stalled.
-        localSoftTimeoutMs: z.number().default(6000),
+        // Local trivial calls should still fail fast, but give Ollama a bit more runway.
+        localSoftTimeoutMs: z.number().default(12000),
         // Remote fallback for trivial tasks should also remain bounded.
         fallbackTimeoutMs: z.number().default(12000),
         // Keep local model warm to reduce cold-start latency.
