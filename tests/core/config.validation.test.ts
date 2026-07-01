@@ -60,7 +60,7 @@ memory: {}
     expect(config.wallet.limits.daily).toBe(100);
     expect(config.agent.persistPlans).toBe(true);
     expect(config.agent.trivial.timeoutMs).toBe(12000);
-    expect(config.agent.trivial.localSoftTimeoutMs).toBe(6000);
+    expect(config.agent.trivial.localSoftTimeoutMs).toBe(12000);
     expect(config.agent.trivial.fallbackTimeoutMs).toBe(12000);
     expect(config.agent.trivial.keepWarmEnabled).toBe(true);
     expect(config.agent.trivial.keepWarmIntervalSeconds).toBe(180);

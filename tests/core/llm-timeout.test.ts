@@ -59,7 +59,7 @@ describe('wrapWithInfra timeout', () => {
           trivial: {
             enabled: true,
             timeoutMs: 12000,
-            localSoftTimeoutMs: 6000,
+            localSoftTimeoutMs: 12000,
             fallbackTimeoutMs: 12000,
           },
         },
@@ -68,7 +68,7 @@ describe('wrapWithInfra timeout', () => {
 
     try {
       await wrapped.complete([{ role: 'user', content: 'ping' }]);
-      expect(seen).toEqual([6000]);
+      expect(seen).toEqual([12000]);
     } finally {
       if (previous === undefined) {
         delete process.env.THUFIR_LLM_TIMEOUT_MS;
@@ -102,7 +102,7 @@ describe('wrapWithInfra timeout', () => {
           trivial: {
             enabled: true,
             timeoutMs: 12000,
-            localSoftTimeoutMs: 6000,
+            localSoftTimeoutMs: 12000,
             fallbackTimeoutMs: 9000,
           },
         },
