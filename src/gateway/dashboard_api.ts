@@ -2166,7 +2166,7 @@ function buildPredictionAccuracySection(db: Database.Database): {
           (model_probability - market_probability) AS edge,
           pnl
         FROM ${relationName}
-        ORDER BY datetime(resolved_at) DESC, datetime(created_at) DESC, id DESC
+        ORDER BY datetime(resolved_at) ASC, datetime(created_at) ASC, id ASC
         LIMIT ${PREDICTION_ACCURACY_MAX_ROWS}
       `
     )
@@ -2177,12 +2177,10 @@ function buildPredictionAccuracySection(db: Database.Database): {
     metadata?: { comparatorKind: string; comparatorSource: string; label: string }
   ): PredictionAccuracyWindow[] => {
     const completeWindowCount = Math.floor(rows.length / PREDICTION_ACCURACY_WINDOW_STEP);
-    const windows = Array.from(
-      { length: completeWindowCount },
-      (_, index) => (index + 1) * PREDICTION_ACCURACY_WINDOW_STEP
-    );
-    return windows.map((windowSize) => {
-      const slice = rows.slice(0, windowSize);
+    return Array.from({ length: completeWindowCount }, (_, index) => {
+      const windowSize = (index + 1) * PREDICTION_ACCURACY_WINDOW_STEP;
+      const start = index * PREDICTION_ACCURACY_WINDOW_STEP;
+      const slice = rows.slice(start, start + PREDICTION_ACCURACY_WINDOW_STEP);
       const sampleCount = slice.length;
       const avg = (field: string): number | null => {
         const values = slice
@@ -2324,6 +2322,7 @@ function buildPredictionAccuracyDiagnostics(db: Database.Database): PredictionAc
           FROM predictions
           WHERE COALESCE(domain, '') = 'perp'
             AND model_probability IS NOT NULL
+            AND learning_comparable = 1
             AND comparator_kind = 'internal_segment_history'
         `
       )

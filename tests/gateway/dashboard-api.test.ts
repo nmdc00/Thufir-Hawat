@@ -350,7 +350,8 @@ describe('dashboard api payload', () => {
           comparator_kind, comparator_source, outcome_basis, outcome, outcome_timestamp, pnl
         ) VALUES
           ('synthetic-final', 'perp:SOL:synthetic', 'SOL synthetic', 'YES', 'perp', 'SOL', '2026-06-03T10:00:00.000Z', 0.66, 0.5, 0, 'synthetic', 'synthetic_0_5', 'final', 'NO', '2026-06-03T11:00:00.000Z', -2),
-          ('missing-final', 'perp:DOGE:missing', 'DOGE missing', 'YES', 'perp', 'DOGE', '2026-06-03T10:01:00.000Z', 0.64, NULL, 0, 'missing', 'missing', 'final', 'YES', '2026-06-03T11:01:00.000Z', 1)
+          ('missing-final', 'perp:DOGE:missing', 'DOGE missing', 'YES', 'perp', 'DOGE', '2026-06-03T10:01:00.000Z', 0.64, NULL, 0, 'missing', 'missing', 'final', 'YES', '2026-06-03T11:01:00.000Z', 1),
+          ('legacy-internal-final', 'perp:XMR:legacy-internal', 'XMR legacy internal', 'YES', 'perp', 'XMR', '2026-06-03T10:02:00.000Z', 0.64, 0.52, 0, 'internal_segment_history', 'segment_history_blended', 'final', 'YES', '2026-06-03T11:02:00.000Z', 1)
       `
     ).run();
 
@@ -384,7 +385,7 @@ describe('dashboard api payload', () => {
       label: 'Internal baseline forecast accuracy',
     });
     expect(predictionAccuracy.diagnostics).toMatchObject({
-      finalOutcomePredictions: 52,
+      finalOutcomePredictions: 53,
       marketComparableEligible: 25,
       internalComparableEligible: 25,
       syntheticComparatorBlocked: 1,
@@ -404,6 +405,20 @@ describe('dashboard api payload', () => {
     const db = openDatabase(dbPath);
 
     seedComparableFinalPredictions(75);
+    db.prepare(
+      `
+        UPDATE predictions
+        SET outcome = CASE
+          WHEN CAST(substr(market_id, length('perp:BTC:') + 1) AS INTEGER) BETWEEN 25 AND 49 THEN 'NO'
+          ELSE 'YES'
+        END,
+        pnl = CASE
+          WHEN CAST(substr(market_id, length('perp:BTC:') + 1) AS INTEGER) BETWEEN 25 AND 49 THEN -5
+          ELSE 8
+        END
+        WHERE market_id LIKE 'perp:BTC:%'
+      `
+    ).run();
 
     const payload = buildDashboardApiPayload({
       db,
@@ -424,8 +439,13 @@ describe('dashboard api payload', () => {
     ]);
     expect(payload.sections.predictionAccuracy.global.map((row) => row.sampleCount)).toEqual([
       25,
-      50,
-      75,
+      25,
+      25,
+    ]);
+    expect(payload.sections.predictionAccuracy.global.map((row) => row.accuracy)).toEqual([
+      1,
+      0,
+      1,
     ]);
   });
 

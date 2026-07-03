@@ -123,33 +123,9 @@ FROM learning_examples
 WHERE comparator_kind IN ('exogenous_price_climatology', 'exogenous_options_implied');
 
 CREATE VIEW IF NOT EXISTS internal_comparable_learning_examples AS
-SELECT
-  id,
-  domain,
-  regime_tag           AS regime,
-  strategy_class,
-  symbol,
-  model_probability,
-  market_probability,
-  comparator_kind,
-  comparator_source,
-  forecast_target_kind,
-  executed,
-  position_size,
-  CASE WHEN outcome = 'YES' THEN 1 ELSE 0 END                               AS outcome_value,
-  pnl,
-  (model_probability  - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)
-  * (model_probability  - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)  AS brier_model,
-  (market_probability - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)
-  * (market_probability - CASE WHEN outcome = 'YES' THEN 1.0 ELSE 0.0 END)  AS brier_market,
-  created_at,
-  outcome_timestamp    AS resolved_at
-FROM predictions
-WHERE outcome_basis     = 'final'
-  AND model_probability  IS NOT NULL
-  AND market_probability IS NOT NULL
-  AND comparator_kind = 'internal_segment_history'
-  AND outcome            IS NOT NULL;
+SELECT *
+FROM learning_examples
+WHERE comparator_kind = 'internal_segment_history';
 
 -- ============================================================================
 -- Calibration Cache
