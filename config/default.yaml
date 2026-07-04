@@ -78,8 +78,12 @@ agent:
     enabled: true
     maxTokens: 128
     temperature: 0.2
-    timeoutMs: 12000
-    localSoftTimeoutMs: 6000   # single-flight local call measured ~2.8s uncontended; 2x headroom, fail fast beyond that
+    timeoutMs: 20000
+    # Empirically measured under realistic concurrent bursts (keep-warm + heartbeat +
+    # telegram relevance screen landing together): tail wall-clock latency reaches ~19-26s
+    # even though the model succeeds 100% of the time given enough budget. 20000ms clears
+    # burst-of-5 scenarios and stays under Exit Consultant's own 25000ms outer race.
+    localSoftTimeoutMs: 20000
     fallbackTimeoutMs: 8000
     keepWarmEnabled: true
     keepWarmIntervalSeconds: 180
