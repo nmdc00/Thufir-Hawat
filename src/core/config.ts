@@ -94,9 +94,12 @@ const ConfigSchema = z.object({
         maxTokens: z.number().default(128),
         temperature: z.number().default(0.2),
         // Keep this bounded so interactive handlers don't block on trivial calls.
-        timeoutMs: z.number().default(12000),
-        // Local single-flight call measured ~2.8s uncontended; 2x headroom, fail fast beyond that.
-        localSoftTimeoutMs: z.number().default(6000),
+        timeoutMs: z.number().default(20000),
+        // Empirically measured under realistic concurrent bursts (keep-warm + heartbeat +
+        // telegram relevance screen landing together): tail wall-clock latency reaches ~19-26s
+        // even though the model succeeds 100% of the time given enough budget. 20000ms clears
+        // burst-of-5 scenarios and stays under Exit Consultant's own 25000ms outer race.
+        localSoftTimeoutMs: z.number().default(20000),
         // Remote fallback for trivial tasks should also remain bounded.
         fallbackTimeoutMs: z.number().default(8000),
         // Keep local model warm to reduce cold-start latency.
