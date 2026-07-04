@@ -289,6 +289,16 @@ const globalLimiter = new LlmQueue(
   Math.max(0, Number(process.env.THUFIR_LLM_MIN_DELAY_MS ?? 0))
 );
 
+// Local (Ollama) inference is CPU-bound on a single box. Letting the shared remote-call
+// concurrency setting (THUFIR_LLM_CONCURRENCY) govern it too lets two trivial calls — or a
+// trivial call and the keep-warm ping — run against Ollama at the same time, doubling
+// latency and blowing past the trivial timeout. Serialize actual local network calls on
+// their own queue, independent of remote concurrency.
+const localLlmLimiter = new LlmQueue(
+  Math.max(1, Number(process.env.THUFIR_LOCAL_LLM_CONCURRENCY ?? 1)),
+  0
+);
+
 export function wrapWithLimiter(client: LlmClient): LlmClient {
   return new LimitedLlmClient(client, globalLimiter);
 }
@@ -535,11 +545,17 @@ export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null 
         ? Math.max(500, trivialConfig.localSoftTimeoutMs)
         : 15_000;
     const inner = new LocalClient(config, model, 'trivial');
-    const guarded = new LocalHealthGuard(inner, {
-      baseUrl,
-      model,
-      timeoutMs: Math.min(trivialConfig.timeoutMs ?? 12_000, localSoftTimeoutMs),
-    });
+    // Serialize every real network hit to Ollama (health check + completion) on the
+    // dedicated single-flight queue so concurrent trivial callers can never stack requests
+    // on the same CPU-bound local model and starve each other into timing out.
+    const guarded = new LimitedLlmClient(
+      new LocalHealthGuard(inner, {
+        baseUrl,
+        model,
+        timeoutMs: Math.min(trivialConfig.timeoutMs ?? 12_000, localSoftTimeoutMs),
+      }),
+      localLlmLimiter
+    );
 
     // Prefer local for trivial tasks, but do not block interactive paths on slow local inference.
     // If local cannot answer quickly, fall back to a remote provider for the same trivial task.
@@ -573,7 +589,10 @@ export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null 
       new FallbackLlmClient(
         wrapWithInfra(primary, config),
         wrapWithInfra(fallback, config),
-        () => true,
+        // Local failures (timeout, health cooldown, unreachable) must not fall back to a
+        // remote provider — trivial callers degrade gracefully and a remote call here would
+        // consume real API quota for work the local model was supposed to absorb.
+        (error) => !isLocalFailure(error),
         config
       )
     );
@@ -606,29 +625,33 @@ function startLocalKeepWarm(params: {
   const intervalMs = Math.max(15, Math.floor(params.intervalSeconds)) * 1000;
 
   const tick = async () => {
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeout = controller ? setTimeout(() => controller.abort(), 3_000) : null;
-    try {
-      // Best-effort: Ollama-specific keep-alive. If unavailable, ignore.
-      await fetch(`${params.baseUrl}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller?.signal,
-        body: JSON.stringify({
-          model: params.model,
-          prompt: 'ping',
-          stream: false,
-          keep_alive: params.keepAlive,
-          options: { num_predict: 1 },
-        }),
-      });
-    } catch {
-      // ignore
-    } finally {
-      if (timeout) {
-        clearTimeout(timeout);
+    // Route through the same single-flight local queue as real trivial calls so the keep-warm
+    // ping never lands mid-inference and adds its own latency to a request already in flight.
+    await localLlmLimiter.enqueue(async () => {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timeout = controller ? setTimeout(() => controller.abort(), 3_000) : null;
+      try {
+        // Best-effort: Ollama-specific keep-alive. If unavailable, ignore.
+        await fetch(`${params.baseUrl}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller?.signal,
+          body: JSON.stringify({
+            model: params.model,
+            prompt: 'ping',
+            stream: false,
+            keep_alive: params.keepAlive,
+            options: { num_predict: 1 },
+          }),
+        });
+      } catch {
+        // ignore
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
       }
-    }
+    });
   };
 
   // Fire once soon after startup, then periodically.
@@ -1799,6 +1822,19 @@ function extractErrorMessage(error: unknown): string {
   ]
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
     .join(' ');
+}
+
+// Local LLM failures (health guard, timeout, unreachable) should not trigger a remote
+// fallback — trivial callers all handle errors gracefully and the cost of a remote call
+// for a "trivial" task defeats the purpose of the local offload entirely.
+export function isLocalFailure(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return (
+    msg.includes('Local LLM unavailable') ||
+    (msg.includes('timed out') && msg.includes('(local/')) ||
+    msg.includes('Local model request failed') ||
+    msg.includes('skipping trivial task')
+  );
 }
 
 export function isRateLimitError(error: unknown): boolean {
