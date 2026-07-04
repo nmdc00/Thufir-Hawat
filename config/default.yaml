@@ -79,8 +79,8 @@ agent:
     maxTokens: 128
     temperature: 0.2
     timeoutMs: 12000
-    localSoftTimeoutMs: 12000
-    fallbackTimeoutMs: 12000
+    localSoftTimeoutMs: 6000   # single-flight local call measured ~2.8s uncontended; 2x headroom, fail fast beyond that
+    fallbackTimeoutMs: 8000
     keepWarmEnabled: true
     keepWarmIntervalSeconds: 180
     keepAlive: 30m
