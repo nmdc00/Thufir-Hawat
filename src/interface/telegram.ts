@@ -64,6 +64,7 @@ export class TelegramAdapter implements ChannelAdapter {
   private pollingInterval: number;
   private lastUpdateId = 0;
   private onMessageTimeoutMs: number;
+  private pollFetchTimeoutMs: number;
 
   constructor(config: ThufirConfig) {
     this.token = config.channels.telegram.token ?? '';
@@ -74,6 +75,14 @@ export class TelegramAdapter implements ChannelAdapter {
     this.onMessageTimeoutMs = Math.max(
       1_000,
       Number(process.env.THUFIR_CHANNEL_HANDLER_TIMEOUT_MS ?? 45_000)
+    );
+    // getUpdates is a short poll (no `timeout` param set), so it should return in well
+    // under a second. This guards against a stalled connection hanging forever and
+    // silently killing the polling loop (the reschedule lives in `finally`, so a fetch
+    // that never settles means `loop()` never runs again).
+    this.pollFetchTimeoutMs = Math.max(
+      1_000,
+      Number(process.env.THUFIR_TELEGRAM_POLL_TIMEOUT_MS ?? 15_000)
     );
   }
 
@@ -109,7 +118,14 @@ export class TelegramAdapter implements ChannelAdapter {
         if (this.lastUpdateId > 0) {
           url.searchParams.set('offset', String(this.lastUpdateId + 1));
         }
-        const response = await fetch(url.toString());
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.pollFetchTimeoutMs);
+        let response: Awaited<ReturnType<typeof fetch>>;
+        try {
+          response = await fetch(url.toString(), { signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
         if (response.ok) {
           const data = (await response.json()) as { result: Array<any> };
           for (const update of data.result ?? []) {
