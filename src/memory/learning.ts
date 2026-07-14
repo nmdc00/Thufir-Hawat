@@ -1,5 +1,8 @@
 import { openDatabase } from './db.js';
-import { recordLearningSignalAudit } from './learning_observability.js';
+import {
+  getLearningRuntimeContext,
+  recordLearningSignalAudit,
+} from './learning_observability.js';
 
 export interface SignalWeights {
   technical: number;
@@ -72,6 +75,12 @@ function parse<T>(value: unknown): T | null {
 
 export function recordLearningEvent(input: LearningEventInput): number {
   const db = openDatabase();
+  const runtime = getLearningRuntimeContext(db);
+  const notes = {
+    ...(input.notes ?? {}),
+    runId: runtime.runId,
+    policyVersion: runtime.policyVersion,
+  };
   const res = db
     .prepare(
       `
@@ -131,7 +140,7 @@ export function recordLearningEvent(input: LearningEventInput): number {
       signalWeights: serialize(input.signalWeights ?? null),
       marketSnapshot: serialize(input.marketSnapshot ?? null),
       modelVersion: input.modelVersion ?? null,
-      notes: serialize(input.notes ?? null),
+      notes: serialize(notes),
     });
   const learningEventId = Number(res.lastInsertRowid ?? 0);
 

@@ -126,7 +126,7 @@ async function createManager(limiter: any, executor: any) {
   } as any;
   const gateLlm = {
     complete: vi.fn(async () => ({
-      content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' , stopLevelPrice: null, equityAtRiskPct: 2.5, targetRR: 2.0 }),
+      content: JSON.stringify({ verdict: 'approve', reasoning: 'ok', stopLevelPrice: 65_000, equityAtRiskPct: 2.5, targetRR: 2.0 }),
       model: 'test',
     })),
   } as any;

@@ -102,6 +102,12 @@ const LEARNING_SIGNAL_AUDITS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS learning_si
     active_score_after REAL,
     outcome_value INTEGER NOT NULL CHECK(outcome_value IN (0, 1)),
     changed INTEGER NOT NULL CHECK(changed IN (0, 1)),
+    run_id TEXT NOT NULL DEFAULT 'default',
+    policy_version TEXT NOT NULL DEFAULT 'default',
+    changed_vs_default INTEGER NOT NULL DEFAULT 0,
+    changed_after_update INTEGER NOT NULL DEFAULT 0,
+    decision_confidence REAL,
+    active_confidence_after REAL,
     created_at TEXT DEFAULT (datetime('now'))
 );`;
 
@@ -341,6 +347,15 @@ const LEARNING_CASE_COLUMNS: ColumnSpec[] = [
   { name: 'source_hypothesis_id', sql: 'ALTER TABLE learning_cases ADD COLUMN source_hypothesis_id TEXT' },
 ];
 
+const LEARNING_SIGNAL_AUDIT_COMPAT_COLUMNS: ColumnSpec[] = [
+  { name: 'run_id', sql: "ALTER TABLE learning_signal_audits ADD COLUMN run_id TEXT NOT NULL DEFAULT 'default'" },
+  { name: 'policy_version', sql: "ALTER TABLE learning_signal_audits ADD COLUMN policy_version TEXT NOT NULL DEFAULT 'default'" },
+  { name: 'changed_vs_default', sql: 'ALTER TABLE learning_signal_audits ADD COLUMN changed_vs_default INTEGER NOT NULL DEFAULT 0' },
+  { name: 'changed_after_update', sql: 'ALTER TABLE learning_signal_audits ADD COLUMN changed_after_update INTEGER NOT NULL DEFAULT 0' },
+  { name: 'decision_confidence', sql: 'ALTER TABLE learning_signal_audits ADD COLUMN decision_confidence REAL' },
+  { name: 'active_confidence_after', sql: 'ALTER TABLE learning_signal_audits ADD COLUMN active_confidence_after REAL' },
+];
+
 const TRADE_POLICY_ADJUSTMENT_COLUMNS: ColumnSpec[] = [
   { name: 'domain', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN domain TEXT NOT NULL DEFAULT 'perp'" },
   { name: 'policy_key', sql: "ALTER TABLE trade_policy_adjustments ADD COLUMN policy_key TEXT NOT NULL DEFAULT 'size'" },
@@ -507,6 +522,7 @@ export function ensureLearningSchema(db: Database.Database): void {
     db.exec(statement);
   }
   db.exec(LEARNING_SIGNAL_AUDITS_TABLE_SQL);
+  ensureLearningSignalAuditCompatColumns(db);
   for (const statement of LEARNING_SIGNAL_AUDITS_INDEX_SQL) {
     db.exec(statement);
   }
@@ -536,6 +552,14 @@ export function ensureLearningSchema(db: Database.Database): void {
   db.exec(COMPARABLE_LEARNING_CASES_VIEW_SQL);
   db.exec('DROP VIEW IF EXISTS execution_learning_cases;');
   db.exec(EXECUTION_LEARNING_CASES_VIEW_SQL);
+}
+
+function ensureLearningSignalAuditCompatColumns(db: Database.Database): void {
+  const columns = db.prepare("PRAGMA table_info('learning_signal_audits')").all() as Array<{ name?: string }>;
+  const present = new Set(columns.map((column) => String(column.name ?? '')));
+  for (const column of LEARNING_SIGNAL_AUDIT_COMPAT_COLUMNS) {
+    if (!present.has(column.name)) db.exec(column.sql);
+  }
 }
 
 function ensureCloseFinalizerCompatibility(db: Database.Database): void {
