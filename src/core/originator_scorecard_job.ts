@@ -127,8 +127,8 @@ function computeWindow(params: {
                      AVG(COALESCE(tc.net_realized_pnl_usd, tc.gross_realized_pnl_usd)) AS expectancy
               FROM trade_closes tc
               LEFT JOIN perp_trades pt ON pt.id = tc.trade_id
-              WHERE datetime(COALESCE(tc.created_at, tc.closed_at)) >= datetime(@lowerBound)
-                AND datetime(COALESCE(tc.created_at, tc.closed_at)) < datetime(@windowEndedAt)
+              WHERE datetime(COALESCE(tc.closed_at, tc.created_at)) >= datetime(@lowerBound)
+                AND datetime(COALESCE(tc.closed_at, tc.created_at)) < datetime(@windowEndedAt)
                 AND datetime(COALESCE(pt.created_at, tc.created_at, tc.closed_at)) >= datetime(@cleanDataCutoff)
                 AND COALESCE(tc.net_realized_pnl_usd, tc.gross_realized_pnl_usd) IS NOT NULL
               GROUP BY path
@@ -147,8 +147,8 @@ function computeWindow(params: {
                      AVG(COALESCE(tc.net_realized_pnl_usd, tc.gross_realized_pnl_usd)) AS expectancy
               FROM trade_closes tc
               LEFT JOIN perp_trades pt ON pt.id = tc.trade_id
-              WHERE datetime(COALESCE(tc.created_at, tc.closed_at)) >= datetime(@lowerBound)
-                AND datetime(COALESCE(tc.created_at, tc.closed_at)) < datetime(@windowEndedAt)
+              WHERE datetime(COALESCE(tc.closed_at, tc.created_at)) >= datetime(@lowerBound)
+                AND datetime(COALESCE(tc.closed_at, tc.created_at)) < datetime(@windowEndedAt)
                 AND datetime(COALESCE(pt.created_at, tc.created_at, tc.closed_at)) >= datetime(@cleanDataCutoff)
                 AND COALESCE(tc.net_realized_pnl_usd, tc.gross_realized_pnl_usd) IS NOT NULL
             `

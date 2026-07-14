@@ -1,5 +1,17 @@
+import type Database from 'better-sqlite3';
+
 import { openDatabase } from './db.js';
 import type { SignalWeights } from './learning.js';
+
+export const DEFAULT_RUNTIME_RUN_ID = 'default';
+export const DEFAULT_RUNTIME_POLICY_VERSION = 'default';
+
+export type LearningRuntimeContext = {
+  runId: string;
+  policyVersion: string;
+  updatedAt: string | null;
+  source: 'db' | 'env' | 'default';
+};
 
 export interface LearningSignalAuditInput {
   learningEventId?: number | null;
@@ -63,6 +75,68 @@ function serialize(value: SignalWeights): string {
   return JSON.stringify(value);
 }
 
+function normalizeRuntimeValue(value: unknown, fallback: string): string {
+  const text = String(value ?? '').trim();
+  return text.length > 0 ? text : fallback;
+}
+
+export function getLearningRuntimeContext(
+  db: Database.Database = openDatabase()
+): LearningRuntimeContext {
+  try {
+    const row = db.prepare(
+      `SELECT run_id AS runId, policy_version AS policyVersion, updated_at AS updatedAt
+       FROM learning_runtime_state WHERE id = 1`
+    ).get() as { runId?: string | null; policyVersion?: string | null; updatedAt?: string | null } | undefined;
+    if (row?.runId && row?.policyVersion) {
+      return {
+        runId: normalizeRuntimeValue(row.runId, DEFAULT_RUNTIME_RUN_ID),
+        policyVersion: normalizeRuntimeValue(row.policyVersion, DEFAULT_RUNTIME_POLICY_VERSION),
+        updatedAt: row.updatedAt ?? null,
+        source: 'db',
+      };
+    }
+  } catch {
+    // Fall through to environment/default context for legacy databases.
+  }
+  const envRunId = String(process.env.THUFIR_RUN_ID ?? '').trim();
+  const envPolicyVersion = String(process.env.THUFIR_POLICY_VERSION ?? '').trim();
+  if (envRunId || envPolicyVersion) {
+    return {
+      runId: normalizeRuntimeValue(envRunId, DEFAULT_RUNTIME_RUN_ID),
+      policyVersion: normalizeRuntimeValue(envPolicyVersion, DEFAULT_RUNTIME_POLICY_VERSION),
+      updatedAt: null,
+      source: 'env',
+    };
+  }
+  return {
+    runId: DEFAULT_RUNTIME_RUN_ID,
+    policyVersion: DEFAULT_RUNTIME_POLICY_VERSION,
+    updatedAt: null,
+    source: 'default',
+  };
+}
+
+export function setLearningRuntimeContext(
+  input: { runId: string; policyVersion?: string | null },
+  db: Database.Database = openDatabase()
+): LearningRuntimeContext {
+  const runId = normalizeRuntimeValue(input.runId, DEFAULT_RUNTIME_RUN_ID);
+  const policyVersion = normalizeRuntimeValue(
+    input.policyVersion ?? DEFAULT_RUNTIME_POLICY_VERSION,
+    DEFAULT_RUNTIME_POLICY_VERSION
+  );
+  db.prepare(
+    `INSERT INTO learning_runtime_state (id, run_id, policy_version, updated_at)
+     VALUES (1, @runId, @policyVersion, datetime('now'))
+     ON CONFLICT(id) DO UPDATE SET
+       run_id = excluded.run_id,
+       policy_version = excluded.policy_version,
+       updated_at = excluded.updated_at`
+  ).run({ runId, policyVersion });
+  return getLearningRuntimeContext(db);
+}
+
 function scoreSignal(weights: SignalWeights, scores: SignalWeights): number {
   return (
     weights.technical * scores.technical +
@@ -100,6 +174,7 @@ function deriveLegacyDirection(score: number): string {
 
 export function recordLearningSignalAudit(input: LearningSignalAuditInput): number {
   const db = openDatabase();
+  const runtime = getLearningRuntimeContext(db);
   const baselineScore = scoreSignal(input.baselineWeights, input.signalScores);
   const decisionScore = scoreSignal(input.decisionWeights, input.signalScores);
   const activeScoreBefore = scoreSignal(input.activeWeightsBefore, input.signalScores);
@@ -108,6 +183,10 @@ export function recordLearningSignalAudit(input: LearningSignalAuditInput): numb
     Math.abs(input.weightDelta.technical) > 1e-9 ||
     Math.abs(input.weightDelta.news) > 1e-9 ||
     Math.abs(input.weightDelta.onChain) > 1e-9;
+  const changedVsDefault =
+    Math.abs(decisionScore - baselineScore) > 1e-9;
+  const changedAfterUpdate =
+    Math.abs(activeScoreAfter - decisionScore) > 1e-9;
   const columns = getLearningSignalAuditColumns();
   const canonicalSchema = columns.has('baseline_weights');
   const result = canonicalSchema
@@ -128,7 +207,13 @@ export function recordLearningSignalAudit(input: LearningSignalAuditInput): numb
               active_score_before,
               active_score_after,
               outcome_value,
-              changed
+              changed,
+              run_id,
+              policy_version,
+              changed_vs_default,
+              changed_after_update,
+              decision_confidence,
+              active_confidence_after
             ) VALUES (
               @learningEventId,
               @domain,
@@ -143,7 +228,13 @@ export function recordLearningSignalAudit(input: LearningSignalAuditInput): numb
               @activeScoreBefore,
               @activeScoreAfter,
               @outcomeValue,
-              @changed
+              @changed,
+              @runId,
+              @policyVersion,
+              @changedVsDefault,
+              @changedAfterUpdate,
+              @decisionConfidence,
+              @activeConfidenceAfter
             )
           `
         )
@@ -162,6 +253,12 @@ export function recordLearningSignalAudit(input: LearningSignalAuditInput): numb
           activeScoreAfter,
           outcomeValue: input.outcomeValue,
           changed: changed ? 1 : 0,
+          runId: runtime.runId,
+          policyVersion: runtime.policyVersion,
+          changedVsDefault: changedVsDefault ? 1 : 0,
+          changedAfterUpdate: changedAfterUpdate ? 1 : 0,
+          decisionConfidence: decisionScore,
+          activeConfidenceAfter: activeScoreAfter,
         })
     : db
         .prepare(
@@ -214,16 +311,16 @@ export function recordLearningSignalAudit(input: LearningSignalAuditInput): numb
               @decisionScore,
               @activeScoreBefore,
               @activeScoreAfter,
-              @changed,
-              @changed
+              @changedVsDefault,
+              @changedAfterUpdate
             )
           `
         )
         .run({
           learningEventId: input.learningEventId ?? null,
           domain: input.domain,
-          runId: 'legacy-compat',
-          policyVersion: 'v2.3',
+          runId: runtime.runId,
+          policyVersion: runtime.policyVersion,
           signalScores: serialize(input.signalScores),
           baselineWeights: serialize(input.baselineWeights),
           decisionWeights: serialize(input.decisionWeights),
@@ -241,7 +338,8 @@ export function recordLearningSignalAudit(input: LearningSignalAuditInput): numb
           decisionScore,
           activeScoreBefore,
           activeScoreAfter,
-          changed: changed ? 1 : 0,
+          changedVsDefault: changedVsDefault ? 1 : 0,
+          changedAfterUpdate: changedAfterUpdate ? 1 : 0,
         });
   return Number(result.lastInsertRowid ?? 0);
 }

@@ -153,8 +153,8 @@ describe('LlmTradeOriginator null-rate discipline', () => {
       symbol: 'BTC',
       side: 'long',
       thesisText: 'Momentum confirmed with volume breakout',
-      invalidationCondition: 'Closes below $63,000',
-      invalidationPrice: 63000,
+      invalidationCondition: 'Closes below $95',
+      invalidationPrice: 95,
       suggestedTtlMinutes: 120,
       confidence: 0.55,   // exactly at threshold
       leverage: 3,
