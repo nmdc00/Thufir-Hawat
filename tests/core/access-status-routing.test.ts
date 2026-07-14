@@ -27,6 +27,8 @@ const llmMocks = vi.hoisted(() => {
 vi.mock('../../src/core/llm.js', () => {
   return {
     createLlmClient: () => llmMocks.mainClient,
+    createDecisionClient: () => llmMocks.mainClient,
+    createDecisionFallbackClient: () => llmMocks.trivialClient,
     createExecutorClient: () => llmMocks.mainClient,
     createTrivialTaskClient: () => (llmMocks.useTrivial ? llmMocks.trivialClient : null),
     createAgenticExecutorClient: () => llmMocks.mainClient,

@@ -211,8 +211,8 @@ if (positionHeartbeatConfig?.enabled) {
     const exitConsultant =
       config.heartbeat?.llmExitConsult?.enabled !== false
         ? new LlmExitConsultant(
-            primaryAgent.getLlm(),
-            primaryAgent.getInfoLlm() ?? primaryAgent.getLlm(),
+            primaryAgent.getDecisionLlm(),
+            primaryAgent.getDecisionFallbackLlm(),
             heartbeatNotify ?? (async () => {}),
             config
           )

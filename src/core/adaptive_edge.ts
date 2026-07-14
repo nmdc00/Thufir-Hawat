@@ -11,6 +11,11 @@
 
 import type { ThufirConfig } from './config.js';
 import type { PerpTradeJournalEntry } from '../memory/perp_trade_journal.js';
+import {
+  normalizeJournalEntriesToExecutionLearningCases,
+  resolveHierarchicalExecutionEdge,
+  type ExecutionLearningSourceLevel,
+} from './execution_learning.js';
 
 export type AdaptiveEdgeSegment = {
   signalClass: string;
@@ -22,10 +27,12 @@ export type AdaptiveEdgeSegment = {
 export type AdaptiveEdgeResult = {
   edge: number;
   source: 'prior' | 'empirical' | 'blended';
+  sourceLevel?: ExecutionLearningSourceLevel;
   sampleCount: number;
   empiricalExpectancy: number | null;
   priorEdge: number;
   signalStrengthMultiplier: number;
+  confidenceWeight?: number;
 };
 
 function weightedMean(values: number[], weights: number[]): number {
@@ -33,10 +40,6 @@ function weightedMean(values: number[], weights: number[]): number {
   const totalWeight = weights.reduce((a, b) => a + b, 0);
   if (totalWeight === 0) return 0;
   return values.reduce((sum, v, i) => sum + v * (weights[i] ?? 0), 0) / totalWeight;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
 }
 
 /**
@@ -98,70 +101,22 @@ export function resolveAdaptiveEdge(
   segment: AdaptiveEdgeSegment,
   signalStrength: number
 ): AdaptiveEdgeResult {
-  const adaptiveCfg = (config.autonomy as any)?.adaptiveEdge ?? {};
-  const enabled = adaptiveCfg.enabled !== false; // default on
-
-  const priorEdge = Number.isFinite(Number(adaptiveCfg.priorEdge))
-    ? clamp(Number(adaptiveCfg.priorEdge), 0, 1)
-    : 0.03;
-  const minSamples = Number.isFinite(Number(adaptiveCfg.minSamples))
-    ? Math.max(1, Math.floor(Number(adaptiveCfg.minSamples)))
-    : 10;
-  const signalScaleFactor = Number.isFinite(Number(adaptiveCfg.signalScaleFactor))
-    ? clamp(Number(adaptiveCfg.signalScaleFactor), 0, 1)
-    : 0.5;
-  const decayHalfLifeDays = Number.isFinite(Number(adaptiveCfg.decayHalfLifeDays))
-    ? Number(adaptiveCfg.decayHalfLifeDays)
-    : null;
-
-  // Signal strength multiplier: [1 - scale, 1 + scale]
-  const clamped = clamp(signalStrength, 0, 1);
-  const signalStrengthMultiplier = 1 - signalScaleFactor + clamped * signalScaleFactor * 2;
-
-  if (!enabled) {
-    // Legacy path — caller should use confidence * 0.1 directly, but we handle it here
-    // for the guard in expressions.ts
-    return {
-      edge: 0,
-      source: 'prior',
-      sampleCount: 0,
-      empiricalExpectancy: null,
-      priorEdge,
-      signalStrengthMultiplier,
-    };
-  }
-
-  const { expectancy, sampleCount } = computeSegmentExpectancy(
-    journals,
+  const learningCases = normalizeJournalEntriesToExecutionLearningCases(journals);
+  const result = resolveHierarchicalExecutionEdge({
+    config,
+    cases: learningCases,
     segment,
-    decayHalfLifeDays
-  );
-
-  if (sampleCount < minSamples || expectancy === null) {
-    const edge = Math.max(0, priorEdge * signalStrengthMultiplier);
-    return {
-      edge,
-      source: 'prior',
-      sampleCount,
-      empiricalExpectancy: expectancy,
-      priorEdge,
-      signalStrengthMultiplier,
-    };
-  }
-
-  // Blend weight saturates at 1.0 when sampleCount reaches 3× minSamples
-  const blendWeight = clamp(sampleCount / (minSamples * 3), 0, 1);
-  const blendedExpectancy = (1 - blendWeight) * priorEdge + blendWeight * expectancy;
-  const edge = Math.max(0, blendedExpectancy * signalStrengthMultiplier);
-
-  const source = blendWeight >= 1 ? 'empirical' : 'blended';
+    signalStrength,
+  });
 
   return {
-    edge,
-    source,
-    sampleCount,
-    empiricalExpectancy: expectancy,
-    priorEdge,
-    signalStrengthMultiplier,
+    edge: result.edge,
+    source: result.source,
+    sourceLevel: result.sourceLevel,
+    sampleCount: result.sampleCount,
+    empiricalExpectancy: result.empiricalExpectancy,
+    priorEdge: result.priorEdge,
+    signalStrengthMultiplier: result.signalStrengthMultiplier,
+    confidenceWeight: result.confidenceWeight,
   };
 }

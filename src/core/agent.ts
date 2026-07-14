@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import {
   createLlmClient,
   createTrivialTaskClient,
+  createDecisionClient,
+  createDecisionFallbackClient,
   clearIdentityCache,
 } from './llm.js';
 import type { LlmClient } from './llm.js';
@@ -34,6 +36,8 @@ import { formatOperatorStatusSnapshot } from './status_snapshot.js';
 export class ThufirAgent {
   private llm: ReturnType<typeof createLlmClient>;
   private infoLlm?: LlmClient;
+  private decisionLlm: LlmClient;
+  private decisionFallbackLlm: LlmClient;
   private marketClient: MarketClient;
   private executor: ExecutionAdapter;
   private limiter: DbSpendingLimitEnforcer;
@@ -53,6 +57,8 @@ export class ThufirAgent {
     bootstrapWorkspaceIdentity(this.config);
     this.llm = createLlmClient(this.config);
     this.infoLlm = createTrivialTaskClient(this.config) ?? undefined;
+    this.decisionLlm = createDecisionClient(this.config);
+    this.decisionFallbackLlm = createDecisionFallbackClient(this.config);
     this.marketClient = createMarketClient(this.config);
     this.executor = this.createExecutor(config);
 
@@ -91,7 +97,9 @@ export class ThufirAgent {
       this.config,
       this.logger,
       undefined,
-      this.toolContext
+      this.toolContext,
+      this.decisionLlm,
+      this.decisionFallbackLlm
     );
 
     if (this.config.tradeManagement?.enabled) {
@@ -146,6 +154,16 @@ export class ThufirAgent {
   /** Expose the trivial/local LLM client for lightweight background tasks. */
   getInfoLlm(): LlmClient | undefined {
     return this.infoLlm;
+  }
+
+  /** Tool-free primary client for bounded entry/exit JSON decisions. */
+  getDecisionLlm(): LlmClient {
+    return this.decisionLlm;
+  }
+
+  /** Dedicated local Ollama fallback for bounded entry/exit decisions. */
+  getDecisionFallbackLlm(): LlmClient {
+    return this.decisionFallbackLlm;
   }
 
   /** Expose the primary LLM client for background services that need full-quality reasoning. */

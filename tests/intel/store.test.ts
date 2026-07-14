@@ -48,8 +48,8 @@ describe('pruneIntel', () => {
     db.exec(`
       INSERT INTO intel_items (id, title, content, source, source_type, timestamp)
       VALUES
-        ('old', 'Old item', 'old', 'test', 'news', '2026-01-01T00:00:00.000Z'),
-        ('new', 'New item', 'new', 'test', 'news', '2026-05-19T00:00:00.000Z');
+        ('old', 'Old item', 'old', 'test', 'news', datetime('now', '-60 days')),
+        ('new', 'New item', 'new', 'test', 'news', datetime('now'));
       INSERT INTO intel_hashes (hash, intel_id)
       VALUES
         ('hash-old', 'old'),

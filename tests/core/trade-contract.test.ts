@@ -70,6 +70,7 @@ describe('trade contract validation', () => {
         invalidationType: 'price_level',
         invalidationPrice: 49000,
         timeStopAtMs: nowMs + 3 * 60 * 60 * 1000,
+        takeProfitR: 2,
         trailMode: 'none',
       },
       nowMs,
