@@ -45,12 +45,13 @@ export type LlmClientOptions = {
   temperature?: number;
   timeoutMs?: number;
   maxTokens?: number;
+  signal?: AbortSignal;
 };
 
 export type LlmClientMeta = {
   provider: 'anthropic' | 'openai' | 'local';
   model: string;
-  kind?: 'primary' | 'executor' | 'agentic' | 'trivial';
+  kind?: 'primary' | 'executor' | 'agentic' | 'trivial' | 'decision';
 };
 
 export interface LlmClient {
@@ -60,7 +61,7 @@ export interface LlmClient {
 
 export function resolveMaxPromptChars(config: ThufirConfig, meta?: LlmClientMeta): number {
   const budget = config.agent?.promptBudget;
-  if (meta?.kind === 'trivial') {
+  if (meta?.kind === 'trivial' || meta?.kind === 'decision') {
     return budget?.trivial ?? 10000;
   }
   const ctx = getExecutionContext();
@@ -77,6 +78,9 @@ export function resolveIdentityPromptMode(
   config: ThufirConfig,
   kind?: LlmClientMeta['kind']
 ): 'full' | 'minimal' | 'none' {
+  if (kind === 'decision') {
+    return 'none';
+  }
   if (kind === 'trivial') {
     return config.agent?.internalPromptMode ?? 'minimal';
   }
@@ -232,7 +236,13 @@ function trimMessagesByCharBudget(
   return system ? [system, ...trimmedRest] : trimmedRest;
 }
 
-class LlmQueue {
+function abortError(): Error {
+  const error = new Error('LLM request aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+export class LlmQueue {
   private queue: Array<() => void> = [];
   private inFlight = 0;
 
@@ -241,9 +251,17 @@ class LlmQueue {
     private minDelayMs: number
   ) {}
 
-  async enqueue<T>(task: () => Promise<T>): Promise<T> {
+  async enqueue<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(abortError());
+        return;
+      }
+
+      let started = false;
       const run = async () => {
+        started = true;
+        signal?.removeEventListener('abort', onAbort);
         this.inFlight += 1;
         try {
           const result = await task();
@@ -259,7 +277,17 @@ class LlmQueue {
         }
       };
 
+      const onAbort = () => {
+        if (started) return;
+        const index = this.queue.indexOf(run);
+        if (index >= 0) {
+          this.queue.splice(index, 1);
+        }
+        reject(abortError());
+      };
+
       this.queue.push(run);
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.dequeue();
     });
   }
@@ -280,7 +308,7 @@ class LimitedLlmClient implements LlmClient {
   constructor(private inner: LlmClient, private limiter: LlmQueue) {}
 
   complete(messages: ChatMessage[], options?: LlmClientOptions): Promise<LlmResponse> {
-    return this.limiter.enqueue(() => this.inner.complete(messages, options));
+    return this.limiter.enqueue(() => this.inner.complete(messages, options), options?.signal);
   }
 }
 
@@ -412,9 +440,10 @@ class InfraLlmClient implements LlmClient {
     try {
       const timeoutMs = resolveInfraTimeoutMs(this.config, meta, options);
       const response = await runWithTimeout(
-        () => this.inner.complete(finalized, { ...options, timeoutMs }),
+        (signal) => this.inner.complete(finalized, { ...options, timeoutMs, signal }),
         timeoutMs,
-        `LLM request (${meta.provider}/${meta.model})`
+        `LLM request (${meta.provider}/${meta.model})`,
+        options?.signal
       );
       const totalTokens = estimatedTokens + estimateTokensFromText(response.content);
       budget.record(totalTokens, meta.provider);
@@ -519,6 +548,59 @@ export function createAgenticExecutorClient(
     );
   }
   return wrapWithLimiter(wrapWithInfra(new AgenticOpenAiClient(config, toolContext, model, toolSubset), config));
+}
+
+/**
+ * Tool-free primary client for bounded JSON decisions such as entry gating and
+ * exit consultation. Keeping this separate from the agentic client avoids
+ * sending the full tool catalog for decisions that must not execute tools.
+ */
+export function createDecisionClient(config: ThufirConfig): LlmClient {
+  const provider = config.agent.provider;
+  const model = provider === 'openai'
+    ? (config.agent.openaiModel ?? config.agent.model)
+    : config.agent.model;
+  switch (provider) {
+    case 'anthropic':
+      return wrapWithLimiter(wrapWithInfra(new AnthropicClient(config, model, 'decision'), config));
+    case 'local':
+      return createDecisionFallbackClient(config);
+    case 'openai':
+    default:
+      return wrapWithLimiter(wrapWithInfra(new OpenAiClient(config, model, 'decision'), config));
+  }
+}
+
+/**
+ * Dedicated local fallback for critical bounded decisions. It uses only the
+ * local single-flight queue, so a stuck remote request cannot prevent Ollama
+ * from starting after the primary timeout.
+ */
+export function createDecisionFallbackClient(config: ThufirConfig): LlmClient {
+  const model = config.agent.trivialTaskModel ?? 'qwen2.5:1.5b-instruct';
+  const trivialConfig = config.agent.trivial;
+  const timeoutMs = Math.max(500, trivialConfig?.localSoftTimeoutMs ?? 25_000);
+  const baseUrl = resolveLocalBaseUrl(config);
+  startLocalKeepWarm({
+    baseUrl,
+    model,
+    enabled: trivialConfig?.keepWarmEnabled ?? true,
+    intervalSeconds: trivialConfig?.keepWarmIntervalSeconds ?? 180,
+    keepAlive: trivialConfig?.keepAlive ?? '30m',
+  });
+  const local = new LocalClient(config, model, 'decision');
+  const guarded = new LimitedLlmClient(
+    new LocalHealthGuard(local, { baseUrl, model, timeoutMs }),
+    localLlmLimiter
+  );
+  return wrapWithInfra(
+    new TrivialTaskClient(guarded, {
+      temperature: trivialConfig?.temperature ?? 0.2,
+      timeoutMs,
+      maxTokens: Math.max(256, trivialConfig?.maxTokens ?? 256),
+    }),
+    config
+  );
 }
 
 export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null {
@@ -858,6 +940,7 @@ class TrivialTaskClient implements LlmClient {
     return this.inner.complete(messages, {
       temperature: options?.temperature ?? this.defaults.temperature,
       timeoutMs: options?.timeoutMs ?? this.defaults.timeoutMs,
+      signal: options?.signal,
       ...(typeof resolvedMaxTokens === 'number' ? { maxTokens: resolvedMaxTokens } : {}),
     });
   }
@@ -1107,14 +1190,17 @@ export class AgenticAnthropicClient implements LlmClient {
     while (iteration < maxIterations) {
       iteration += 1;
 
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 4096,
-        temperature,
-        system: systemPrompt,
-        messages: anthropicMessages,
-        tools: getToolsForSubset(this.toolSubset),
-      });
+      const response = await this.client.messages.create(
+        {
+          model: this.model,
+          max_tokens: 4096,
+          temperature,
+          system: systemPrompt,
+          messages: anthropicMessages,
+          tools: getToolsForSubset(this.toolSubset),
+        },
+        { signal: options?.signal }
+      );
 
       const toolUseBlocks = response.content.filter(
         (block): block is ToolUseBlock => block.type === 'tool_use'
@@ -1230,33 +1316,52 @@ function resolveDefaultLlmTimeoutMs(): number {
 }
 
 async function runWithTimeout<T>(
-  task: () => Promise<T>,
+  task: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
-  label: string
+  label: string,
+  parentSignal?: AbortSignal
 ): Promise<T> {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    controller.abort(parentSignal.reason);
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
   if (timeoutMs <= 0) {
-    return task();
+    try {
+      return await task(controller.signal);
+    } finally {
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    }
   }
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      controller.abort();
+      cleanup();
       reject(new Error(`${label} timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
-    task()
+    task(controller.signal)
       .then((value) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cleanup();
         resolve(value);
       })
       .catch((error) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cleanup();
         reject(error);
       });
   });
@@ -1348,6 +1453,7 @@ export class AgenticOpenAiClient implements LlmClient {
       const response = await fetchWithRetry(() =>
         fetch(`${this.baseUrl}${this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions'}`, {
           method: 'POST',
+          signal: options?.signal,
           headers: {
             Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
             'Content-Type': 'application/json',
@@ -1549,7 +1655,7 @@ class AnthropicClient implements LlmClient {
       temperature: options?.temperature ?? 0.2,
       system: systemPrompt,
       messages: converted,
-    });
+    }, { signal: options?.signal });
 
     const text = response.content
       .map((block) => ('text' in block ? block.text : ''))
@@ -1592,6 +1698,7 @@ class OpenAiClient implements LlmClient {
     const response = await fetchWithRetry(() =>
       fetch(`${this.baseUrl}${this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions'}`, {
         method: 'POST',
+        signal: options?.signal,
         headers: {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
           'Content-Type': 'application/json',
@@ -1678,6 +1785,12 @@ class LocalClient implements LlmClient {
     const localMessages = injectIdentity(messages, prelude);
     const controller =
       typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const abortFromParent = () => controller?.abort(options?.signal?.reason);
+    if (options?.signal?.aborted) {
+      abortFromParent();
+    } else {
+      options?.signal?.addEventListener('abort', abortFromParent, { once: true });
+    }
     const timeoutMs = options?.timeoutMs;
     let timeout: NodeJS.Timeout | null = null;
     if (controller && timeoutMs && timeoutMs > 0) {
@@ -1700,6 +1813,7 @@ class LocalClient implements LlmClient {
         }),
       });
     } finally {
+      options?.signal?.removeEventListener('abort', abortFromParent);
       if (timeout) {
         clearTimeout(timeout);
       }

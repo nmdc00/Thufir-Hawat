@@ -909,6 +909,9 @@ const ConfigSchema = z.object({
       llmEntryGate: z
         .object({
           enabled: z.boolean().default(true),
+          primaryTimeoutMs: z.number().default(45000),
+          fallbackTimeoutMs: z.number().default(25000),
+          // Deprecated compatibility field. Use fallbackTimeoutMs instead.
           timeoutMs: z.number().default(5000),
           rejectOnBothFail: z.boolean().default(true),
           gateCooldownMinutes: z.number().default(60),
@@ -965,6 +968,9 @@ const ConfigSchema = z.object({
           cadenceMinutes: z.number().default(20),
           roeThresholds: z.array(z.number()).default([3, 7, 15]),
           approachTtlMinutes: z.number().default(15),
+          primaryTimeoutMs: z.number().default(30000),
+          fallbackTimeoutMs: z.number().default(25000),
+          // Deprecated compatibility field. Use the explicit timeout fields.
           timeoutMs: z.number().default(8000),
         })
         .default({}),
