@@ -379,6 +379,16 @@ CREATE TABLE IF NOT EXISTS weight_updates (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS learning_runtime_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    run_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+INSERT OR IGNORE INTO learning_runtime_state (id, run_id, policy_version)
+VALUES (1, 'default', 'default');
+
 -- ============================================================================
 -- Market Cache
 -- ============================================================================
