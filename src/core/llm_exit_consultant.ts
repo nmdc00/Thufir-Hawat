@@ -71,8 +71,19 @@ function resolveTtlApproachMs(config: ThufirConfig): number {
   return Math.max(0, Number(config.heartbeat?.llmExitConsult?.approachTtlMinutes ?? 15)) * 60_000;
 }
 
-function resolveTimeoutMs(config: ThufirConfig): number {
-  return Math.max(1, Number(config.heartbeat?.llmExitConsult?.timeoutMs ?? 25_000));
+function resolvePrimaryTimeoutMs(config: ThufirConfig): number {
+  return Math.max(1, Number(config.heartbeat?.llmExitConsult?.primaryTimeoutMs ?? 30_000));
+}
+
+function resolveFallbackTimeoutMs(config: ThufirConfig): number {
+  return Math.max(
+    1,
+    Number(
+      config.heartbeat?.llmExitConsult?.fallbackTimeoutMs ??
+      config.heartbeat?.llmExitConsult?.timeoutMs ??
+      25_000
+    )
+  );
 }
 
 function resolveRoeThresholds(config: ThufirConfig): number[] {
@@ -239,7 +250,7 @@ export class LlmExitConsultant {
           callWithTimeout(
             this.mainLlm,
             messages,
-            resolveTimeoutMs(this.config),
+            resolvePrimaryTimeoutMs(this.config),
           )
       );
       await this.logDecision({ position, roe, nowMs, decision, usedFallback: false });
@@ -275,7 +286,7 @@ export class LlmExitConsultant {
           callWithTimeout(
             this.fallbackLlm,
             messages,
-            resolveTimeoutMs(this.config),
+            resolveFallbackTimeoutMs(this.config),
             maxTokens
           )
       );
@@ -391,23 +402,36 @@ async function callWithTimeout(
   timeoutMs: number,
   maxTokens?: number,
 ): Promise<ExitConsultDecision> {
-  const response = await Promise.race([
-    llm.complete(messages, maxTokens !== undefined ? { maxTokens } : {}),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`exit consultant timed out after ${timeoutMs}ms`)), timeoutMs)
-    ),
-  ]);
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const response = await Promise.race([
+      llm.complete(messages, {
+        timeoutMs,
+        signal: controller.signal,
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`exit consultant timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
 
-  const text = typeof response.content === 'string' ? response.content.trim() : '';
-  // Extract JSON from response (may be wrapped in markdown fences)
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('No JSON found in LLM response');
-  const normalized = normalizeOptionalFieldPseudoJson(
-    jsonMatch[0],
-    ['newTimeStopAtMs', 'newInvalidationPrice', 'reduceToFraction']
-  );
-  const parsed = normalizeExitConsultOptionalFields(
-    JSON.parse(normalized) as Record<string, unknown>
-  );
-  return ExitConsultResponseSchema.parse(parsed);
+    const text = typeof response.content === 'string' ? response.content.trim() : '';
+    // Extract JSON from response (may be wrapped in markdown fences)
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON found in LLM response');
+    const normalized = normalizeOptionalFieldPseudoJson(
+      jsonMatch[0],
+      ['newTimeStopAtMs', 'newInvalidationPrice', 'reduceToFraction']
+    );
+    const parsed = normalizeExitConsultOptionalFields(
+      JSON.parse(normalized) as Record<string, unknown>
+    );
+    return ExitConsultResponseSchema.parse(parsed);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

@@ -329,7 +329,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     thufirConfig: ThufirConfig,
     logger?: Logger,
     notify?: (message: string) => Promise<void>,
-    toolContext?: ToolExecutorContext
+    toolContext?: ToolExecutorContext,
+    decisionLlm?: LlmClient,
+    decisionFallbackLlm?: LlmClient
   ) {
     super();
     this.llm = llm;
@@ -344,8 +346,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     this.schedulerNamespace = this.buildSchedulerNamespace();
     this.startedAtMs = Date.now();
     this.entryGate = new LlmEntryGate(
-      this.llm,
-      this.fallbackLlm,
+      decisionLlm ?? this.llm,
+      decisionFallbackLlm ?? this.fallbackLlm,
       async (msg) => { if (this.notify) await this.notify(msg); },
       PositionBook.getInstance(),
       this.thufirConfig,

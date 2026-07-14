@@ -295,6 +295,8 @@ autonomy:
     minDayVolumeUsd: 20000000
   llmEntryGate:
     enabled: true
+    primaryTimeoutMs: 45000
+    fallbackTimeoutMs: 25000
     timeoutMs: 5000
     rejectOnBothFail: true
     gateCooldownMinutes: 60
@@ -331,6 +333,8 @@ heartbeat:
     cadenceMinutes: 20
     roeThresholds: [3, 7, 15]
     approachTtlMinutes: 15
+    primaryTimeoutMs: 30000
+    fallbackTimeoutMs: 25000
     timeoutMs: 8000
   dynamicProfitProtection:
     enabled: true

@@ -72,6 +72,8 @@ memory: {}
     expect(config.agent.promptBudget.trivial).toBe(10000);
     expect(config.agent.promptBudget.chat).toBe(120000);
     expect(config.autonomy.llmEntryGate.enabled).toBe(true);
+    expect(config.autonomy.llmEntryGate.primaryTimeoutMs).toBe(45000);
+    expect(config.autonomy.llmEntryGate.fallbackTimeoutMs).toBe(25000);
     expect(config.autonomy.llmEntryGate.timeoutMs).toBe(5000);
     expect(config.autonomy.llmEntryGate.rejectOnBothFail).toBe(true);
     expect(config.heartbeat.llmExitConsult.enabled).toBe(true);
@@ -79,6 +81,8 @@ memory: {}
     expect(config.heartbeat.llmExitConsult.cadenceMinutes).toBe(20);
     expect(config.heartbeat.llmExitConsult.roeThresholds).toEqual([3, 7, 15]);
     expect(config.heartbeat.llmExitConsult.approachTtlMinutes).toBe(15);
+    expect(config.heartbeat.llmExitConsult.primaryTimeoutMs).toBe(30000);
+    expect(config.heartbeat.llmExitConsult.fallbackTimeoutMs).toBe(25000);
     expect(config.heartbeat.llmExitConsult.timeoutMs).toBe(8000);
     expect(config.notifications.heartbeat.timeoutMs).toBe(30000);
     expect(config.notifications.heartbeat.degradedMode).toBe('ok');

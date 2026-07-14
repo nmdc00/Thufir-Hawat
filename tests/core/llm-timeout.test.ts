@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChatMessage, LlmClient } from '../../src/core/llm.js';
-import { wrapWithInfra } from '../../src/core/llm.js';
+import { LlmQueue, wrapWithInfra } from '../../src/core/llm.js';
 
 describe('wrapWithInfra timeout', () => {
   it('fails a hung provider call after timeout', async () => {
+    let observedSignal: AbortSignal | undefined;
     const neverClient: LlmClient = {
       meta: { provider: 'anthropic', model: 'claude-test' },
-      complete: async (_messages: ChatMessage[]) =>
-        await new Promise(() => {
-          // Intentional hang
-        }),
+      complete: async (_messages: ChatMessage[], options) => {
+        observedSignal = options?.signal;
+        return await new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      },
     };
 
     const wrapped = wrapWithInfra(
@@ -33,6 +36,28 @@ describe('wrapWithInfra timeout', () => {
         }
       )
     ).rejects.toThrow(/timed out/i);
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('removes aborted queued work before it can consume a slot', async () => {
+    const queue = new LlmQueue(1, 0);
+    let releaseFirst: (() => void) | undefined;
+    const first = queue.enqueue(
+      () => new Promise<void>((resolve) => { releaseFirst = resolve; })
+    );
+    let secondStarted = false;
+    const controller = new AbortController();
+    const second = queue.enqueue(async () => {
+      secondStarted = true;
+    }, controller.signal);
+
+    controller.abort();
+    await expect(second).rejects.toMatchObject({ name: 'AbortError' });
+    releaseFirst?.();
+    await first;
+    await queue.enqueue(async () => undefined);
+
+    expect(secondStarted).toBe(false);
   });
 
   it('preserves trivial local timeout instead of inheriting the global LLM timeout', async () => {

@@ -45,7 +45,14 @@ function makeConfig() {
   return {
     agent: { promptBudget: { trivial: 10000 } },
     heartbeat: {
-      llmExitConsult: { timeoutMs: 500, firstConsultMinutes: 20, cadenceMinutes: 20, approachTtlMinutes: 15 },
+      llmExitConsult: {
+        primaryTimeoutMs: 500,
+        fallbackTimeoutMs: 500,
+        timeoutMs: 500,
+        firstConsultMinutes: 20,
+        cadenceMinutes: 20,
+        approachTtlMinutes: 15,
+      },
     },
   } as any;
 }
@@ -140,6 +147,32 @@ describe('LlmExitConsultant.consult', () => {
     expect(decision.action).toBe('hold');
     expect(notifyMock).toHaveBeenCalledWith(expect.stringContaining('using fallback LLM'));
   }, 15000);
+
+  it('aborts the primary request before starting the local fallback', async () => {
+    let primarySignal: AbortSignal | undefined;
+    const main = {
+      complete: vi.fn().mockImplementation((_messages, options) => {
+        primarySignal = options?.signal;
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      }),
+    };
+    const consultant = new LlmExitConsultant(
+      main as any,
+      makeLlm({ action: 'hold', reasoning: 'local fallback' }) as any,
+      vi.fn().mockResolvedValue(undefined),
+      {
+        agent: { promptBudget: { trivial: 10000 } },
+        heartbeat: { llmExitConsult: { primaryTimeoutMs: 20, fallbackTimeoutMs: 100 } },
+      } as any
+    );
+
+    const decision = await consultant.consult(makeBookEntry(), 50000, 0.01, '');
+
+    expect(primarySignal?.aborted).toBe(true);
+    expect(decision).toMatchObject({ action: 'hold', reasoning: 'local fallback' });
+  });
 
   it('returns safe hold when both LLMs fail', async () => {
     const consultant = makeConsultant(makeErrorLlm(), makeErrorLlm());

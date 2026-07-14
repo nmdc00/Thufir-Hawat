@@ -486,20 +486,61 @@ describe('LlmEntryGate', () => {
       expect(mockRecordEntryGateDecision).toHaveBeenCalled();
     });
 
-    it('calls main LLM without timeoutMs option (avoids proxy rejection)', async () => {
+    it('passes separate primary and local fallback timeout budgets', async () => {
       const book = makeBook();
-      const completeFn = vi.fn().mockResolvedValue({
-        content: JSON.stringify({ verdict: 'approve', reasoning: 'ok' }),
-        model: 'test-main',
-      });
+      const completeFn = vi.fn().mockRejectedValue(new Error('primary unavailable'));
       const mainLlm: LlmClient = { complete: completeFn } as unknown as LlmClient;
-      const gate = new LlmEntryGate(mainLlm, makeLlmClient(null), notify, book, dummyConfig);
+      const fallbackLlm = makeLlmClient({ verdict: 'reject', reasoning: 'local fallback' });
+      const gate = new LlmEntryGate(
+        mainLlm,
+        fallbackLlm,
+        notify,
+        book,
+        {
+          autonomy: {
+            llmEntryGate: { primaryTimeoutMs: 45_000, fallbackTimeoutMs: 25_000 },
+          },
+        } as any
+      );
 
       await gate.evaluate(makeCandidate(), markPrice);
 
       expect(completeFn).toHaveBeenCalledOnce();
-      const options = completeFn.mock.calls[0][1] as Record<string, unknown>;
-      expect(options).not.toHaveProperty('timeoutMs');
+      expect(completeFn.mock.calls[0][1]).toMatchObject({ timeoutMs: 45_000 });
+      expect((fallbackLlm.complete as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatchObject({
+        timeoutMs: 25_000,
+      });
+    });
+
+    it('aborts a timed-out primary before invoking the local fallback', async () => {
+      const book = makeBook();
+      let primarySignal: AbortSignal | undefined;
+      const mainLlm: LlmClient = {
+        complete: vi.fn().mockImplementation((_messages, options) => {
+          primarySignal = options?.signal;
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          });
+        }),
+      };
+      const fallbackLlm = makeLlmClient({ verdict: 'reject', reasoning: 'local fallback' });
+      const gate = new LlmEntryGate(
+        mainLlm,
+        fallbackLlm,
+        notify,
+        book,
+        {
+          autonomy: {
+            llmEntryGate: { primaryTimeoutMs: 20, fallbackTimeoutMs: 100 },
+          },
+        } as any
+      );
+
+      const decision = await gate.evaluate(makeCandidate(), markPrice);
+
+      expect(primarySignal?.aborted).toBe(true);
+      expect(decision).toMatchObject({ verdict: 'reject', reasoning: 'local fallback' });
+      expect(fallbackLlm.complete).toHaveBeenCalledOnce();
     });
 
     it('uses fallback when main LLM returns invalid JSON', async () => {
