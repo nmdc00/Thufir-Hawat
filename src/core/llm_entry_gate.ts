@@ -328,8 +328,19 @@ function formatTrackRecord(stats: SignalPerformanceSummary): string {
   ].join('\n');
 }
 
-function resolveTimeoutMs(config: ThufirConfig): number {
-  return Math.max(1, Number(config.autonomy?.llmEntryGate?.timeoutMs ?? 5_000));
+function resolvePrimaryTimeoutMs(config: ThufirConfig): number {
+  return Math.max(1, Number(config.autonomy?.llmEntryGate?.primaryTimeoutMs ?? 45_000));
+}
+
+function resolveFallbackTimeoutMs(config: ThufirConfig): number {
+  return Math.max(
+    1,
+    Number(
+      config.autonomy?.llmEntryGate?.fallbackTimeoutMs ??
+      config.autonomy?.llmEntryGate?.timeoutMs ??
+      25_000
+    )
+  );
 }
 
 function shouldRejectOnBothFail(config: ThufirConfig): boolean {
@@ -518,13 +529,30 @@ async function callLlm(
   timeoutMs?: number
 ): Promise<EntryGateDecision> {
   const { system, user } = buildPrompt(candidate, bookEntries, sameSideWarning, signalStats);
-  const response = await client.complete(
-    [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    timeoutMs !== undefined ? { timeoutMs } : {}
-  );
+  const messages = [
+    { role: 'system' as const, content: system },
+    { role: 'user' as const, content: user },
+  ];
+  let response;
+  if (timeoutMs === undefined) {
+    response = await client.complete(messages);
+  } else {
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      response = await Promise.race([
+        client.complete(messages, { timeoutMs, signal: controller.signal }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error(`entry gate timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 
   const normalized = normalizeOptionalFieldPseudoJson(
     response.content.trim(),
@@ -759,7 +787,8 @@ export class LlmEntryGate {
       listPerpTradeJournals({ limit: 200 }),
       evaluationCandidate.signalClass,
     );
-    const timeoutMs = resolveTimeoutMs(this.config);
+    const primaryTimeoutMs = resolvePrimaryTimeoutMs(this.config);
+    const fallbackTimeoutMs = resolveFallbackTimeoutMs(this.config);
     let usedFallback = false;
     let decision: EntryGateDecision;
 
@@ -773,10 +802,17 @@ export class LlmEntryGate {
 
     const criticalCtx = { mode: 'FULL_AGENT' as const, critical: true, reason: 'entry_gate' };
 
-    // Try main LLM — no timeoutMs cap, matching AgenticOpenAiClient behaviour
+    // Use explicit, cancellable budgets for both the primary and local fallback.
     try {
       decision = await withExecutionContext(criticalCtx, () =>
-        callLlm(this.mainLlm, evaluationCandidate, bookEntries, sameSideWarning, signalStats)
+        callLlm(
+          this.mainLlm,
+          evaluationCandidate,
+          bookEntries,
+          sameSideWarning,
+          signalStats,
+          primaryTimeoutMs
+        )
       );
     } catch (error) {
       const summary = summarizeLlmError(error);
@@ -794,7 +830,14 @@ export class LlmEntryGate {
       } catch { /* best-effort */ }
       try {
         decision = await withExecutionContext(criticalCtx, () =>
-          callLlm(this.fallbackLlm, evaluationCandidate, bookEntries, sameSideWarning, signalStats, timeoutMs)
+          callLlm(
+            this.fallbackLlm,
+            evaluationCandidate,
+            bookEntries,
+            sameSideWarning,
+            signalStats,
+            fallbackTimeoutMs
+          )
         );
       } catch (fallbackError) {
         const summary = summarizeLlmError(fallbackError);

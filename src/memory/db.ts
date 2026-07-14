@@ -25,6 +25,7 @@ function applySchema(db: Database.Database): void {
   migratePredictionsForPlil(db);  // must run before schema.sql so the view can reference outcome_basis
   const schemaSql = getSchemaSql();
   db.exec(schemaSql);
+  migrateTradeDossierTraceColumns(db);
   ensureOriginatorScorecardSchema(db);
   migrateIntelReferentialIntegrity(db);
   migratePerpPositionLifecycleReferentialIntegrity(db);
@@ -32,6 +33,26 @@ function applySchema(db: Database.Database): void {
   migratePredictionsForDelphiResolution(db);
   migrateAlertPersistenceLifecycle(db);
   migrateCausalEventReasoning(db);
+}
+
+function migrateTradeDossierTraceColumns(db: Database.Database): void {
+  const hasTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_dossiers' LIMIT 1")
+    .get();
+  if (!hasTable) return;
+  const columns = db.prepare("PRAGMA table_info('trade_dossiers')").all() as Array<{ name?: string }>;
+  const columnNames = new Set(columns.map((column) => String(column.name ?? '')));
+  const addColumnIfMissing = (name: string, definition: string): void => {
+    if (columnNames.has(name)) return;
+    db.exec(`ALTER TABLE trade_dossiers ADD COLUMN ${definition}`);
+    columnNames.add(name);
+  };
+  addColumnIfMissing('source_hypothesis_id', 'source_hypothesis_id TEXT');
+  addColumnIfMissing('retrieval_payload', 'retrieval_payload TEXT');
+  addColumnIfMissing('policy_trace_payload', 'policy_trace_payload TEXT');
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_trade_dossiers_hypothesis ON trade_dossiers(source_hypothesis_id)'
+  );
 }
 
 function getTableSql(db: Database.Database, tableName: string): string | null {
