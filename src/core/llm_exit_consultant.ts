@@ -71,6 +71,20 @@ function resolveTtlApproachMs(config: ThufirConfig): number {
   return Math.max(0, Number(config.heartbeat?.llmExitConsult?.approachTtlMinutes ?? 15)) * 60_000;
 }
 
+function resolveMinConsultSpacingMs(config: ThufirConfig): number {
+  return Math.max(
+    0,
+    Number(config.heartbeat?.llmExitConsult?.minConsultSpacingMinutes ?? 5)
+  ) * 60_000;
+}
+
+function resolveMaxCallsPerPositionPerHour(config: ThufirConfig): number {
+  return Math.max(
+    1,
+    Math.floor(Number(config.heartbeat?.llmExitConsult?.maxCallsPerPositionPerHour ?? 3))
+  );
+}
+
 function resolvePrimaryTimeoutMs(config: ThufirConfig): number {
   return Math.max(1, Number(config.heartbeat?.llmExitConsult?.primaryTimeoutMs ?? 30_000));
 }
@@ -117,6 +131,8 @@ function summarizeLlmError(error: unknown): { type: string; message: string } {
 // ---------------------------------------------------------------------------
 
 export class LlmExitConsultant {
+  private consultStartsByPosition = new Map<string, number[]>();
+
   constructor(
     private mainLlm: LlmClient,
     private fallbackLlm: LlmClient,
@@ -150,6 +166,32 @@ export class LlmExitConsultant {
     // Time-based trigger — 4h cadence for structural, configured default otherwise
     const firstConsultMs = isStructural ? 4 * 60 * 60_000 : resolveFirstConsultMs(this.config);
     const cadenceMs = isStructural ? 4 * 60 * 60_000 : resolveCadenceMs(this.config);
+    const minSpacingMs = resolveMinConsultSpacingMs(this.config);
+    const sinceLastConsultMs = position.lastConsultAtMs === null
+      ? Number.POSITIVE_INFINITY
+      : nowMs - position.lastConsultAtMs;
+
+    // No soft review signal may fan out into repeated calls on the 30-second
+    // position loop. Hard invalidation and emergency exits are evaluated by
+    // PositionHeartbeatService before this consultant and remain immediate.
+    if (sinceLastConsultMs < minSpacingMs || !this.hasHourlyCapacity(position, nowMs)) {
+      return false;
+    }
+
+    let previousRoe: number | null = null;
+    let previousPrice: number | null = null;
+    if (position.lastConsultDecision != null) {
+      try {
+        const previous = JSON.parse(position.lastConsultDecision) as {
+          roeAtConsult?: number;
+          priceAtConsult?: number;
+        };
+        previousRoe = typeof previous.roeAtConsult === 'number' ? previous.roeAtConsult : null;
+        previousPrice = typeof previous.priceAtConsult === 'number' ? previous.priceAtConsult : null;
+      } catch {
+        // Ignore malformed legacy snapshots. Cadence and the hourly cap still apply.
+      }
+    }
 
     if (position.lastConsultAtMs === null) {
       // Never consulted — trigger once position is at least firstConsultMs old.
@@ -161,30 +203,20 @@ export class LlmExitConsultant {
       if (entryAge >= firstConsultMs) {
         return true;
       }
-    } else if (nowMs - position.lastConsultAtMs >= cadenceMs) {
+    } else if (sinceLastConsultMs >= cadenceMs) {
       return true;
     }
 
     // ROE threshold crossing
     if (isStructural) {
       // Structural trades: only trigger on significant drawdown, never on profit
-      if (roe <= -0.05) {
+      if (roe <= -0.05 && (previousRoe === null || previousRoe > -0.05)) {
         return true;
       }
     } else {
       // Tactical/scalp: trigger on any threshold crossing (profit or loss)
       const roeThresholds = resolveRoeThresholds(this.config);
-      let lastAbsRoe = 0;
-      if (position.lastConsultDecision != null) {
-        try {
-          const prev = JSON.parse(position.lastConsultDecision) as { roeAtConsult?: number };
-          if (typeof prev.roeAtConsult === 'number') {
-            lastAbsRoe = Math.abs(prev.roeAtConsult);
-          }
-        } catch {
-          // ignore parse errors
-        }
-      }
+      const lastAbsRoe = Math.abs(previousRoe ?? 0);
       for (const threshold of roeThresholds) {
         if (absRoe >= threshold && lastAbsRoe < threshold) {
           return true;
@@ -192,9 +224,14 @@ export class LlmExitConsultant {
       }
     }
 
-    // TTL approach trigger — fires for all trade types
+    // TTL approach is a level signal, so it must respect consultation cadence.
+    // Without this guard a `hold` result retriggers every heartbeat tick until
+    // the model happens to choose `extend_ttl`.
     const remainingMs = position.thesisExpiresAtMs - nowMs;
-    if (remainingMs <= ttlApproachMs) {
+    if (
+      remainingMs <= ttlApproachMs &&
+      (position.lastConsultAtMs === null || sinceLastConsultMs >= cadenceMs)
+    ) {
       return true;
     }
 
@@ -205,13 +242,36 @@ export class LlmExitConsultant {
       );
       if (invalidationRule != null) {
         const proximity = Math.abs(currentPrice - invalidationRule.value) / currentPrice;
-        if (proximity <= 0.02) {
+        const previousProximity = previousPrice != null && previousPrice > 0
+          ? Math.abs(previousPrice - invalidationRule.value) / previousPrice
+          : Number.POSITIVE_INFINITY;
+        if (proximity <= 0.02 && previousProximity > 0.02) {
           return true;
         }
       }
     }
 
     return false;
+  }
+
+  private hasHourlyCapacity(position: BookEntry, nowMs: number): boolean {
+    const key = `${position.symbol}:${position.side}`;
+    const cutoff = nowMs - 60 * 60_000;
+    const recent = (this.consultStartsByPosition.get(key) ?? []).filter((ts) => ts > cutoff);
+    if (recent.length > 0) {
+      this.consultStartsByPosition.set(key, recent);
+    } else {
+      this.consultStartsByPosition.delete(key);
+    }
+    return recent.length < resolveMaxCallsPerPositionPerHour(this.config);
+  }
+
+  private recordConsultStart(position: BookEntry, nowMs: number): void {
+    const key = `${position.symbol}:${position.side}`;
+    const cutoff = nowMs - 60 * 60_000;
+    const recent = (this.consultStartsByPosition.get(key) ?? []).filter((ts) => ts > cutoff);
+    recent.push(nowMs);
+    this.consultStartsByPosition.set(key, recent);
   }
 
   /**
@@ -225,6 +285,7 @@ export class LlmExitConsultant {
     freshContext: string,
   ): Promise<ExitConsultDecision> {
     const nowMs = Date.now();
+    this.recordConsultStart(position, nowMs);
     const timeHeldMs = nowMs - getEntryMs(position);
     const timeHeldMin = Math.max(0, Math.round(timeHeldMs / 60_000));
     const remainingMs = position.thesisExpiresAtMs - nowMs;

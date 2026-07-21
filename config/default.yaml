@@ -331,6 +331,8 @@ heartbeat:
     enabled: true
     firstConsultMinutes: 20
     cadenceMinutes: 20
+    minConsultSpacingMinutes: 5
+    maxCallsPerPositionPerHour: 3
     roeThresholds: [3, 7, 15]
     approachTtlMinutes: 15
     primaryTimeoutMs: 30000

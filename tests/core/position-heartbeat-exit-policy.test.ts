@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Logger } from '../../src/core/logger.js';
+import { LlmExitConsultant } from '../../src/core/llm_exit_consultant.js';
 import { PositionHeartbeatService } from '../../src/core/position_heartbeat.js';
 
 vi.mock('../../src/memory/position_heartbeat_journal.js', () => ({
@@ -158,6 +159,58 @@ describe('position heartbeat exit policy', () => {
     expect(calls.some((call) => call.tool === 'perp_place_order')).toBe(false);
     expect(mockUpsertPolicy).toHaveBeenCalledOnce();
     expect(mockClearPolicy).not.toHaveBeenCalled();
+  });
+
+  it('does not repeat an unchanged TTL-approach review on consecutive runtime ticks', async () => {
+    const expiry = Date.now() + 10 * 60 * 1000;
+    mockGetPolicy.mockReturnValue({
+      symbol: 'ETH',
+      side: 'long',
+      timeStopAtMs: expiry,
+      invalidationPrice: 95,
+      notes: null,
+    });
+    const bookEntry = makeBookEntry({
+      thesisExpiresAtMs: expiry,
+      entryAtMs: Date.now() - 10 * 60 * 1000,
+    });
+    const main = {
+      complete: vi.fn().mockResolvedValue({
+        content: JSON.stringify({ action: 'hold', reasoning: 'thesis unchanged' }),
+        model: 'mock-main',
+      }),
+    };
+    const fallback = {
+      complete: vi.fn().mockResolvedValue({
+        content: JSON.stringify({ action: 'hold', reasoning: 'fallback' }),
+        model: 'mock-fallback',
+      }),
+    };
+    const config = makeConfig();
+    config.heartbeat.llmExitConsult = {
+      firstConsultMinutes: 20,
+      cadenceMinutes: 20,
+      minConsultSpacingMinutes: 5,
+      maxCallsPerPositionPerHour: 3,
+      approachTtlMinutes: 15,
+      primaryTimeoutMs: 500,
+      fallbackTimeoutMs: 500,
+    };
+    const exitConsultant = new LlmExitConsultant(main as any, fallback as any, async () => {}, config);
+    const { service, calls } = makeService({
+      config,
+      exitConsultant,
+      getBookEntry: () => bookEntry,
+    });
+
+    service.start();
+    await service.tickOnce();
+    await service.tickOnce();
+    service.stop();
+
+    expect(main.complete).toHaveBeenCalledOnce();
+    expect(fallback.complete).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.tool === 'perp_place_order')).toBe(false);
   });
 
   it('updates invalidation and extends TTL on consultant review', async () => {
