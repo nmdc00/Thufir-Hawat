@@ -51,6 +51,8 @@ function makeConfig() {
         timeoutMs: 500,
         firstConsultMinutes: 20,
         cadenceMinutes: 20,
+        minConsultSpacingMinutes: 5,
+        maxCallsPerPositionPerHour: 3,
         approachTtlMinutes: 15,
       },
     },
@@ -94,13 +96,56 @@ describe('LlmExitConsultant.shouldConsult', () => {
     expect(consultant.shouldConsult(entry, 50000, 0.01, NOW)).toBe(false);
   });
 
-  it('consults when TTL is approaching', () => {
+  it('consults once when TTL is approaching and the position has never been reviewed', () => {
     const consultant = makeConsultant(makeLlm({ action: 'hold', reasoning: 'ok' }), makeLlm({ action: 'hold', reasoning: 'ok' }));
     const entry = makeBookEntry({
       thesisExpiresAtMs: NOW + 10 * 60 * 1000,
-      lastConsultAtMs: NOW - 60 * 1000,
+      lastConsultAtMs: null,
     });
     expect(consultant.shouldConsult(entry, 50000, 0.01, NOW)).toBe(true);
+  });
+
+  it('does not repeat a TTL-approach consult before cadence', () => {
+    const consultant = makeConsultant(
+      makeLlm({ action: 'hold', reasoning: 'ok' }),
+      makeLlm({ action: 'hold', reasoning: 'ok' })
+    );
+    const entry = makeBookEntry({
+      thesisExpiresAtMs: NOW + 10 * 60 * 1000,
+      lastConsultAtMs: NOW - 6 * 60 * 1000,
+      lastConsultDecision: JSON.stringify({
+        action: 'hold',
+        roeAtConsult: 0.01,
+        priceAtConsult: 50000,
+      }),
+    });
+    expect(consultant.shouldConsult(entry, 50000, 0.01, NOW)).toBe(false);
+  });
+
+  it('allows a new ROE threshold crossing after minimum spacing but before cadence', () => {
+    const consultant = makeConsultant(
+      makeLlm({ action: 'hold', reasoning: 'ok' }),
+      makeLlm({ action: 'hold', reasoning: 'ok' })
+    );
+    const entry = makeBookEntry({
+      lastConsultAtMs: NOW - 6 * 60 * 1000,
+      lastConsultDecision: JSON.stringify({
+        action: 'hold',
+        roeAtConsult: 0.02,
+        priceAtConsult: 50000,
+      }),
+    });
+    expect(consultant.shouldConsult(entry, 50000, 0.04, NOW)).toBe(true);
+  });
+
+  it('hard-caps consultations per position within a rolling hour', async () => {
+    const main = makeLlm({ action: 'hold', reasoning: 'ok' });
+    const consultant = makeConsultant(main, makeLlm({ action: 'hold', reasoning: 'fallback' }));
+    const entry = makeBookEntry();
+    await consultant.consult(entry, 50000, 0.01, 'context');
+    await consultant.consult(entry, 50000, 0.01, 'context');
+    await consultant.consult(entry, 50000, 0.01, 'context');
+    expect(consultant.shouldConsult(entry, 50000, 0.04, Date.now())).toBe(false);
   });
 });
 

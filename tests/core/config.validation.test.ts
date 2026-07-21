@@ -79,6 +79,8 @@ memory: {}
     expect(config.heartbeat.llmExitConsult.enabled).toBe(true);
     expect(config.heartbeat.llmExitConsult.firstConsultMinutes).toBe(20);
     expect(config.heartbeat.llmExitConsult.cadenceMinutes).toBe(20);
+    expect(config.heartbeat.llmExitConsult.minConsultSpacingMinutes).toBe(5);
+    expect(config.heartbeat.llmExitConsult.maxCallsPerPositionPerHour).toBe(3);
     expect(config.heartbeat.llmExitConsult.roeThresholds).toEqual([3, 7, 15]);
     expect(config.heartbeat.llmExitConsult.approachTtlMinutes).toBe(15);
     expect(config.heartbeat.llmExitConsult.primaryTimeoutMs).toBe(30000);

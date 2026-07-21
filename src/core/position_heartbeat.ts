@@ -198,7 +198,12 @@ export class PositionHeartbeatService {
             const freshContext = summarizeMarketContext(freshContextSnapshot);
             const decision = await this.exitConsultant.consult(bookEntry, mid ?? 0, roe, freshContext);
             bookEntry.lastConsultAtMs = nowMs;
-            bookEntry.lastConsultDecision = JSON.stringify({ ...decision, roeAtConsult: roe, trigger: 'ttl_expired' });
+            bookEntry.lastConsultDecision = JSON.stringify({
+              ...decision,
+              roeAtConsult: roe,
+              priceAtConsult: mid ?? 0,
+              trigger: 'ttl_expired',
+            });
 
             if (decision.action === 'reduce' && decision.reduceToFraction != null) {
               await this.executeContractReduce(
@@ -311,7 +316,11 @@ export class PositionHeartbeatService {
             const freshContext = summarizeMarketContext(freshContextSnapshot);
             const decision = await this.exitConsultant.consult(bookEntry, mid ?? 0, roe, freshContext);
             bookEntry.lastConsultAtMs = nowMs;
-            bookEntry.lastConsultDecision = JSON.stringify({ ...decision, roeAtConsult: roe });
+            bookEntry.lastConsultDecision = JSON.stringify({
+              ...decision,
+              roeAtConsult: roe,
+              priceAtConsult: mid ?? 0,
+            });
 
             if (decision.action === 'reduce' && decision.reduceToFraction != null) {
               const side = pos.side === 'long' ? 'sell' : 'buy';
