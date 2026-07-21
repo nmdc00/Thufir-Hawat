@@ -101,6 +101,7 @@ import { handleDashboardApiRequest } from './dashboard_api.js';
 import {
   buildScheduledHeartbeatPrompt,
   classifyHeartbeatResponse,
+  shouldRunScheduledHeartbeatLlm,
   shouldDeliverHeartbeatResponse,
 } from './heartbeat.js';
 
@@ -724,6 +725,7 @@ if (heartbeatConfig?.enabled) {
       heartbeatConfig.suppressLlmDuringActiveChatSeconds != null &&
       isWithinActiveChatWindow(heartbeatConfig.suppressLlmDuringActiveChatSeconds);
     let proactiveSummary = '';
+    let proactiveStoredCount = 0;
     if (proactiveConfig?.enabled && proactiveConfig.mode === 'heartbeat') {
       try {
         const suppressProactiveLlm =
@@ -742,6 +744,7 @@ if (heartbeatConfig?.enabled) {
           fetchPerQuery: proactiveConfig.fetchPerQuery,
           fetchMaxChars: proactiveConfig.fetchMaxChars,
         });
+        proactiveStoredCount = result.storedCount;
         const titles = result.storedItems
           .map((item) => item.title)
           .filter((title): title is string => typeof title === 'string')
@@ -779,7 +782,14 @@ if (heartbeatConfig?.enabled) {
       logger.info('Heartbeat LLM message generation suppressed due to active chat window');
       return;
     }
-    const response = await primaryAgent.handleHeartbeat(prompt);
+    // Routine liveness has no new information to interpret. Resolve it
+    // deterministically and reserve Ollama for an actual proactive summary.
+    const response = shouldRunScheduledHeartbeatLlm(
+      proactiveSummary,
+      heartbeatConfig.includeProactiveSummary !== false ? proactiveStoredCount : 0
+    )
+      ? await primaryAgent.handleHeartbeat(prompt)
+      : 'HEARTBEAT_OK';
     if (!response || response.trim().length === 0) {
       return;
     }
