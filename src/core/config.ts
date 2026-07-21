@@ -538,6 +538,12 @@ const ConfigSchema = z.object({
   learning: z
     .object({
       cleanDataCutoff: z.string().default('2026-06-13'),
+      reconciliationPrecisionUsd: z.number().default(1e-8),
+      eligibility: z
+        .object({
+          minEffectiveSamples: z.number().default(20),
+        })
+        .default({}),
     })
     .default({}),
   memory: z.object({
