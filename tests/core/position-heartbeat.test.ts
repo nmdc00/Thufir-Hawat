@@ -148,6 +148,7 @@ describe('position heartbeat authorities', () => {
 
     const exitConsultant = {
       shouldConsult: vi.fn().mockReturnValue(false),
+      canConsult: vi.fn().mockReturnValue(true),
       consult: vi.fn().mockResolvedValue({ action: 'hold', reasoning: 'thesis intact' }),
     };
 
