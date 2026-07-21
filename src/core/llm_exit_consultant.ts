@@ -140,6 +140,15 @@ export class LlmExitConsultant {
     private config: ThufirConfig,
   ) {}
 
+  /** Gate every soft consultation path, including already-expired TTL reviews. */
+  canConsult(position: BookEntry, nowMs: number): boolean {
+    const sinceLastConsultMs = position.lastConsultAtMs === null
+      ? Number.POSITIVE_INFINITY
+      : nowMs - position.lastConsultAtMs;
+    return sinceLastConsultMs >= resolveMinConsultSpacingMs(this.config)
+      && this.hasHourlyCapacity(position, nowMs);
+  }
+
   /**
    * Returns true if the position should be consulted right now.
    *
@@ -166,7 +175,6 @@ export class LlmExitConsultant {
     // Time-based trigger — 4h cadence for structural, configured default otherwise
     const firstConsultMs = isStructural ? 4 * 60 * 60_000 : resolveFirstConsultMs(this.config);
     const cadenceMs = isStructural ? 4 * 60 * 60_000 : resolveCadenceMs(this.config);
-    const minSpacingMs = resolveMinConsultSpacingMs(this.config);
     const sinceLastConsultMs = position.lastConsultAtMs === null
       ? Number.POSITIVE_INFINITY
       : nowMs - position.lastConsultAtMs;
@@ -174,7 +182,7 @@ export class LlmExitConsultant {
     // No soft review signal may fan out into repeated calls on the 30-second
     // position loop. Hard invalidation and emergency exits are evaluated by
     // PositionHeartbeatService before this consultant and remain immediate.
-    if (sinceLastConsultMs < minSpacingMs || !this.hasHourlyCapacity(position, nowMs)) {
+    if (!this.canConsult(position, nowMs)) {
       return false;
     }
 
