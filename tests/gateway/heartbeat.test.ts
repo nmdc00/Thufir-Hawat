@@ -4,6 +4,7 @@ import {
   buildScheduledHeartbeatPrompt,
   buildHeartbeatDegradedResponse,
   classifyHeartbeatResponse,
+  shouldRunScheduledHeartbeatLlm,
   shouldDeliverHeartbeatResponse,
 } from '../../src/gateway/heartbeat.js';
 
@@ -32,6 +33,12 @@ describe('gateway heartbeat helpers', () => {
     );
     expect(buildScheduledHeartbeatPrompt(base, summary, false)).toBe(base);
     expect(buildScheduledHeartbeatPrompt(base, '', true)).toBe(base);
+  });
+
+  it('uses no model for routine liveness and reserves the local model for new summaries', () => {
+    expect(shouldRunScheduledHeartbeatLlm('', 0)).toBe(false);
+    expect(shouldRunScheduledHeartbeatLlm('Proactive search stored 0 items.', 0)).toBe(false);
+    expect(shouldRunScheduledHeartbeatLlm('Proactive search stored 2 items.', 2)).toBe(true);
   });
 
   it('allows channel delivery only for heartbeat actions', () => {

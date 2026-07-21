@@ -46,6 +46,13 @@ export function buildScheduledHeartbeatPrompt(
   return `${heartbeatPrompt}\n\n${summary}`;
 }
 
+export function shouldRunScheduledHeartbeatLlm(
+  proactiveSummary: string,
+  proactiveStoredCount: number
+): boolean {
+  return proactiveStoredCount > 0 && proactiveSummary.trim().length > 0;
+}
+
 export function shouldDeliverHeartbeatResponse(
   response: string | null | undefined
 ): boolean {

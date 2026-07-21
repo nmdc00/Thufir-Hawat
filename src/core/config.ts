@@ -966,6 +966,8 @@ const ConfigSchema = z.object({
           enabled: z.boolean().default(true),
           firstConsultMinutes: z.number().default(20),
           cadenceMinutes: z.number().default(20),
+          minConsultSpacingMinutes: z.number().default(5),
+          maxCallsPerPositionPerHour: z.number().int().positive().default(3),
           roeThresholds: z.array(z.number()).default([3, 7, 15]),
           approachTtlMinutes: z.number().default(15),
           primaryTimeoutMs: z.number().default(30000),
