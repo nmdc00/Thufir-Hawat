@@ -312,6 +312,117 @@ CREATE INDEX IF NOT EXISTS idx_policy_promotion_events_scope ON policy_promotion
 CREATE INDEX IF NOT EXISTS idx_policy_promotion_events_created ON policy_promotion_events(created_at);
 `;
 
+// trade_entry_contexts — immutable decision-snapshot table (v2.6 canonical trade learning,
+// TDD §1/§1a). The row moves through an explicit state machine:
+//   prepared -> execution_submitted -> opened
+//                        `-----------> execution_failed
+// Decision-snapshot columns are immutable after `prepared` (enforced by
+// trg_trade_entry_contexts_immutable below). The state-machine fields (status,
+// execution_idempotency_key, submitted_at, opened_at, failed_at, failure_payload,
+// fill_identity_payload) are intentionally excluded from that trigger's protected column
+// list — they are the mutable fields, guarded instead by the application-level state
+// machine in src/memory/trade_entry_contexts.ts. trade_id and lifecycle_id are also
+// excluded from the blanket trigger but get their own dedicated "set once" triggers so a
+// value, once attached, cannot silently change.
+export const TRADE_ENTRY_CONTEXT_SCHEMA_VERSION = 1;
+
+export const TRADE_ENTRY_CONTEXTS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS trade_entry_contexts (
+    id TEXT PRIMARY KEY,
+    lifecycle_id TEXT,
+    trade_id INTEGER,
+    candidate_id TEXT NOT NULL,
+    prediction_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('prepared', 'execution_submitted', 'opened', 'execution_failed')) DEFAULT 'prepared',
+    execution_idempotency_key TEXT NOT NULL,
+    submitted_at TEXT,
+    opened_at TEXT,
+    failed_at TEXT,
+    failure_payload TEXT,
+    fill_identity_payload TEXT,
+    symbol TEXT NOT NULL,
+    symbol_class TEXT NOT NULL,
+    execution_mode TEXT NOT NULL CHECK(execution_mode IN ('paper', 'live')),
+    entry_side TEXT NOT NULL CHECK(entry_side IN ('buy', 'sell')),
+    requested_size REAL NOT NULL,
+    effective_size REAL NOT NULL,
+    leverage REAL NOT NULL,
+    entry_notional_usd REAL NOT NULL,
+    risk_budget_usd REAL,
+    risk_fraction REAL,
+    expected_edge REAL,
+    signal_class TEXT NOT NULL,
+    trigger_reason TEXT NOT NULL,
+    entry_trigger TEXT NOT NULL,
+    strategy_source TEXT NOT NULL,
+    session_tag TEXT NOT NULL,
+    market_regime TEXT NOT NULL,
+    volatility_bucket TEXT NOT NULL,
+    liquidity_bucket TEXT NOT NULL,
+    trade_archetype TEXT NOT NULL,
+    invalidation_type TEXT NOT NULL,
+    invalidation_price REAL,
+    thesis_expires_at TEXT,
+    time_stop_at TEXT,
+    policy_version TEXT NOT NULL,
+    active_adjustment_ids TEXT NOT NULL DEFAULT '[]',
+    source_authority TEXT NOT NULL,
+    decision_payload TEXT,
+    context_schema_version INTEGER NOT NULL DEFAULT ${TRADE_ENTRY_CONTEXT_SCHEMA_VERSION},
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_entry_contexts_idempotency_key
+ON trade_entry_contexts(execution_idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_trade_entry_contexts_lifecycle ON trade_entry_contexts(lifecycle_id);
+CREATE INDEX IF NOT EXISTS idx_trade_entry_contexts_trade ON trade_entry_contexts(trade_id);
+CREATE INDEX IF NOT EXISTS idx_trade_entry_contexts_candidate ON trade_entry_contexts(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_trade_entry_contexts_symbol ON trade_entry_contexts(symbol);
+CREATE INDEX IF NOT EXISTS idx_trade_entry_contexts_status ON trade_entry_contexts(status);
+
+CREATE TRIGGER IF NOT EXISTS trg_trade_entry_contexts_immutable
+BEFORE UPDATE OF
+    id, candidate_id, prediction_id, symbol, symbol_class,
+    execution_mode, entry_side, requested_size, effective_size, leverage,
+    entry_notional_usd, risk_budget_usd, risk_fraction, expected_edge,
+    signal_class, trigger_reason, entry_trigger, strategy_source, session_tag,
+    market_regime, volatility_bucket, liquidity_bucket, trade_archetype,
+    invalidation_type, invalidation_price, thesis_expires_at, time_stop_at,
+    policy_version, active_adjustment_ids, source_authority, decision_payload,
+    context_schema_version, created_at
+ON trade_entry_contexts
+BEGIN
+    SELECT RAISE(ABORT, 'trade_entry_contexts decision-snapshot columns are immutable after prepared');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_trade_entry_contexts_trade_id_once
+BEFORE UPDATE OF trade_id ON trade_entry_contexts
+WHEN OLD.trade_id IS NOT NULL AND NEW.trade_id IS NOT OLD.trade_id
+BEGIN
+    SELECT RAISE(ABORT, 'trade_entry_contexts.trade_id is already attached and cannot change');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_trade_entry_contexts_lifecycle_id_once
+BEFORE UPDATE OF lifecycle_id ON trade_entry_contexts
+WHEN OLD.lifecycle_id IS NOT NULL AND NEW.lifecycle_id IS NOT OLD.lifecycle_id
+BEGIN
+    SELECT RAISE(ABORT, 'trade_entry_contexts.lifecycle_id is already attached and cannot change');
+END;
+`;
+
+const TRADE_ENTRY_CONTEXTS_COMPAT_COLUMNS: ColumnSpec[] = [
+  // Nullable on ADD so the backfill below can tell "never set" (NULL) apart from a genuine
+  // 'prepared' row; a NOT NULL DEFAULT here would populate every legacy row with 'prepared'
+  // at ALTER time and make the trade_id-based backfill unreachable.
+  { name: 'status', sql: 'ALTER TABLE trade_entry_contexts ADD COLUMN status TEXT' },
+  { name: 'execution_idempotency_key', sql: 'ALTER TABLE trade_entry_contexts ADD COLUMN execution_idempotency_key TEXT' },
+  { name: 'submitted_at', sql: 'ALTER TABLE trade_entry_contexts ADD COLUMN submitted_at TEXT' },
+  { name: 'opened_at', sql: 'ALTER TABLE trade_entry_contexts ADD COLUMN opened_at TEXT' },
+  { name: 'failed_at', sql: 'ALTER TABLE trade_entry_contexts ADD COLUMN failed_at TEXT' },
+  { name: 'failure_payload', sql: 'ALTER TABLE trade_entry_contexts ADD COLUMN failure_payload TEXT' },
+  { name: 'fill_identity_payload', sql: 'ALTER TABLE trade_entry_contexts ADD COLUMN fill_identity_payload TEXT' },
+];
+
 const CANONICAL_TRADE_POLICY_SYMBOL_CLASS_SQL = `CASE
   WHEN symbol IS NULL OR TRIM(symbol) = '' THEN NULL
   WHEN UPPER(TRIM(symbol)) = 'BTC' OR UPPER(TRIM(symbol)) LIKE '%BTC' THEN 'major'
@@ -537,6 +648,10 @@ export function ensureLearningSchema(db: Database.Database): void {
   }
   repairActiveTradePolicyAdjustmentScopeMismatches(db);
 
+  ensureTradeEntryContextsCompatColumns(db);
+  repairTradeEntryContextsLifecycleIndex(db);
+  db.exec(TRADE_ENTRY_CONTEXTS_SCHEMA_SQL);
+
   cleanupSyntheticPerpComparableRows(db);
   cleanupSyntheticPerpComparableLearningCases(db);
   backfillLegacyPerpComparatorMetadata(db);
@@ -552,6 +667,53 @@ export function ensureLearningSchema(db: Database.Database): void {
   db.exec(COMPARABLE_LEARNING_CASES_VIEW_SQL);
   db.exec('DROP VIEW IF EXISTS execution_learning_cases;');
   db.exec(EXECUTION_LEARNING_CASES_VIEW_SQL);
+}
+
+// Backfills a pre-state-machine trade_entry_contexts table (columns added by this v2.6
+// migration) so existing rows never lose data. Rows with a trade_id already attached are
+// treated as having reached 'opened'; everything else is treated as still 'prepared'. The
+// execution_idempotency_key column is NOT NULL + UNIQUE going forward, so legacy rows without
+// one get a deterministic per-row placeholder rather than colliding on NULL/empty values.
+function ensureTradeEntryContextsCompatColumns(db: Database.Database): void {
+  if (!tableExists(db, 'trade_entry_contexts')) {
+    return;
+  }
+  const columns = db.prepare("PRAGMA table_info('trade_entry_contexts')").all() as Array<{ name?: string }>;
+  const present = new Set(columns.map((column) => String(column.name ?? '')));
+  for (const column of TRADE_ENTRY_CONTEXTS_COMPAT_COLUMNS) {
+    if (!present.has(column.name)) {
+      db.exec(column.sql);
+    }
+  }
+
+  db.exec(`
+    UPDATE trade_entry_contexts
+    SET status = CASE WHEN trade_id IS NOT NULL THEN 'opened' ELSE 'prepared' END
+    WHERE status IS NULL OR TRIM(status) = ''
+  `);
+  db.exec(`
+    UPDATE trade_entry_contexts
+    SET opened_at = COALESCE(opened_at, created_at)
+    WHERE status = 'opened' AND opened_at IS NULL
+  `);
+  db.exec(`
+    UPDATE trade_entry_contexts
+    SET execution_idempotency_key = 'legacy:' || id
+    WHERE execution_idempotency_key IS NULL OR TRIM(execution_idempotency_key) = ''
+  `);
+}
+
+// v2.6 replaces the original draft's UNIQUE index on lifecycle_id with a non-unique one:
+// scale-ins legitimately share one lifecycle_id across multiple entry contexts (TDD §1a), and
+// execution_idempotency_key is now the write-side dedup boundary instead. Drop any surviving
+// unique index from an earlier draft schema before the non-unique replacement is created.
+function repairTradeEntryContextsLifecycleIndex(db: Database.Database): void {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_trade_entry_contexts_lifecycle'")
+    .get() as { sql?: string } | undefined;
+  if (row?.sql && /CREATE\s+UNIQUE\s+INDEX/i.test(row.sql)) {
+    db.exec('DROP INDEX IF EXISTS idx_trade_entry_contexts_lifecycle');
+  }
 }
 
 function ensureLearningSignalAuditCompatColumns(db: Database.Database): void {

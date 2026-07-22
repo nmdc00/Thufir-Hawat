@@ -189,7 +189,12 @@ export class PositionHeartbeatService {
         const bookEntry = this.getBookEntry(pos.symbol);
         const roe = (pos.roePct ?? 0) / 100;
         let handled = false;
-        if (this.exitConsultant && this.config.heartbeat?.llmExitConsult?.enabled !== false && bookEntry) {
+        if (
+          this.exitConsultant
+          && this.config.heartbeat?.llmExitConsult?.enabled !== false
+          && bookEntry
+          && this.exitConsultant.canConsult(bookEntry, nowMs)
+        ) {
           try {
             const freshContextSnapshot = await gatherMarketContext(
               { message: `${pos.symbol} perpetual market context`, signalSymbols: [pos.symbol], marketLimit: 20 },
