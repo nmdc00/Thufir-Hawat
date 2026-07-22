@@ -1209,12 +1209,14 @@ function resolveClosedTradeReference(params: {
   hypothesisId: string | null;
   closeSide: 'buy' | 'sell';
 }) {
+  const normalizedSymbol = params.symbol.trim().toUpperCase();
+  const targetHypothesisId = (params.hypothesisId ?? '').trim();
   for (const entry of params.entries) {
-    if (entry.symbol !== params.symbol) continue;
+    if (String(entry.symbol ?? '').trim().toUpperCase() !== normalizedSymbol) continue;
     if (entry.reduceOnly === true) continue;
     if (entry.outcome !== 'executed') continue;
-    if (params.hypothesisId && entry.hypothesisId !== params.hypothesisId) continue;
-    if (!params.hypothesisId && entry.side && entry.side === params.closeSide) continue;
+    if (targetHypothesisId && (entry.hypothesisId ?? '').trim() !== targetHypothesisId) continue;
+    if (!targetHypothesisId && entry.side && entry.side === params.closeSide) continue;
     return entry;
   }
   return null;
