@@ -145,6 +145,7 @@ describe('position heartbeat exit policy', () => {
     });
 
     const exitConsultant = {
+      canConsult: vi.fn().mockReturnValue(true),
       consult: vi.fn().mockResolvedValue({ action: 'hold', reasoning: 'thesis intact' }),
     };
 
@@ -213,6 +214,51 @@ describe('position heartbeat exit policy', () => {
     expect(calls.some((call) => call.tool === 'perp_place_order')).toBe(false);
   });
 
+  it('does not repeat an expired-TTL review inside minimum spacing', async () => {
+    const expiry = Date.now() - 1000;
+    mockGetPolicy.mockReturnValue({
+      symbol: 'ETH',
+      side: 'long',
+      timeStopAtMs: expiry,
+      invalidationPrice: 95,
+      notes: null,
+    });
+    const bookEntry = makeBookEntry({
+      thesisExpiresAtMs: expiry,
+      entryAtMs: Date.now() - 60 * 60 * 1000,
+    });
+    const main = {
+      complete: vi.fn().mockResolvedValue({
+        content: JSON.stringify({ action: 'hold', reasoning: 'thesis unchanged' }),
+        model: 'mock-main',
+      }),
+    };
+    const fallback = {
+      complete: vi.fn(),
+    };
+    const config = makeConfig();
+    config.heartbeat.llmExitConsult = {
+      enabled: true,
+      firstConsultMinutes: 20,
+      cadenceMinutes: 20,
+      minConsultSpacingMinutes: 5,
+      maxCallsPerPositionPerHour: 3,
+      approachTtlMinutes: 15,
+      primaryTimeoutMs: 500,
+      fallbackTimeoutMs: 500,
+    };
+    const exitConsultant = new LlmExitConsultant(main as any, fallback as any, async () => {}, config);
+    const { service } = makeService({ config, exitConsultant, getBookEntry: () => bookEntry });
+
+    service.start();
+    await service.tickOnce();
+    await service.tickOnce();
+    service.stop();
+
+    expect(main.complete).toHaveBeenCalledOnce();
+    expect(fallback.complete).not.toHaveBeenCalled();
+  });
+
   it('updates invalidation and extends TTL on consultant review', async () => {
     mockGetPolicy.mockReturnValue({
       symbol: 'ETH',
@@ -223,6 +269,7 @@ describe('position heartbeat exit policy', () => {
     });
 
     const exitConsultant = {
+      canConsult: vi.fn().mockReturnValue(true),
       consult: vi.fn().mockResolvedValue({
         action: 'update_invalidation',
         reasoning: 'structure tightened',
@@ -254,6 +301,7 @@ describe('position heartbeat exit policy', () => {
     });
 
     const exitConsultant = {
+      canConsult: vi.fn().mockReturnValue(true),
       consult: vi.fn().mockResolvedValue({
         action: 'reduce',
         reasoning: 'extended and fading',

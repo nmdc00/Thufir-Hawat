@@ -121,14 +121,15 @@ export function listPerpTradeJournals(params?: {
 }): PerpTradeJournalEntry[] {
   const db = openDatabase();
   const limit = Math.min(Math.max(params?.limit ?? 50, 1), 500);
-  const symbol = params?.symbol ?? null;
+  const rawSymbol = params?.symbol?.trim();
+  const symbol = rawSymbol && rawSymbol.length > 0 ? rawSymbol : null;
   const rows = db
     .prepare(
       `
         SELECT payload
         FROM decision_artifacts
         WHERE kind = 'perp_trade_journal'
-          AND (? IS NULL OR market_id = ?)
+          AND (? IS NULL OR UPPER(market_id) = UPPER(?))
         ORDER BY created_at DESC
         LIMIT ?
       `
