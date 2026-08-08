@@ -24,7 +24,8 @@ agent:
   showPlanTrace: false
   showFragilityTrace: false
   persistPlans: true
-  allowFallbackNonCritical: true
+  # Non-critical work is local-only; local failure degrades instead of spending remote quota.
+  allowFallbackNonCritical: false
   alwaysIncludeTime: false
   proactiveRefresh:
     enabled: false

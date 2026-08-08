@@ -32,7 +32,7 @@ const ConfigSchema = z.object({
     showPlanTrace: z.boolean().default(false),
     showFragilityTrace: z.boolean().default(false),
     persistPlans: z.boolean().default(true),
-    allowFallbackNonCritical: z.boolean().default(true),
+    allowFallbackNonCritical: z.boolean().default(false),
     nonCriticalFallbackSuppressReasons: z
       .array(z.string())
       .default([
