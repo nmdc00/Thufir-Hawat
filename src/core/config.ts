@@ -32,7 +32,7 @@ const ConfigSchema = z.object({
     showPlanTrace: z.boolean().default(false),
     showFragilityTrace: z.boolean().default(false),
     persistPlans: z.boolean().default(true),
-    allowFallbackNonCritical: z.boolean().default(true),
+    allowFallbackNonCritical: z.boolean().default(false),
     nonCriticalFallbackSuppressReasons: z
       .array(z.string())
       .default([
@@ -538,6 +538,12 @@ const ConfigSchema = z.object({
   learning: z
     .object({
       cleanDataCutoff: z.string().default('2026-06-13'),
+      reconciliationPrecisionUsd: z.number().default(1e-8),
+      eligibility: z
+        .object({
+          minEffectiveSamples: z.number().default(20),
+        })
+        .default({}),
     })
     .default({}),
   memory: z.object({
@@ -964,10 +970,10 @@ const ConfigSchema = z.object({
       llmExitConsult: z
         .object({
           enabled: z.boolean().default(true),
-          firstConsultMinutes: z.number().default(20),
-          cadenceMinutes: z.number().default(20),
-          minConsultSpacingMinutes: z.number().default(5),
-          maxCallsPerPositionPerHour: z.number().int().positive().default(3),
+          firstConsultMinutes: z.number().default(60),
+          cadenceMinutes: z.number().default(60),
+          minConsultSpacingMinutes: z.number().default(60),
+          maxCallsPerPositionPerHour: z.number().int().positive().default(1),
           roeThresholds: z.array(z.number()).default([3, 7, 15]),
           approachTtlMinutes: z.number().default(15),
           primaryTimeoutMs: z.number().default(30000),

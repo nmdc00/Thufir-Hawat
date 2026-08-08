@@ -11,6 +11,7 @@ import {
   cleanupSyntheticPerpComparableRows,
   cleanupSyntheticPerpComparableLearningCases,
   cleanupLegacyPerpComparableRows,
+  ensureLearningSchema,
   summarizeLearningSchema,
 } from '../../src/memory/learning_schema.js';
 
@@ -570,5 +571,148 @@ describe('learning schema migration', () => {
         exclusionReason: 'missing_comparator',
       },
     ]);
+  });
+
+  it('adds trade_entry_contexts state-machine columns and drops the legacy unique lifecycle index without losing legacy rows', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-entry-contexts-legacy-')), 'thufir.sqlite');
+    const raw = new Database(dbPath);
+    // Simulates the pre-state-machine draft schema: no status/execution_idempotency_key/etc,
+    // and a UNIQUE index on lifecycle_id (which v2.6 replaces, since scale-ins legitimately
+    // share one lifecycle_id across multiple entry contexts).
+    raw.exec(`
+      CREATE TABLE trade_entry_contexts (
+          id TEXT PRIMARY KEY,
+          lifecycle_id TEXT NOT NULL,
+          trade_id INTEGER,
+          candidate_id TEXT NOT NULL,
+          prediction_id TEXT,
+          symbol TEXT NOT NULL,
+          symbol_class TEXT NOT NULL,
+          execution_mode TEXT NOT NULL,
+          entry_side TEXT NOT NULL,
+          requested_size REAL NOT NULL,
+          effective_size REAL NOT NULL,
+          leverage REAL NOT NULL,
+          entry_notional_usd REAL NOT NULL,
+          risk_budget_usd REAL,
+          risk_fraction REAL,
+          expected_edge REAL,
+          signal_class TEXT NOT NULL,
+          trigger_reason TEXT NOT NULL,
+          entry_trigger TEXT NOT NULL,
+          strategy_source TEXT NOT NULL,
+          session_tag TEXT NOT NULL,
+          market_regime TEXT NOT NULL,
+          volatility_bucket TEXT NOT NULL,
+          liquidity_bucket TEXT NOT NULL,
+          trade_archetype TEXT NOT NULL,
+          invalidation_type TEXT NOT NULL,
+          invalidation_price REAL,
+          thesis_expires_at TEXT,
+          time_stop_at TEXT,
+          policy_version TEXT NOT NULL,
+          active_adjustment_ids TEXT NOT NULL DEFAULT '[]',
+          source_authority TEXT NOT NULL,
+          decision_payload TEXT,
+          context_schema_version INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX idx_trade_entry_contexts_lifecycle ON trade_entry_contexts(lifecycle_id);
+      INSERT INTO trade_entry_contexts (
+        id, lifecycle_id, trade_id, candidate_id, symbol, symbol_class, execution_mode, entry_side,
+        requested_size, effective_size, leverage, entry_notional_usd,
+        signal_class, trigger_reason, entry_trigger, strategy_source, session_tag,
+        market_regime, volatility_bucket, liquidity_bucket, trade_archetype,
+        invalidation_type, policy_version, source_authority, created_at
+      ) VALUES (
+        'legacy-opened', 'perp:BTC:9', 9, 'candidate-legacy', 'BTC', 'major', 'paper', 'buy',
+        1, 1, 2, 50000,
+        'momentum_breakout', 'breakout_confirmed', 'signal_scan', 'autonomous_scan', 'us_session',
+        'trending', 'medium', 'high', 'momentum',
+        'price_level', 'v1', 'autonomous_manager', '2026-06-01T00:00:00.000Z'
+      );
+    `);
+    raw.close();
+
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+
+    const columns = db.prepare("PRAGMA table_info('trade_entry_contexts')").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    expect(names.has('status')).toBe(true);
+    expect(names.has('execution_idempotency_key')).toBe(true);
+    expect(names.has('submitted_at')).toBe(true);
+    expect(names.has('opened_at')).toBe(true);
+    expect(names.has('failed_at')).toBe(true);
+    expect(names.has('failure_payload')).toBe(true);
+
+    const legacyRow = db
+      .prepare(
+        `SELECT status, trade_id AS tradeId, execution_idempotency_key AS executionIdempotencyKey, opened_at AS openedAt
+         FROM trade_entry_contexts WHERE id = 'legacy-opened'`
+      )
+      .get() as { status: string; tradeId: number; executionIdempotencyKey: string; openedAt: string | null };
+    expect(legacyRow.status).toBe('opened');
+    expect(legacyRow.tradeId).toBe(9);
+    expect(legacyRow.executionIdempotencyKey).toBeTruthy();
+    expect(legacyRow.openedAt).toBeTruthy();
+
+    const lifecycleIndex = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_trade_entry_contexts_lifecycle'")
+      .get() as { sql: string };
+    expect(lifecycleIndex.sql).not.toMatch(/UNIQUE/i);
+
+    const idempotencyIndex = db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_trade_entry_contexts_idempotency_key'"
+      )
+      .get();
+    expect(idempotencyIndex).toBeTruthy();
+  });
+
+  it('is idempotent when the startup migration runs twice, including trade_entry_contexts', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'thufir-migration-idempotent-')), 'thufir.sqlite');
+    process.env.THUFIR_DB_PATH = dbPath;
+    const db = openDatabase();
+
+    db.exec(`
+      INSERT INTO trade_entry_contexts (
+        id, candidate_id, execution_idempotency_key,
+        symbol, symbol_class, execution_mode, entry_side,
+        requested_size, effective_size, leverage, entry_notional_usd,
+        signal_class, trigger_reason, entry_trigger, strategy_source, session_tag,
+        market_regime, volatility_bucket, liquidity_bucket, trade_archetype,
+        invalidation_type, policy_version, active_adjustment_ids, source_authority
+      ) VALUES (
+        'idempotent-row', 'candidate-1', 'idem-idempotent-row',
+        'ETH', 'liquid_alt', 'paper', 'sell',
+        1, 1, 3, 20000,
+        'mean_reversion', 'range_break', 'signal_scan', 'autonomous_scan', 'asia_session',
+        'ranging', 'low', 'medium', 'mean_reversion',
+        'price_level', 'v1', '[]', 'autonomous_manager'
+      );
+    `);
+
+    expect(() => ensureLearningSchema(db)).not.toThrow();
+    expect(() => ensureLearningSchema(db)).not.toThrow();
+
+    const row = db
+      .prepare("SELECT status, execution_idempotency_key AS executionIdempotencyKey FROM trade_entry_contexts WHERE id = 'idempotent-row'")
+      .get() as { status: string; executionIdempotencyKey: string };
+    expect(row.status).toBe('prepared');
+    expect(row.executionIdempotencyKey).toBe('idem-idempotent-row');
+
+    const rowCount = (
+      db.prepare('SELECT COUNT(*) AS c FROM trade_entry_contexts').get() as { c: number }
+    ).c;
+    expect(rowCount).toBe(1);
+
+    // Re-running the full startup path (openDatabase again on the same underlying file) must
+    // also be a no-op — reopening should not duplicate indexes/triggers or error.
+    expect(() => {
+      const reopened = new Database(dbPath);
+      ensureLearningSchema(reopened);
+      reopened.close();
+    }).not.toThrow();
   });
 });
