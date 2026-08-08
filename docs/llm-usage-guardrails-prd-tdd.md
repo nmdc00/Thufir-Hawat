@@ -301,3 +301,10 @@ Cooldown state MUST be persisted or recoverable from existing consultation logs 
 - Whether ambiguous exit decisions should default to `hold` or a mechanically bounded reduction.
 - Which existing dashboard or alert channel should receive usage warnings.
 - Whether local model capacity should be increased before enabling local-only non-critical processing.
+
+## 11. Implementation status
+
+- Implemented: non-critical fallback is local-only by default; local failure degrades instead of escalating to a remote provider.
+- Implemented: exit consultation defaults are one consultation per position per hour, with 60-minute first/cadence/spacing defaults.
+- Existing and retained: rolling hourly LLM budget, serialized local inference, provider cooldown handling, deterministic exit rules, and per-position consultation accounting.
+- Deferred: dedicated per-autonomous-scan remote-call counter, normalized request cache, persisted circuit-breaker state, and usage threshold alert delivery.
