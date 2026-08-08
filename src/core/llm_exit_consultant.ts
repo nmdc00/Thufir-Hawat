@@ -74,14 +74,14 @@ function resolveTtlApproachMs(config: ThufirConfig): number {
 function resolveMinConsultSpacingMs(config: ThufirConfig): number {
   return Math.max(
     0,
-    Number(config.heartbeat?.llmExitConsult?.minConsultSpacingMinutes ?? 5)
+    Number(config.heartbeat?.llmExitConsult?.minConsultSpacingMinutes ?? 60)
   ) * 60_000;
 }
 
 function resolveMaxCallsPerPositionPerHour(config: ThufirConfig): number {
   return Math.max(
     1,
-    Math.floor(Number(config.heartbeat?.llmExitConsult?.maxCallsPerPositionPerHour ?? 3))
+    Math.floor(Number(config.heartbeat?.llmExitConsult?.maxCallsPerPositionPerHour ?? 1))
   );
 }
 
