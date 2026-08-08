@@ -330,10 +330,10 @@ heartbeat:
     triggerCooldownSeconds: 180
   llmExitConsult:
     enabled: true
-    firstConsultMinutes: 20
-    cadenceMinutes: 20
-    minConsultSpacingMinutes: 5
-    maxCallsPerPositionPerHour: 3
+    firstConsultMinutes: 60
+    cadenceMinutes: 60
+    minConsultSpacingMinutes: 60
+    maxCallsPerPositionPerHour: 1
     roeThresholds: [3, 7, 15]
     approachTtlMinutes: 15
     primaryTimeoutMs: 30000
