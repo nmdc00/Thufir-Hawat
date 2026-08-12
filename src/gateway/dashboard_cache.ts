@@ -27,6 +27,11 @@ export async function cachedAsync<T>(key: string, ttlMs: number, fn: () => Promi
   return data;
 }
 
+export function peekCached<T>(key: string): T | null {
+  const existing = store.get(key);
+  return existing ? (existing.data as T) : null;
+}
+
 export function clearDashboardCache(): void {
   store.clear();
 }

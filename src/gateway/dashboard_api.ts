@@ -9,7 +9,7 @@ import { HyperliquidClient } from '../execution/hyperliquid/client.js';
 import { openDatabase } from '../memory/db.js';
 import { listLatestOriginatorScorecards } from '../memory/originator_scorecard.js';
 import type { PerpTradeJournalEntry } from '../memory/perp_trade_journal.js';
-import { cached, cachedAsync } from './dashboard_cache.js';
+import { cached, cachedAsync, peekCached } from './dashboard_cache.js';
 
 export type DashboardMode = 'paper' | 'live' | 'combined';
 export type DashboardTimeframe = 'day' | 'period' | 'all' | 'custom';
@@ -3114,7 +3114,7 @@ export function handleDashboardApiRequest(req: IncomingMessage, res: ServerRespo
 
   if (path === '/api/dashboard' || path === '/api/dashboard/summary') {
     const filters = parseDashboardFilters(url);
-    const ttlMs = isLiveMode(filters) ? 5_000 : 30_000;
+    const ttlMs = isLiveMode(filters) ? 5_000 : 5_000;
     const cacheKey = buildDashboardCacheKey('dashboard', url);
     const baseConfig = (req as IncomingMessage & { thufirConfig?: ThufirConfig }).thufirConfig;
 
@@ -3126,17 +3126,32 @@ export function handleDashboardApiRequest(req: IncomingMessage, res: ServerRespo
       }
       void cachedAsync(cacheKey, ttlMs, async () => {
         let mids: Record<string, number> = {};
+        let fetchedFreshMids = false;
         if (baseConfig.hyperliquid?.enabled !== false) {
           try {
             const raw = await new HyperliquidClient(baseConfig).getAllMids();
             // Normalize keys to uppercase so "xyz:CL" → "XYZ:CL" matches position symbols
             mids = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k.toUpperCase(), v]));
+            fetchedFreshMids = Object.keys(mids).length > 0;
           } catch { /* fall through with empty mids */ }
         }
-        return buildDashboardApiPayload({ filters, mids });
+        const payload = buildDashboardApiPayload({ filters, mids });
+        const hasOpenPaperPositions = Number(payload.meta.recordCounts.openPaperPositions ?? 0) > 0;
+        const requiresFreshMids = hasOpenPaperPositions && baseConfig.hyperliquid?.enabled !== false;
+        if (requiresFreshMids && !fetchedFreshMids) {
+          throw new Error('paper_dashboard_mids_unavailable');
+        }
+        return payload;
       })
         .then((payload) => writeJson(res, 200, payload))
-        .catch(() => writeJson(res, 200, buildDashboardApiPayload({ filters })));
+        .catch(() => {
+          const cachedPayload = peekCached<ReturnType<typeof buildDashboardApiPayload>>(cacheKey);
+          if (cachedPayload) {
+            writeJson(res, 200, cachedPayload);
+            return;
+          }
+          writeJson(res, 200, buildDashboardApiPayload({ filters }));
+        });
       return true;
     }
 
