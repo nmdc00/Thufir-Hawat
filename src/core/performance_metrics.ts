@@ -7,6 +7,10 @@ export interface AutonomousScanTelemetrySummary {
   eligible: number;
   executed: number;
   blockedOrSkipped: number;
+  attemptedReviews: number;
+  skippedCooldown: number;
+  skippedIneligible: number;
+  reviewBudget: number | null;
 }
 
 export class AutonomousScanTelemetry {
@@ -31,7 +35,14 @@ export class AutonomousScanTelemetry {
     this.finishedAtMs = nowMs ?? Date.now();
   }
 
-  summarize(input: { expressions: number; eligible: number; executed: number }): AutonomousScanTelemetrySummary {
+  summarize(input: {
+    expressions: number;
+    eligible: number;
+    executed: number;
+    attemptedReviews?: number;
+    skippedCooldown?: number;
+    reviewBudget?: number | null;
+  }): AutonomousScanTelemetrySummary {
     const finished = this.finishedAtMs ?? Date.now();
     const discoveryDone = this.discoveryDoneAtMs ?? finished;
     const filterDone = this.filterDoneAtMs ?? discoveryDone;
@@ -40,6 +51,9 @@ export class AutonomousScanTelemetry {
     const filterMs = Math.max(0, filterDone - discoveryDone);
     const executionMs = Math.max(0, finished - filterDone);
     const blockedOrSkipped = Math.max(0, input.eligible - input.executed);
+    const attemptedReviews = Math.max(0, input.attemptedReviews ?? 0);
+    const skippedCooldown = Math.max(0, input.skippedCooldown ?? 0);
+    const skippedIneligible = Math.max(0, input.expressions - input.eligible);
 
     return {
       totalMs,
@@ -50,6 +64,10 @@ export class AutonomousScanTelemetry {
       eligible: Math.max(0, input.eligible),
       executed: Math.max(0, input.executed),
       blockedOrSkipped,
+      attemptedReviews,
+      skippedCooldown,
+      skippedIneligible,
+      reviewBudget: input.reviewBudget ?? null,
     };
   }
 }
