@@ -330,6 +330,23 @@ autonomy:
   pauseOnLossStreak: 3
 ```
 
+To enable autonomous paper-trading proposals and automatic simulated execution,
+set both autonomy switches to `true` while keeping execution in paper mode:
+
+```yaml
+autonomy:
+  enabled: true
+  fullAuto: true
+
+execution:
+  mode: paper
+```
+
+This combination allows Thufir to scan, propose, and execute simulated trades
+without sending live orders. Keep the deterministic exposure, confidence,
+loss-streak, and daily-trade limits enabled. Changing `execution.mode` to
+`live` is a separate, explicit production-risk decision.
+
 ### LLM Entry Gate
 
 ```yaml
