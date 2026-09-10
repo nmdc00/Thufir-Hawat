@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
   const taComputeAll = vi.fn();
   const triggerShouldFire = vi.fn();
   const originatorPropose = vi.fn();
+  const originatorCtor = vi.fn();
   const upsertExitPolicy = vi.fn();
   const updateTradeProposalOutcome = vi.fn();
   const updateTradeProposalStatus = vi.fn();
@@ -49,7 +50,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     dbRun, dbPrepare, dbExec,
-    taComputeAll, triggerShouldFire, originatorPropose,
+    taComputeAll, triggerShouldFire, originatorPropose, originatorCtor,
     upsertExitPolicy, updateTradeProposalOutcome, updateTradeProposalStatus,
     createPrediction, runDiscovery,
     taSurfaceInstance, triggerInstance, originatorInstance,
@@ -76,7 +77,14 @@ vi.mock('../../src/core/origination_trigger.js', () => ({
 }));
 
 vi.mock('../../src/core/llm_trade_originator.js', () => ({
-  LlmTradeOriginator: vi.fn(() => mocks.originatorInstance),
+  LlmTradeOriginator: class {
+    constructor(...args: unknown[]) {
+      mocks.originatorCtor(...args);
+    }
+    propose(...args: unknown[]) {
+      return mocks.originatorInstance.propose(...args);
+    }
+  },
 }));
 
 vi.mock('../../src/memory/llm_trade_proposals.js', () => ({
@@ -346,6 +354,34 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('uses bounded decision clients for trade origination', async () => {
+    const { AutonomousManager } = await import('../../src/core/autonomous.js');
+    const primary = makeGateLlm('approve');
+    const fallback = makeGateLlm('approve');
+    const decision = makeGateLlm('approve');
+    const decisionFallback = makeGateLlm('approve');
+    new AutonomousManager(
+      primary,
+      fallback,
+      {} as any,
+      {} as any,
+      makeLimiter(),
+      baseConfig,
+      undefined,
+      undefined,
+      undefined,
+      decision,
+      decisionFallback,
+    );
+
+    expect(mocks.originatorCtor).toHaveBeenCalledWith(
+      decision,
+      decisionFallback,
+      baseConfig,
+      undefined,
+    );
   });
 
   it('1. proposal → gate approve → executor called, exit policy written with LLM TTL and invalidation price', async () => {

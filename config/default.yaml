@@ -310,7 +310,9 @@ autonomy:
     cadenceMinutes: 15
     topMarketsCount: 20
     quantFallbackEnabled: true
-    timeoutMs: 10000
+    # Launchdock/Codex responses can take longer than a short HTTP timeout while
+    # still remaining within the autonomous scan interval.
+    timeoutMs: 60000
     minConfidence: 0.55
     cooldownMinutes: 30
 

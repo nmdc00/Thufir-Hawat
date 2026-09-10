@@ -356,8 +356,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     this.taSurface = new TaSurface(this.thufirConfig);
     this.originationTrigger = new OriginationTrigger(this.thufirConfig);
     this.originator = new LlmTradeOriginator(
-      this.llm,
-      this.fallbackLlm,
+      decisionLlm ?? this.llm,
+      decisionFallbackLlm ?? this.fallbackLlm,
       this.thufirConfig,
       this.toolContext
     );
@@ -1278,7 +1278,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       }
       const { sessionWeight } = sessionContext;
       const weightedConfidence = clamp01(expr.confidence * sessionWeight);
-      if (this.config.requireHighConfidence && weightedConfidence < 0.7) {
+      if (this.config.requireHighConfidence && weightedConfidence < 0.65) {
         return false;
       }
       return true;
