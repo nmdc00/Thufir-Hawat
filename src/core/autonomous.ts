@@ -44,7 +44,7 @@ import { withExecutionContext } from './llm_infra.js';
 import { getPaperPerpBookSummary } from '../memory/paper_perps.js';
 import { getCashBalance } from '../memory/portfolio.js';
 import { PositionBook } from './position_book.js';
-import { LlmEntryGate, type EntryGateCandidate } from './llm_entry_gate.js';
+import { isEntryGateCooldownActive, LlmEntryGate, type EntryGateCandidate } from './llm_entry_gate.js';
 import { evaluateExposure, type ExposureVerdict } from './portfolio_exposure.js';
 import { TaSurface } from './ta_surface.js';
 import { OriginationTrigger } from './origination_trigger.js';
@@ -226,6 +226,7 @@ export interface AutonomousConfig {
   pauseOnLossStreak: number;
   dailyReportTime: string;
   maxTradesPerScan: number;
+  maxCandidateReviewsPerScan: number;
   maxTradesPerDay: number;
 }
 
@@ -370,7 +371,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       requireHighConfidence: (thufirConfig.autonomy as any)?.requireHighConfidence ?? false,
       pauseOnLossStreak: (thufirConfig.autonomy as any)?.pauseOnLossStreak ?? 3,
       dailyReportTime: (thufirConfig.autonomy as any)?.dailyReportTime ?? '20:00',
-      maxTradesPerScan: (thufirConfig.autonomy as any)?.maxTradesPerScan ?? 3,
+      maxTradesPerScan: (thufirConfig.autonomy as any)?.maxTradesPerScan ?? 1,
+      maxCandidateReviewsPerScan:
+        (thufirConfig.autonomy as any)?.maxCandidateReviewsPerScan ?? 3,
       maxTradesPerDay: (thufirConfig.autonomy as any)?.maxTradesPerDay ?? 25,
     };
 
@@ -1311,11 +1314,17 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     const maxTrades = Number.isFinite(input.maxTrades)
       ? Math.min(Math.max(Number(input.maxTrades), 1), 10)
       : adaptiveMaxTrades;
-    const toExecute = ranked.slice(0, maxTrades);
+    const configuredReviewBudget = Number(this.config.maxCandidateReviewsPerScan);
+    const maxCandidateReviews = Number.isFinite(configuredReviewBudget)
+      ? Math.min(Math.max(1, Math.floor(configuredReviewBudget)), 50)
+      : 3;
     const outputs: string[] = [];
     let executedCount = 0;
+    let attemptedReviews = 0;
+    let skippedCooldown = 0;
 
-    for (const expr of toExecute) {
+    for (const expr of ranked) {
+      if (executedCount >= maxTrades) break;
       const symbol = expr.symbol.includes('/') ? expr.symbol.split('/')[0]! : expr.symbol;
       const sessionContext = resolveSessionWeightContext(new Date());
       const confidenceRaw = clamp01(expr.confidence ?? 0);
@@ -1473,6 +1482,14 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         entryReasoning: expr.expectedMove ?? '',
         invalidationPrice: expressionInvalidationPrice,
       };
+      if (
+        this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false &&
+        isEntryGateCooldownActive(gateCandidate, this.thufirConfig)
+      ) {
+        skippedCooldown += 1;
+        outputs.push(`${symbol}: Skipped (entry gate cooldown active)`);
+        continue;
+      }
       const exposureGate = this.evaluateAndJournalExposureGate(gateCandidate);
       if (!exposureGate.allowed) {
         outputs.push(`${symbol}: Blocked (${exposureGate.reasoning})`);
@@ -1482,6 +1499,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       let entryGateReasonCode: string | null = null;
       let finalInvalidationPrice = expressionInvalidationPrice;
       if (this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false) {
+        if (attemptedReviews >= maxCandidateReviews) break;
+        attemptedReviews += 1;
         const gateDecision = await this.entryGate.evaluate(gateCandidate, markPrice);
         entryGateVerdict = gateDecision.verdict;
         entryGateReasonCode = gateDecision.reasonCode ?? null;
@@ -1713,6 +1732,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       expressions: result.expressions.length,
       eligible: eligible.length,
       executed: executedCount,
+      attemptedReviews,
+      skippedCooldown,
+      reviewBudget: maxCandidateReviews,
     }));
 
     return outputs.join('\n');

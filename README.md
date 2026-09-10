@@ -324,7 +324,8 @@ autonomy:
   enabled: false
   fullAuto: false
   scanIntervalSeconds: 900
-  maxTradesPerScan: 3
+  maxTradesPerScan: 1
+  maxCandidateReviewsPerScan: 3
   maxTradesPerDay: 25
   minEdge: 0.05
   pauseOnLossStreak: 3
@@ -346,6 +347,14 @@ This combination allows Thufir to scan, propose, and execute simulated trades
 without sending live orders. Keep the deterministic exposure, confidence,
 loss-streak, and daily-trade limits enabled. Changing `execution.mode` to
 `live` is a separate, explicit production-risk decision.
+
+`maxTradesPerScan` limits successful executions in one scan. It does not limit
+how many ranked candidates can be evaluated. `maxCandidateReviewsPerScan`
+limits LLM entry-gate reviews in one scan and defaults to three. Candidates
+rejected by deterministic policy, risk, wallet, exposure, stop, or active
+entry-gate cooldown are skipped before consuming a review slot, so the next
+ranked candidate can still be considered. The scan stops after the configured
+number of successful executions or when the review budget is exhausted.
 
 ### LLM Entry Gate
 
