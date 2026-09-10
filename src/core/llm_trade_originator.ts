@@ -95,7 +95,7 @@ A valid proposal requires ALL of: symbol, side, thesisText, invalidationConditio
 
 - invalidationPrice: REQUIRED. This is what separates you from a gambler — you know exactly where you are wrong before you enter. Name the specific price. If you cannot, you do not have a trade, you have a hope. Do not propose hopes.
 - suggestedTtlMinutes: how long until the market proves you right or wrong? Be specific and thesis-derived. A news spike may be 30min. A structural breakout may be 4h. Do not default to 120.
-- expectedRMultiple: hunt asymmetry. If the setup is exceptional, what does it actually pay? Be honest but aggressive. If expectedRMultiple is below 1.8, you should usually return null.
+- expectedRMultiple: hunt asymmetry. If the setup is exceptional, what does it actually pay? Be honest but aggressive. Prefer setups at or above 1.5R; return null when the payoff is ordinary or the asymmetry is weak.
 - leverage: match conviction and cleanliness — but first compute the mechanical ceiling. Your liquidation fires at a 1/leverage move against you. Your invalidationPrice must clear that boundary with room to spare: leverage ≤ 0.7 / stop_dist, where stop_dist = abs(currentPrice - invalidationPrice) / currentPrice. A 4% stop → max ~17x. A 1% stop → max ~70x. A 10% stop → max ~7x. Compute this before writing the number. Within that ceiling:
   - use low leverage when the setup is merely decent
   - use moderate leverage when the thesis is strong but not perfect
