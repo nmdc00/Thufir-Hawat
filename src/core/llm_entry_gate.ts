@@ -378,6 +378,25 @@ function shouldBypassCooldownForCandidate(
   return improvedEdge || freshCatalyst;
 }
 
+/**
+ * Returns true when deterministic entry-gate cooldown should suppress this
+ * candidate before spending an LLM review slot.
+ */
+export function isEntryGateCooldownActive(
+  candidate: EntryGateCandidate,
+  config: ThufirConfig,
+): boolean {
+  if (!deterministicPrechecksEnabled(config)) return false;
+  const cooldownMinutes = resolveGateCooldownMinutes(config);
+  if (cooldownMinutes <= 0) return false;
+  const cooldown = getGateVerdictCooldown(candidate.symbol, candidate.side);
+  const lastRejectMs = parseTimestampMs(cooldown?.lastRejectAt);
+  if (!cooldown || lastRejectMs == null) return false;
+  const cooldownMs = cooldownMinutes * 60_000;
+  if (Date.now() - lastRejectMs >= cooldownMs) return false;
+  return !shouldBypassCooldownForCandidate(candidate, cooldown);
+}
+
 function recordGateDecision(
   candidate: EntryGateCandidate,
   decision: EntryGateDecision,

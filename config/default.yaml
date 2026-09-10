@@ -250,7 +250,8 @@ autonomy:
   requireHighConfidence: true  # Require both edge and conviction, not just one
   pauseOnLossStreak: 3         # Pause after N consecutive losses
   dailyReportTime: "20:00"     # Time to send daily P&L report
-  maxTradesPerScan: 1          # Concentrate on the single best setup per scan
+  maxTradesPerScan: 1          # Maximum successful executions per scan
+  maxCandidateReviewsPerScan: 3 # Maximum LLM entry-gate reviews per scan
   exposure:
     enabled: true              # Deterministic portfolio guard before LLM entry gate
     maxGrossLeverage: 3.0      # Total open notional <= 3x account equity/cash
