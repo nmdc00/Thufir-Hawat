@@ -1,8 +1,88 @@
-# Thufir
+# Thufir — Autonomous Trading Agent
 
-Thufir is an autonomous crypto/perps trading agent built around one idea: let the LLM reason about market context and trade thesis, but keep execution, sizing, and risk controls deterministic.
+Thufir is an autonomous crypto/perpetuals trading system built around a deliberately asymmetric responsibility split:
 
-The current codebase runs through a gateway process, is operated in practice through Telegram, persists state in SQLite, and targets Hyperliquid for perp trading. Paper mode is the default. CLI commands still exist for local development and debugging.
+```text
+market data → LLM proposal → typed contract → deterministic risk engine
+             → independent review → execution → position management
+             → outcome / evaluation loop
+```
+
+The LLM supplies context, a thesis, and a proposed action. It does not get to decide whether that action may spend money. Execution, sizing, wallet limits, mechanical exits, persistence, and kill switches remain deterministic and auditable.
+
+Thufir targets Hyperliquid perpetuals, persists state and decision evidence in SQLite, and is operated through a gateway with Telegram as the primary operational interface. Paper mode is the safe repository default; the same execution boundary also supports a Hyperliquid live adapter when explicitly configured.
+
+## Why this is an engineering project
+
+This repository is a case study in putting an unreliable, probabilistic component inside a controlled production system. The interesting problems are not trading returns; they are the boundaries around autonomy:
+
+- typed model contracts and runtime validation
+- deterministic risk, wallet, leverage, and exposure limits
+- independent pre-execution review and bounded resizing
+- asynchronous execution and position supervision
+- provider/model abstraction with fallback and budget controls
+- kill switches, pause-on-loss-streak behavior, and fail-closed paths
+- SQLite journals, incident feeds, observability, and replayable evaluation artifacts
+- promotion/demotion of learned policy evidence with thresholds, expiry, and audit history
+
+The intended production control loop is:
+
+```text
+Hyperliquid market data
+  → discovery and trade thesis
+  → structured proposal
+  → deterministic risk / wallet checks
+  → LLM entry gate (approve / reject / resize)
+  → paper or live execution adapter
+  → heartbeat supervision and mechanical risk actions
+  → close finalization, learning case, and policy evidence
+```
+
+This is an autonomous execution system, not a chatbot with a trading prompt. The codebase contains both paper and live paths, but no README claim should be read as a promise of profitability or as evidence that live mode is enabled on every deployment.
+
+## Production case study: when semantics were not enough
+
+A useful failure pattern from the Paires application illustrates why the system has strict runtime boundaries:
+
+```text
+model output was semantically valid
+  → runtime schema/contract mismatch
+  → execution failed
+  → stricter runtime validation and a regression evaluation were added
+```
+
+The lesson is broader than trading: a model can be “right” in natural language and still be unsafe for a typed runtime. Thufir therefore validates structured outputs at the boundary, records the decision and failure context, and keeps execution behind deterministic checks. The same approach is used for provider failures, stale or missing evidence, and mechanical position-management fallbacks.
+
+## Architecture
+
+```text
+Telegram / CLI
+      ↓
+    Gateway ─────────────── Dashboard / status / incident feed
+      ↓
+    Agent ─────── LLM provider abstraction + fallback + budgets
+      ↓
+    AutonomousManager
+      ├─ discovery / market context / proposal
+      ├─ deterministic risk + wallet enforcement
+      ├─ LlmEntryGate: approve / reject / resize
+      └─ execution adapter: paper | webhook | Hyperliquid live
+                              ↓
+                    PositionHeartbeatService
+                    ├─ mechanical exits and reductions
+                    └─ optional LLM exit consultation
+                              ↓
+                    SQLite journals, dossiers,
+                    incidents, learning cases, policy history
+```
+
+Operationally, the deployment pattern is a systemd-managed gateway with configuration injected through `THUFIR_CONFIG_PATH`; `scripts/update.sh` updates the server checkout. The exact live service state should be verified on the target host before describing a deployment as actively trading.
+
+### What the inspected runtime evidence proves
+
+The available SQLite operational snapshot is useful evidence, but it is not a substitute for checking the running host. It contains 168 perp-trade records: 136 explicitly marked `paper` and 32 older records marked `executed`. It contains no open paper positions and no rows yet in the entry-gate log, exit-consult log, incident log, learning-case table, or policy-adjustment table.
+
+That means this repository can accurately claim that the control surfaces and persistence schema exist, while it should not claim that LLM entry/exit consultation, adaptive policy promotion, or live-capital execution are active on every deployment. Those claims require a fresh server-side check and runtime evidence.
 
 ## Current Model
 
@@ -39,7 +119,7 @@ The important current code seams are:
 - `src/core/perp_lifecycle.ts`
   Builds execution-quality learning artifacts on close.
 
-This means the repo already has a real pre-execution control point. The next step is to make learned evidence first-class there instead of keeping it mostly post-trade.
+This means the repo has a real pre-execution control point. The adaptive-learning work adds bounded policy evidence around that point, but the inspected runtime snapshot does not yet prove that those learned adjustments are being produced or applied in operation.
 
 ## Adaptive Learning Direction
 
@@ -77,28 +157,11 @@ The goal is to answer three hard questions with explicit wiring:
    Yes, by requiring evidence counts, confidence, freshness, contradiction checks, and missing-data flags before learned signals gain real authority.
 
 This is documented in:
-- [release/v2.2-adaptive-decision-learning.prd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.2-adaptive-decision-learning.prd.md)
-- [release/v2.2-adaptive-decision-learning.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.2-adaptive-decision-learning.tdd.md)
-- [release/v2.3.3-production-sanity-fixes.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.3.3-production-sanity-fixes.tdd.md)
-- [release/v2.3.4-production-runtime-followup.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.3.4-production-runtime-followup.tdd.md)
-- [release/v2.3.5-exit-consult-context-hotfix.tdd.md](/home/nmcdc/projects/Thufir-Hawat/release/v2.3.5-exit-consult-context-hotfix.tdd.md)
-
-## Architecture
-
-```text
-Channels (CLI / Telegram / WhatsApp)
-  -> Gateway
-    -> Agent
-      -> AutonomousManager
-      -> ConversationHandler
-      -> TradeManagementService
-      -> PositionHeartbeatService
-    -> Memory (SQLite journals/state)
-    -> Intel / Search / Market data
-    -> Execution adapters (paper / live Hyperliquid / webhook)
-```
-
-Operationally, the live channel in use is Telegram. CLI remains useful for local inspection and development workflows.
+- [release/v2.2-adaptive-decision-learning.prd.md](release/v2.2-adaptive-decision-learning.prd.md)
+- [release/v2.2-adaptive-decision-learning.tdd.md](release/v2.2-adaptive-decision-learning.tdd.md)
+- [release/v2.3.3-production-sanity-fixes.tdd.md](release/v2.3.3-production-sanity-fixes.tdd.md)
+- [release/v2.3.4-production-runtime-followup.tdd.md](release/v2.3.4-production-runtime-followup.tdd.md)
+- [release/v2.3.5-exit-consult-context-hotfix.tdd.md](release/v2.3.5-exit-consult-context-hotfix.tdd.md)
 
 Key runtime pieces:
 
@@ -137,14 +200,14 @@ The current tree has real learning infrastructure, but it is still uneven:
   - entry-gate journaling
   - deterministic risk / wallet enforcement
   - proposal-to-gate-to-execution control path
-- partially implemented or planned in release docs:
+- implemented in the tree but requiring runtime validation on each deployment:
   - dossier-backed learning
   - thesis-vs-execution separation
   - structured trade review
   - retrieval-driven decision support
   - adaptive policy enforcement
 
-In other words, the repo already supports learning artifacts, but the main open problem is wiring those artifacts back into future decisions with bounded authority.
+In other words, the repo contains the learning and enforcement surfaces, while the main operational question is whether a given deployment is generating enough trusted evidence to exercise them.
 
 ## Quick Start
 
@@ -152,9 +215,7 @@ In other words, the repo already supports learning artifacts, but the main open 
 
 - Node.js `22.x`
 - `pnpm` `9.x`
-- one of:
-  - `OPENAI_API_KEY`
-  - `ANTHROPIC_API_KEY`
+- either an OpenAI API key or a launchdock-authenticated OpenAI/Codex account
 - for live Hyperliquid trading only:
   - `HYPERLIQUID_PRIVATE_KEY`
 
@@ -166,6 +227,31 @@ cd Thufir-Hawat
 pnpm install
 cp config/default.yaml ~/.thufir/config.yaml
 ```
+
+### Paper-mode production install
+
+For an Ubuntu/Debian VPS with a user-level systemd session, the production
+installer provisions the complete config, launchdock, Ollama, and persistent
+Thufir services. It pauses for the operator to authenticate the OpenAI
+subscription; credentials are never stored in the repository:
+
+```bash
+git clone https://github.com/your-account/Thufir-Hawat.git
+cd Thufir-Hawat
+bash scripts/install_production.sh
+```
+
+During installation, run the displayed command in the same account:
+
+```bash
+launchdock auth login openai --no-browser
+```
+
+The installer queries launchdock after authentication, tests the models
+available to that account, and asks the operator to select the primary model.
+It then pulls `qwen2.5:1.5b-instruct`, enables user lingering, and smoke-tests
+launchdock, Ollama, and the Thufir health endpoint. The resulting deployment
+remains in paper mode until explicitly changed.
 
 ### Run
 
@@ -187,7 +273,41 @@ pnpm thufir mentat scan --system Hyperliquid
 
 Primary config file: `~/.thufir/config.yaml`
 
-Reference defaults live in [config/default.yaml](/home/nmcdc/projects/Thufir-Hawat/config/default.yaml).
+Reference defaults live in [config/default.yaml](config/default.yaml).
+
+### LLM providers
+
+The production setup uses launchdock for the subscribed OpenAI/Codex account
+and Ollama for small local tasks:
+
+```yaml
+agent:
+  provider: openai
+  model: <model selected during launchdock setup>
+  openaiModel: <model selected during launchdock setup>
+  executorModel: <model selected during launchdock setup>
+  executorProvider: openai
+
+  useProxy: true
+  proxyBaseUrl: http://127.0.0.1:8090
+
+  localBaseUrl: http://127.0.0.1:11434
+  trivialTaskProvider: local
+  trivialTaskModel: qwen2.5:1.5b-instruct
+```
+
+The installer queries launchdock’s `/v1/models` endpoint after authentication,
+tests the advertised models with a real request, and asks the operator to
+select one. Do not hard-code a model ID in deployment automation: model
+availability depends on the authenticated account and can change over time.
+
+`fallbackModel` is a provider-specific fallback setting. It is not the local
+Ollama model; local work is controlled by `trivialTaskProvider` and
+`trivialTaskModel`.
+
+The gateway binds to loopback by default. Remote access should be provided by
+an authenticated channel or a separately configured reverse proxy; the
+`gateway.auth` YAML block is not currently a supported gateway setting.
 
 ### Execution Mode
 
