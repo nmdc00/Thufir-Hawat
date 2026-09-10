@@ -88,4 +88,24 @@ describe('bounded decision clients', () => {
     expect(body.max_tokens).toBe(256);
     expect(JSON.stringify(body)).not.toContain('perp_place_order');
   });
+
+  it('collects launchdock streaming decision text when non-streaming content is omitted', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue({
+      ok: true,
+      text: async () =>
+        'data: {"choices":[{"delta":{"content":"{\\"action\\":\\"hold\\","}}]}\n\n' +
+        'data: {"choices":[{"delta":{"content":"\\"reasoning\\":\\"ok\\"}"}}]}\n\n' +
+        'data: [DONE]\n\n',
+    });
+    const { createDecisionClient } = await import('../../src/core/llm.js');
+    const client = createDecisionClient(baseConfig({ useResponsesApi: false }));
+
+    const result = await client.complete([{ role: 'user', content: 'Decide.' }]);
+
+    expect(result.content).toBe('{"action":"hold","reasoning":"ok"}');
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body?: string }];
+    expect(url.endsWith('/v1/chat/completions')).toBe(true);
+    expect(JSON.parse(init.body ?? '{}').stream).toBe(true);
+  });
 });
