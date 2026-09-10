@@ -5,18 +5,16 @@
 gateway:
   port: 18789
   bind: loopback
-  auth:
-    mode: password  # Required for remote access
 
 # Agent settings
 agent:
   # Primary LLM model
-  model: claude-sonnet-4-5-20251101
+  model: gpt-5.6-luna
   # OpenAI model (used for info gathering + execution)
-  openaiModel: gpt-5.2
+  openaiModel: gpt-5.6-luna
   # Executor model (orchestrator pattern)
-  executorModel: claude-sonnet-4-6
-  executorProvider: anthropic
+  executorModel: gpt-5.6-luna
+  executorProvider: openai
   useExecutorModel: false
   useOrchestrator: false
   showToolTrace: false
@@ -49,17 +47,18 @@ agent:
   # mentatMarketQuery: "macro"
   # mentatMarketLimit: 25
   # mentatIntelLimit: 40
-  # Fallback model (faster, cheaper)
-  fallbackModel: claude-3-5-haiku-20241022
+  # Provider fallback model. Used only by provider-specific fallback paths.
+  # The production installer replaces this with the selected launchdock model.
+  fallbackModel: gpt-5.6-luna
   # Model provider: anthropic | openai | local
-  provider: anthropic
+  provider: openai
   # OpenAI-compatible base URL (used for openai provider)
   apiBaseUrl: https://api.openai.com
   # Local (Ollama) base URL for local provider
   localBaseUrl: http://localhost:11434
-  # Optional llm-mux proxy
-  useProxy: false
-  proxyBaseUrl: http://localhost:8317
+  # launchdock/OpenAI-compatible proxy
+  useProxy: true
+  proxyBaseUrl: http://localhost:8090
   # Workspace directory
   workspace: ~/.thufir
   # Maximum thinking level

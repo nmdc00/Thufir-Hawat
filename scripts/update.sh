@@ -40,17 +40,18 @@ if command -v systemctl >/dev/null 2>&1; then
     echo "- Disabling legacy bijaz service"
     sudo systemctl disable --now bijaz || true
   fi
-  sudo systemctl restart thufir
-  sudo systemctl status thufir --no-pager
+  if systemctl --user list-unit-files --no-legend 2>/dev/null | awk '{print $1}' | grep -qx 'thufir.service'; then
+    echo "- Restarting user services"
+    systemctl --user restart launchdock.service ollama.service thufir.service
+    systemctl --user --no-pager --plain status launchdock.service ollama.service thufir.service
+  else
+    sudo systemctl restart thufir
+    sudo systemctl status thufir --no-pager
+  fi
   if systemctl list-unit-files --type=service --no-legend | awk '{print $1}' | grep -qx 'openclaw-gateway.service'; then
     echo "- Restarting openclaw-gateway"
     sudo systemctl restart openclaw-gateway
     sudo systemctl status openclaw-gateway --no-pager
-  fi
-  if systemctl list-unit-files --type=service --no-legend | awk '{print $1}' | grep -qx 'llm-mux.service'; then
-    echo "- Restarting llm-mux"
-    sudo systemctl restart llm-mux
-    sudo systemctl status llm-mux --no-pager
   fi
 else
   echo "systemctl not found; skipping service restart"
