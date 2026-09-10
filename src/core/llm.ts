@@ -1695,6 +1695,11 @@ class OpenAiClient implements LlmClient {
     // Inject workspace identity at the start (Moltbot pattern)
     const openaiMessages = injectIdentity(messages, prelude);
     const maxTokens = options?.maxTokens;
+    // launchdock's Codex-compatible non-streaming response can contain usage
+    // tokens while omitting the assistant text. Decision calls need the text
+    // to parse bounded JSON, so use the streaming chat surface for proxied
+    // decision requests and collect its content deltas.
+    const useStreamingDecision = Boolean(this.config.agent.useProxy && this.meta?.kind === 'decision' && !this.useResponsesApi);
     const response = await fetchWithRetry(() =>
       fetch(`${this.baseUrl}${this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions'}`, {
         method: 'POST',
@@ -1722,6 +1727,7 @@ class OpenAiClient implements LlmClient {
                 ...(this.includeTemperature ? { temperature: options?.temperature ?? 0.2 } : {}),
                 // Prefer max_tokens for broad OpenAI-compatible proxy support.
                 ...(typeof maxTokens === 'number' ? { max_tokens: maxTokens } : {}),
+                ...(useStreamingDecision ? { stream: true } : {}),
                 messages: openaiMessages,
               }
         ),
@@ -1737,6 +1743,26 @@ class OpenAiClient implements LlmClient {
       }
       const errorMsg = detail ? parseProxyError(detail) : `status ${response.status}`;
       throw new Error(`LLM request failed: ${errorMsg}`);
+    }
+
+    if (useStreamingDecision) {
+      const raw = await response.text();
+      const content = raw
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => line.slice(6).trim())
+        .filter((line) => line && line !== '[DONE]')
+        .map((line) => {
+          try {
+            return (JSON.parse(line) as { choices?: Array<{ delta?: { content?: string } }> })
+              .choices?.[0]?.delta?.content ?? '';
+          } catch {
+            return '';
+          }
+        })
+        .join('')
+        .trim();
+      return { content, model: this.model };
     }
 
     const data = (await response.json()) as {
