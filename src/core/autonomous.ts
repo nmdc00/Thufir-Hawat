@@ -1278,7 +1278,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       }
       const { sessionWeight } = sessionContext;
       const weightedConfidence = clamp01(expr.confidence * sessionWeight);
-      if (this.config.requireHighConfidence && weightedConfidence < 0.7) {
+      if (this.config.requireHighConfidence && weightedConfidence < 0.65) {
         return false;
       }
       return true;
