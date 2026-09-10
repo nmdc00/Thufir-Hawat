@@ -356,8 +356,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     this.taSurface = new TaSurface(this.thufirConfig);
     this.originationTrigger = new OriginationTrigger(this.thufirConfig);
     this.originator = new LlmTradeOriginator(
-      this.llm,
-      this.fallbackLlm,
+      decisionLlm ?? this.llm,
+      decisionFallbackLlm ?? this.fallbackLlm,
       this.thufirConfig,
       this.toolContext
     );
