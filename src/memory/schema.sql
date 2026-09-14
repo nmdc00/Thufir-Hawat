@@ -942,7 +942,12 @@ CREATE TABLE IF NOT EXISTS llm_entry_gate_log (
   liquidity_score   REAL,
   execution_score   REAL,
   liquidity_bucket  TEXT,
-  llm_consulted     INTEGER NOT NULL DEFAULT 1
+  llm_consulted     INTEGER NOT NULL DEFAULT 1,
+  model_equity_at_risk_pct REAL,
+  risk_source       TEXT,
+  account_equity_usd REAL,
+  stop_provenance   TEXT,
+  missing_plan_fields TEXT
 );
 
 CREATE TABLE IF NOT EXISTS gate_verdict_cooldowns (

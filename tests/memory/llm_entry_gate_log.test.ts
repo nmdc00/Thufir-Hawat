@@ -58,6 +58,11 @@ const fakeDb = vi.hoisted(() => {
           'execution_score',
           'liquidity_bucket',
           'llm_consulted',
+          'model_equity_at_risk_pct',
+          'risk_source',
+          'account_equity_usd',
+          'stop_provenance',
+          'missing_plan_fields',
         ];
         for (const column of expectedColumns) {
           state.columns.add(column);
