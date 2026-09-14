@@ -51,7 +51,7 @@ import { TaSurface } from './ta_surface.js';
 import { OriginationTrigger } from './origination_trigger.js';
 import { LlmTradeOriginator } from './llm_trade_originator.js';
 import { listEvents } from '../memory/events.js';
-import { updateTradeProposalOutcome, updateTradeProposalStatus } from '../memory/llm_trade_proposals.js';
+import { recordTradeProposal, updateTradeProposalOutcome, updateTradeProposalStatus } from '../memory/llm_trade_proposals.js';
 import { recordEntryGateDecision } from '../memory/llm_entry_gate_log.js';
 import { getSignalWeightsWithFallback, type SignalWeights } from '../memory/learning.js';
 import type { ToolExecutorContext } from './tool-executor.js';
@@ -748,6 +748,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       }
       return true;
     });
+    const scanId = `scan_${now}`;
 
     // Get pending events for trigger
     const pendingEvents = listEvents({ limit: 10 });
@@ -760,6 +761,18 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     );
 
     if (!triggerResult.fire) {
+      recordTradeProposal({
+        triggerReason: triggerResult.reason ?? 'cadence',
+        alertedSymbols: triggerResult.alertedSymbols,
+        proposed: false,
+        executeTrades: input.executeTrades,
+        scanId,
+        marketSymbols: topMarkets,
+        allSnapshotCount: allSnapshots.length,
+        eligibleSnapshotCount: taSnapshots.length,
+        originatorOutcome: 'not_triggered',
+        originatorError: 'origination trigger did not fire',
+      });
       return null; // no-op — return null to fall through to quant path if desired
     }
 
@@ -786,6 +799,10 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       recentEvents,
       alertedSymbols: triggerResult.alertedSymbols,
       triggerReason: triggerResult.reason,
+      scanId,
+      marketSymbols: topMarkets,
+      allSnapshotCount: allSnapshots.length,
+      eligibleSnapshotCount: taSnapshots.length,
     };
 
     const proposal = await this.originator.propose(bundle);
