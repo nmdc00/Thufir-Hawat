@@ -19,6 +19,12 @@ export interface TradeProposalRecord {
   originatorExitStage?: string;
   originatorExitReason?: string;
   requestedLeverage?: number;
+  scanId?: string;
+  marketSymbols?: string[];
+  allSnapshotCount?: number;
+  eligibleSnapshotCount?: number;
+  originatorOutcome?: string;
+  originatorError?: string;
 }
 
 function ensureSchema(): void {
@@ -44,7 +50,13 @@ function ensureSchema(): void {
       execute_trades         INTEGER,
       originator_exit_stage  TEXT,
       originator_exit_reason TEXT,
-      requested_leverage     REAL
+      requested_leverage     REAL,
+      scan_id                TEXT,
+      market_symbols         TEXT,
+      all_snapshot_count     INTEGER,
+      eligible_snapshot_count INTEGER,
+      originator_outcome     TEXT,
+      originator_error       TEXT
     )
   `);
 
@@ -62,6 +74,12 @@ function ensureSchema(): void {
   addColumnIfMissing('originator_exit_stage', 'originator_exit_stage TEXT');
   addColumnIfMissing('originator_exit_reason', 'originator_exit_reason TEXT');
   addColumnIfMissing('requested_leverage', 'requested_leverage REAL');
+  addColumnIfMissing('scan_id', 'scan_id TEXT');
+  addColumnIfMissing('market_symbols', 'market_symbols TEXT');
+  addColumnIfMissing('all_snapshot_count', 'all_snapshot_count INTEGER');
+  addColumnIfMissing('eligible_snapshot_count', 'eligible_snapshot_count INTEGER');
+  addColumnIfMissing('originator_outcome', 'originator_outcome TEXT');
+  addColumnIfMissing('originator_error', 'originator_error TEXT');
 }
 
 export function recordTradeProposal(record: TradeProposalRecord): number {
@@ -72,12 +90,16 @@ export function recordTradeProposal(record: TradeProposalRecord): number {
        (trigger_reason, alerted_symbols, proposed, symbol, side, thesis_text,
         invalidation_condition, invalidation_price, suggested_ttl_minutes, confidence,
         entry_gate_verdict, executed, trade_id, used_fallback, execute_trades,
-        originator_exit_stage, originator_exit_reason, requested_leverage)
+        originator_exit_stage, originator_exit_reason, requested_leverage,
+        scan_id, market_symbols, all_snapshot_count, eligible_snapshot_count,
+        originator_outcome, originator_error)
      VALUES
        (@triggerReason, @alertedSymbols, @proposed, @symbol, @side, @thesisText,
         @invalidationCondition, @invalidationPrice, @suggestedTtlMinutes, @confidence,
         @entryGateVerdict, @executed, @tradeId, @usedFallback, @executeTrades,
-        @originatorExitStage, @originatorExitReason, @requestedLeverage)`
+        @originatorExitStage, @originatorExitReason, @requestedLeverage,
+        @scanId, @marketSymbols, @allSnapshotCount, @eligibleSnapshotCount,
+        @originatorOutcome, @originatorError)`
   ).run({
     triggerReason: record.triggerReason,
     alertedSymbols: record.alertedSymbols ? JSON.stringify(record.alertedSymbols) : null,
@@ -98,6 +120,12 @@ export function recordTradeProposal(record: TradeProposalRecord): number {
     originatorExitStage: record.originatorExitStage ?? null,
     originatorExitReason: record.originatorExitReason ?? null,
     requestedLeverage: record.requestedLeverage ?? null,
+    scanId: record.scanId ?? null,
+    marketSymbols: record.marketSymbols ? JSON.stringify(record.marketSymbols) : null,
+    allSnapshotCount: record.allSnapshotCount ?? null,
+    eligibleSnapshotCount: record.eligibleSnapshotCount ?? null,
+    originatorOutcome: record.originatorOutcome ?? null,
+    originatorError: record.originatorError ?? null,
   });
   return Number(result.lastInsertRowid);
 }

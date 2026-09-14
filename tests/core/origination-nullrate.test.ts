@@ -128,6 +128,7 @@ describe('LlmTradeOriginator null-rate discipline', () => {
     expect(mockRecordTradeProposal).toHaveBeenCalledTimes(10);
     for (const call of mockRecordTradeProposal.mock.calls) {
       expect(call[0].proposed).toBe(false);
+      expect(call[0].originatorOutcome).toBe('null_response');
     }
   });
 
@@ -202,5 +203,6 @@ describe('LlmTradeOriginator null-rate discipline', () => {
     // DB write with proposed=false (confidence gate caused rejection)
     expect(mockRecordTradeProposal).toHaveBeenCalledOnce();
     expect(mockRecordTradeProposal.mock.calls[0][0].proposed).toBe(false);
+    expect(mockRecordTradeProposal.mock.calls[0][0].originatorOutcome).toBe('invalid_response');
   });
 });
