@@ -216,10 +216,22 @@ function trimMessagesByCharBudget(
     return messages;
   }
 
+  // Preserve the current user request. Dropping it when a long system prompt
+  // consumes the decision budget produces a plausible but context-free answer.
   const trimmedRest = [...rest];
-  while (trimmedRest.length > 0 && totalChars > maxChars) {
+  while (trimmedRest.length > 1 && totalChars > maxChars) {
     trimmedRest.shift();
     totalChars = calcChars(system ? [system, ...trimmedRest] : trimmedRest);
+  }
+
+  if (system && totalChars > maxChars && trimmedRest.length > 0) {
+    const remaining = Math.max(0, maxChars - calcChars(trimmedRest));
+    if (system.content.length > remaining) {
+      const head = Math.ceil(remaining * 0.6);
+      const tail = Math.max(0, remaining - head);
+      system.content = `${system.content.slice(0, head)}\n\n[TRUNCATED]\n\n${system.content.slice(-tail)}`;
+      totalChars = calcChars([system, ...trimmedRest]);
+    }
   }
 
   if (totalChars > maxChars) {
