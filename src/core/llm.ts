@@ -1748,8 +1748,8 @@ class OpenAiClient implements LlmClient {
       if (
         !this.useResponsesApi &&
         this.config.agent.useProxy &&
-        errorMsg.includes("Invalid type for 'input': expected a string") &&
-        openaiMessages.length > 1
+        (errorMsg.includes("Invalid type for 'input': expected a string") ||
+          detail.includes("Invalid type for 'input': expected a string"))
       ) {
         const collapsed = [{
           role: 'user' as const,
