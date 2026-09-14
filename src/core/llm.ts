@@ -1700,37 +1700,36 @@ class OpenAiClient implements LlmClient {
     // to parse bounded JSON, so use the streaming chat surface for proxied
     // decision requests and collect its content deltas.
     const useStreamingDecision = Boolean(this.config.agent.useProxy && this.meta?.kind === 'decision' && !this.useResponsesApi);
+    const requestUrl = `${this.baseUrl}${this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions'}`;
+    const buildBody = (requestMessages: OpenAiMessage[]) =>
+      this.useResponsesApi
+        ? {
+            model: this.model,
+            ...(typeof maxTokens === 'number' ? { max_output_tokens: maxTokens } : {}),
+            instructions: requestMessages
+              .filter((m) => m.role === 'system')
+              .map((m) => m.content)
+              .join('\n\n---\n\n') || undefined,
+            input: requestMessages
+              .filter((msg) => msg.role !== 'system')
+              .flatMap((msg) => toResponsesInputItem(msg)),
+          }
+        : {
+            model: this.model,
+            ...(this.includeTemperature ? { temperature: options?.temperature ?? 0.2 } : {}),
+            ...(typeof maxTokens === 'number' ? { max_tokens: maxTokens } : {}),
+            ...(useStreamingDecision ? { stream: true } : {}),
+            messages: requestMessages,
+          };
     const response = await fetchWithRetry(() =>
-      fetch(`${this.baseUrl}${this.useResponsesApi ? '/v1/responses' : '/v1/chat/completions'}`, {
+      fetch(requestUrl, {
         method: 'POST',
         signal: options?.signal,
         headers: {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(
-          this.useResponsesApi
-            ? {
-                model: this.model,
-                ...(typeof maxTokens === 'number' ? { max_output_tokens: maxTokens } : {}),
-                // Merge ALL system messages into instructions (identity + task prompts)
-                instructions: openaiMessages
-                  .filter((m) => m.role === 'system')
-                  .map((m) => m.content)
-                  .join('\n\n---\n\n') || undefined,
-                input: openaiMessages
-                  .filter((msg) => msg.role !== 'system')
-                  .flatMap((msg) => toResponsesInputItem(msg)),
-              }
-            : {
-                model: this.model,
-                ...(this.includeTemperature ? { temperature: options?.temperature ?? 0.2 } : {}),
-                // Prefer max_tokens for broad OpenAI-compatible proxy support.
-                ...(typeof maxTokens === 'number' ? { max_tokens: maxTokens } : {}),
-                ...(useStreamingDecision ? { stream: true } : {}),
-                messages: openaiMessages,
-              }
-        ),
+        body: JSON.stringify(buildBody(openaiMessages)),
       })
     );
 
@@ -1742,6 +1741,57 @@ class OpenAiClient implements LlmClient {
         detail = '';
       }
       const errorMsg = detail ? parseProxyError(detail) : `status ${response.status}`;
+      // Some Launchdock/Codex combinations reject the translated multi-message
+      // shape with an object-valued `input`. Retry once as a single plain-text
+      // user message; this preserves the bounded decision prompt while avoiding
+      // the incompatible translation path.
+      if (
+        !this.useResponsesApi &&
+        this.config.agent.useProxy &&
+        errorMsg.includes("Invalid type for 'input': expected a string") &&
+        openaiMessages.length > 1
+      ) {
+        const collapsed = [{
+          role: 'user' as const,
+          content: openaiMessages
+            .map((msg) => `[${msg.role}]\n${msg.content}`)
+            .join('\n\n'),
+        }];
+        const retry = await fetchWithRetry(() =>
+          fetch(requestUrl, {
+            method: 'POST',
+            signal: options?.signal,
+            headers: {
+              Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(buildBody(collapsed)),
+          })
+        );
+        if (retry.ok) {
+          if (useStreamingDecision) {
+            const raw = await retry.text();
+            const content = raw
+              .split(/\r?\n/)
+              .filter((line) => line.startsWith('data: '))
+              .map((line) => line.slice(6).trim())
+              .filter((line) => line && line !== '[DONE]')
+              .map((line) => {
+                try {
+                  return (JSON.parse(line) as { choices?: Array<{ delta?: { content?: string } }> })
+                    .choices?.[0]?.delta?.content ?? '';
+                } catch {
+                  return '';
+                }
+              })
+              .join('')
+              .trim();
+            return { content, model: this.model };
+          }
+          const retryData = (await retry.json()) as { choices?: Array<{ message?: { content?: string } }> };
+          return { content: retryData.choices?.[0]?.message?.content?.trim() ?? '', model: this.model };
+        }
+      }
       throw new Error(`LLM request failed: ${errorMsg}`);
     }
 
