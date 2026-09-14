@@ -335,6 +335,7 @@ describe('LlmTradeOriginator', () => {
       expect(mockRecordTradeProposal).toHaveBeenCalledOnce();
       const call = mockRecordTradeProposal.mock.calls[0][0];
       expect(call.proposed).toBe(false);
+      expect(call.originatorOutcome).toBe('null_response');
     });
 
     it('calls recordTradeProposal when result is a valid proposal', async () => {
@@ -347,6 +348,7 @@ describe('LlmTradeOriginator', () => {
       expect(call.proposed).toBe(true);
       expect(call.symbol).toBe('BTC');
       expect(call.confidence).toBe(0.72);
+      expect(call.originatorOutcome).toBe('proposal');
     });
 
     it('records usedFallback=true when fallback was used', async () => {

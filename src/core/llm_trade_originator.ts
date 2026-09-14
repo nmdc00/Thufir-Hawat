@@ -33,6 +33,10 @@ export interface OriginationInputBundle {
   performanceSummary?: string;
   triggerReason?: 'cadence' | 'ta_alert' | 'event';
   contextDomain?: MarketContextDomain;
+  scanId?: string;
+  marketSymbols?: string[];
+  allSnapshotCount?: number;
+  eligibleSnapshotCount?: number;
 }
 
 const ProposalSchema = z.object({
@@ -439,6 +443,8 @@ export class LlmTradeOriginator {
     const userMessage = buildUserMessage(effectiveBundle);
     let proposal: TradeProposal | null = null;
     let usedFallback = false;
+    let originatorOutcome: 'proposal' | 'null_response' | 'invalid_response' | 'llm_error' = 'llm_error';
+    let originatorError: string | undefined;
 
     // Try main LLM
     try {
@@ -450,7 +456,11 @@ export class LlmTradeOriginator {
         { timeoutMs }
       );
       proposal = parseProposal(response.content);
+      originatorOutcome = proposal === null
+        ? (response.content.trim() === 'null' ? 'null_response' : 'invalid_response')
+        : 'proposal';
     } catch (error) {
+      originatorError = error instanceof Error ? error.message : String(error);
       logger.warn('LlmTradeOriginator: main LLM failed, trying fallback', {
         provider: this.mainLlm.meta?.provider ?? 'unknown',
         model: this.mainLlm.meta?.model ?? 'unknown',
@@ -469,7 +479,11 @@ export class LlmTradeOriginator {
           { timeoutMs: 5_000 }
         );
         proposal = parseProposal(fallbackResponse.content);
+        originatorOutcome = proposal === null
+          ? (fallbackResponse.content.trim() === 'null' ? 'null_response' : 'invalid_response')
+          : 'proposal';
       } catch (fallbackError) {
+        originatorError = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
         logger.warn('LlmTradeOriginator: fallback LLM also failed, returning null', {
           provider: this.fallbackLlm.meta?.provider ?? 'unknown',
           model: this.fallbackLlm.meta?.model ?? 'unknown',
@@ -487,10 +501,17 @@ export class LlmTradeOriginator {
         minConfidence,
       });
       proposal = null;
+      originatorOutcome = 'invalid_response';
+      originatorError = `confidence below minimum ${minConfidence}`;
     }
 
     if (proposal !== null) {
-      proposal = validateProposalAgainstMarketContext(proposal, effectiveBundle.taSnapshots);
+      const validated = validateProposalAgainstMarketContext(proposal, effectiveBundle.taSnapshots);
+      if (validated === null) {
+        originatorOutcome = 'invalid_response';
+        originatorError = 'proposal failed market-context validation';
+      }
+      proposal = validated;
     }
 
     // Write to DB
@@ -507,6 +528,12 @@ export class LlmTradeOriginator {
       confidence: proposal?.confidence,
       executed: false,
       usedFallback,
+      scanId: effectiveBundle.scanId,
+      marketSymbols: effectiveBundle.marketSymbols,
+      allSnapshotCount: effectiveBundle.allSnapshotCount,
+      eligibleSnapshotCount: effectiveBundle.eligibleSnapshotCount,
+      originatorOutcome,
+      originatorError: originatorError?.slice(0, 500),
     });
 
     if (proposal !== null) {
