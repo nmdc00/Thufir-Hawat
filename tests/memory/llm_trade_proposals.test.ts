@@ -33,7 +33,8 @@ describe('llm trade proposal scan observability', () => {
       marketSymbols: ['BTC', 'ETH', 'SOL'],
       allSnapshotCount: 3,
       eligibleSnapshotCount: 2,
-      originatorOutcome: 'null_response',
+      originatorOutcome: 'no_trade',
+      originatorReason: 'No clean invalidation level from the available evidence',
       originatorError: undefined,
     });
 
@@ -43,8 +44,9 @@ describe('llm trade proposal scan observability', () => {
       scan_id: 'scan_test_1',
       all_snapshot_count: 3,
       eligible_snapshot_count: 2,
-      originator_outcome: 'null_response',
+      originator_outcome: 'no_trade',
       originator_error: null,
+      originator_reason: 'No clean invalidation level from the available evidence',
     });
     expect(JSON.parse(String(row.market_symbols))).toEqual(['BTC', 'ETH', 'SOL']);
   });
