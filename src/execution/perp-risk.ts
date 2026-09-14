@@ -45,6 +45,7 @@ type ClearinghouseStateSnapshot = {
 type PerpRiskCheckResult = {
   allowed: boolean;
   reason?: string;
+  accountEquityUsd?: number | null;
 };
 
 const normalizeSymbol = (symbol: string): string => symbol.trim().toUpperCase();
@@ -395,5 +396,8 @@ export async function checkPerpRiskLimits(
     }
   }
 
-  return { allowed: true };
+  // Only account value is equity; withdrawable/free cash is not a denominator.
+  const marginEquity = state?.marginSummary?.accountValue;
+  const equity = marginEquity == null ? null : toFiniteNumber(marginEquity);
+  return { allowed: true, accountEquityUsd: equity != null && equity > 0 ? equity : null };
 }

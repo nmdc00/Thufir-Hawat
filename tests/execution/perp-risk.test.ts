@@ -25,6 +25,15 @@ vi.mock('../../src/execution/hyperliquid/client.js', () => ({
 import { checkPerpRiskLimits } from '../../src/execution/perp-risk.js';
 
 describe('checkPerpRiskLimits autonomous defaults', () => {
+  it('returns total margin account equity, never withdrawable or cross-only cash substitutes', async () => {
+    const input = { config: { wallet: { perps: { maxTotalNotionalUsd: 1000 } } } as any,
+      symbol: 'BTC', side: 'buy' as const, size: 0.1, markPrice: 100, notionalUsd: 10 };
+    mockState = { crossMarginSummary: { accountValue: 200 }, marginSummary: { accountValue: '350' },
+      withdrawable: '80', assetPositions: [] } as any;
+    expect(await checkPerpRiskLimits(input)).toMatchObject({ allowed: true, accountEquityUsd: 350 });
+    mockState = { crossMarginSummary: { accountValue: 200 }, withdrawable: '80', assetPositions: [] } as any;
+    expect(await checkPerpRiskLimits(input)).toMatchObject({ allowed: true, accountEquityUsd: null });
+  });
   it('blocks autonomous entries that would exceed fallback gross notional caps', async () => {
     mockState = {
       crossMarginSummary: { accountValue: 200 },

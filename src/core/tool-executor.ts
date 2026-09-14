@@ -1951,6 +1951,16 @@ export async function executeToolCall(
         const newsSources = parseNewsSources(toolInput.news_sources);
         const newsSourceCount = newsSources?.length ?? null;
         const planContext = parsePlanContext(toolInput.plan_context);
+        const planEntryGateVerdict =
+          planContext?.entryGateVerdict === 'approve' ||
+          planContext?.entryGateVerdict === 'reject' ||
+          planContext?.entryGateVerdict === 'resize'
+            ? planContext.entryGateVerdict
+            : null;
+        const planEntryGateReasonCode =
+          typeof planContext?.entryGateReasonCode === 'string' && planContext.entryGateReasonCode.trim().length > 0
+            ? planContext.entryGateReasonCode
+            : null;
         const signalClass = inferSignalClass({
           explicitSignalClass,
           toolInput,
@@ -2889,6 +2899,8 @@ export async function executeToolCall(
             orderType,
             reduceOnly,
             ...closeAttributionJournalFields,
+            entryGateVerdict: planEntryGateVerdict,
+            entryGateReasonCode: planEntryGateReasonCode,
             markPrice: market.markPrice ?? null,
             confidence: 'medium',
             reasoning: policyReasoning,
