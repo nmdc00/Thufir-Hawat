@@ -176,6 +176,7 @@ function isPosture(value: unknown): value is ExpressionContextPack['portfolioSta
 }
 
 function toOptionalNumber(value: unknown): number | null {
+  if (value == null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }

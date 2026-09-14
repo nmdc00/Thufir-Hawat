@@ -574,6 +574,9 @@ describe('LlmEntryGate', () => {
         reasoning: 'fallback-shaped reject',
         reasonCode: 'discretionary_reject',
         ...defaultRiskFields,
+        equityAtRiskPct: null,
+        modelEquityAtRiskPct: 2.5,
+        riskSource: 'unavailable',
       });
     });
 
@@ -594,7 +597,9 @@ describe('LlmEntryGate', () => {
         reasoning: 'pseudo-json reject',
         reasonCode: 'discretionary_reject',
         stopLevelPrice: 47000,
-        equityAtRiskPct: 3.0,
+        equityAtRiskPct: null,
+        modelEquityAtRiskPct: 3.0,
+        riskSource: 'unavailable',
         targetRR: 1.5,
       });
     });
@@ -684,7 +689,8 @@ describe('LlmEntryGate', () => {
       const result = await gate.evaluate(makeCandidate(), markPrice);
 
       expect(result.stopLevelPrice).toBe(45000);
-      expect(result.equityAtRiskPct).toBe(3.0);
+      expect(result.equityAtRiskPct).toBeNull();
+      expect(result.modelEquityAtRiskPct).toBe(3.0);
       expect(result.targetRR).toBe(2.5);
     });
 
@@ -777,7 +783,8 @@ describe('LlmEntryGate', () => {
 
       const call = mockRecordEntryGateDecision.mock.calls[0][0];
       expect(call.stopLevelPrice).toBe(44000);
-      expect(call.equityAtRiskPct).toBe(1.5);
+      expect(call.equityAtRiskPct).toBeNull();
+      expect(call.modelEquityAtRiskPct).toBe(1.5);
       expect(call.targetRR).toBe(3.0);
     });
   });

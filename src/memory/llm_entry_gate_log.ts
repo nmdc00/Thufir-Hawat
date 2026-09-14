@@ -15,8 +15,13 @@ export interface EntryGateLogEntry {
   session?: string;
   edge?: number;
   stopLevelPrice?: number | null;
-  equityAtRiskPct?: number;
-  targetRR?: number;
+  equityAtRiskPct?: number | null;
+  modelEquityAtRiskPct?: number | null;
+  riskSource?: string;
+  accountEquityUsd?: number | null;
+  stopProvenance?: string;
+  missingPlanFields?: string[];
+  targetRR?: number | null;
   suggestedLeverage?: number;
   mechanicalLeverageCeiling?: number | null;
   stopDistancePct?: number | null;
@@ -85,6 +90,11 @@ function ensureSchema(): void {
   addColumnIfMissing('execution_score', 'execution_score REAL');
   addColumnIfMissing('liquidity_bucket', 'liquidity_bucket TEXT');
   addColumnIfMissing('llm_consulted', 'llm_consulted INTEGER NOT NULL DEFAULT 1');
+  addColumnIfMissing('model_equity_at_risk_pct', 'model_equity_at_risk_pct REAL');
+  addColumnIfMissing('risk_source', 'risk_source TEXT');
+  addColumnIfMissing('account_equity_usd', 'account_equity_usd REAL');
+  addColumnIfMissing('stop_provenance', 'stop_provenance TEXT');
+  addColumnIfMissing('missing_plan_fields', 'missing_plan_fields TEXT');
 }
 
 export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
@@ -92,9 +102,9 @@ export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
   const db = openDatabase();
   db.prepare(
     `INSERT INTO llm_entry_gate_log
-       (symbol, side, notional_usd, verdict, reasoning, reason_code, adjusted_size_usd, used_fallback, signal_class, regime, session, edge, stop_level_price, equity_at_risk_pct, target_rr, suggested_leverage, mechanical_leverage_ceiling, stop_distance_pct, liquidity_score, execution_score, liquidity_bucket, llm_consulted)
+       (symbol, side, notional_usd, verdict, reasoning, reason_code, adjusted_size_usd, used_fallback, signal_class, regime, session, edge, stop_level_price, equity_at_risk_pct, target_rr, suggested_leverage, mechanical_leverage_ceiling, stop_distance_pct, liquidity_score, execution_score, liquidity_bucket, llm_consulted, model_equity_at_risk_pct, risk_source, account_equity_usd, stop_provenance, missing_plan_fields)
      VALUES
-       (@symbol, @side, @notionalUsd, @verdict, @reasoning, @reasonCode, @adjustedSizeUsd, @usedFallback, @signalClass, @regime, @session, @edge, @stopLevelPrice, @equityAtRiskPct, @targetRR, @suggestedLeverage, @mechanicalLeverageCeiling, @stopDistancePct, @liquidityScore, @executionScore, @liquidityBucket, @llmConsulted)`
+       (@symbol, @side, @notionalUsd, @verdict, @reasoning, @reasonCode, @adjustedSizeUsd, @usedFallback, @signalClass, @regime, @session, @edge, @stopLevelPrice, @equityAtRiskPct, @targetRR, @suggestedLeverage, @mechanicalLeverageCeiling, @stopDistancePct, @liquidityScore, @executionScore, @liquidityBucket, @llmConsulted, @modelEquityAtRiskPct, @riskSource, @accountEquityUsd, @stopProvenance, @missingPlanFields)`
   ).run({
     symbol: entry.symbol,
     side: entry.side,
@@ -110,6 +120,11 @@ export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
     edge: entry.edge ?? null,
     stopLevelPrice: entry.stopLevelPrice ?? null,
     equityAtRiskPct: entry.equityAtRiskPct ?? null,
+    modelEquityAtRiskPct: entry.modelEquityAtRiskPct ?? null,
+    riskSource: entry.riskSource ?? null,
+    accountEquityUsd: entry.accountEquityUsd ?? null,
+    stopProvenance: entry.stopProvenance ?? null,
+    missingPlanFields: entry.missingPlanFields ? JSON.stringify(entry.missingPlanFields) : null,
     targetRR: entry.targetRR ?? null,
     suggestedLeverage: entry.suggestedLeverage ?? null,
     mechanicalLeverageCeiling: entry.mechanicalLeverageCeiling ?? null,
