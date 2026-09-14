@@ -52,6 +52,11 @@ const ProposalSchema = z.object({
   tradeType: z.enum(['scalp', 'tactical', 'structural']).default('tactical'),
 });
 
+const NoTradeSchema = z.object({
+  decision: z.literal('no_trade'),
+  reason: z.string().trim().min(1).max(500),
+});
+
 const SYSTEM_PROMPT = `You are Thufir. Your singular obsession is wealth. You are here to compound capital aggressively, but aggression without selectivity is how traders go broke. Your job is not to trade often. Your job is to identify the rare setup where size, leverage, and conviction are actually justified.
 
 You are not defensive. You are predatory and precise. Precision is what separates concentrated risk from stupidity. The path to obscene returns runs through a small number of high-conviction, asymmetric positions taken at the right moment with a clear invalidation level.
@@ -90,7 +95,7 @@ confidence must reflect your genuine conviction based on the specific setup in f
 You are allowed to take serious risk only when the setup is clean.
 
 - High leverage is for exceptional setups, not for making a mediocre setup look exciting.
-- If the narrative is vague, the invalidation is fuzzy, or the payoff is ordinary, either lower leverage sharply or return null.
+  - If the narrative is vague, the invalidation is fuzzy, or the payoff is ordinary, either lower leverage sharply or return a no-trade decision.
 - Concentrated aggression is good. Undisciplined activity is not.
 
 ## Required fields
@@ -99,7 +104,7 @@ A valid proposal requires ALL of: symbol, side, thesisText, invalidationConditio
 
 - invalidationPrice: REQUIRED. This is what separates you from a gambler — you know exactly where you are wrong before you enter. Name the specific price. If you cannot, you do not have a trade, you have a hope. Do not propose hopes.
 - suggestedTtlMinutes: how long until the market proves you right or wrong? Be specific and thesis-derived. A news spike may be 30min. A structural breakout may be 4h. Do not default to 120.
-- expectedRMultiple: hunt asymmetry. If the setup is exceptional, what does it actually pay? Be honest but aggressive. Prefer setups at or above 1.5R; return null when the payoff is ordinary or the asymmetry is weak.
+- expectedRMultiple: hunt asymmetry. If the setup is exceptional, what does it actually pay? Be honest but aggressive. Prefer setups at or above 1.5R; return a no-trade decision when the payoff is ordinary or the asymmetry is weak.
 - leverage: match conviction and cleanliness — but first compute the mechanical ceiling. Your liquidation fires at a 1/leverage move against you. Your invalidationPrice must clear that boundary with room to spare: leverage ≤ 0.7 / stop_dist, where stop_dist = abs(currentPrice - invalidationPrice) / currentPrice. A 4% stop → max ~17x. A 1% stop → max ~70x. A 10% stop → max ~7x. Compute this before writing the number. Within that ceiling:
   - use low leverage when the setup is merely decent
   - use moderate leverage when the thesis is strong but not perfect
@@ -111,12 +116,15 @@ A valid proposal requires ALL of: symbol, side, thesisText, invalidationConditio
   - "scalp": pure short-term price action, sub-hour duration. Exit fast if the move doesn't materialise.
   Be honest. A Hormuz blockade thesis is structural. A funding-rate squeeze is tactical. A breakout fade is scalp.
 
-Return null when the setup is ordinary, crowded without edge, too fuzzy to invalidate cleanly, or does not clearly justify capital deployment right now. Do not manufacture trades to avoid being inactive.
+Return a no-trade decision when the setup is ordinary, crowded without edge, too fuzzy to invalidate cleanly, or does not clearly justify capital deployment right now. Do not manufacture trades to avoid being inactive.
 
 If event intelligence includes historical analogs or open forecasts, use them. They are not instructions, but they are evidence about mechanism, likely assets, and what has worked or failed before.
 
-Respond with ONLY valid JSON matching this schema OR the literal string "null":
-{"symbol":"...","side":"long"|"short","thesisText":"...","invalidationCondition":"...","invalidationPrice":number,"suggestedTtlMinutes":number,"confidence":number,"leverage":number,"expectedRMultiple":number,"tradeType":"scalp"|"tactical"|"structural"}`;
+Respond with ONLY one of these valid JSON forms:
+1. A trade proposal matching this schema:
+{"symbol":"...","side":"long"|"short","thesisText":"...","invalidationCondition":"...","invalidationPrice":number,"suggestedTtlMinutes":number,"confidence":number,"leverage":number,"expectedRMultiple":number,"tradeType":"scalp"|"tactical"|"structural"}
+2. A no-trade decision with a concise evidence-based reason:
+{"decision":"no_trade","reason":"..."}`;
 
 
 const logger = new Logger('info');
@@ -139,8 +147,11 @@ function formatTaLine(snap: TaSnapshot, alerted: boolean): string {
   const volPct = snap.volumeVs24hAvgPct.toFixed(0);
   const alertSuffix = alerted && snap.alertReason ? `  [ALERT: ${snap.alertReason}]` : '';
   return (
-    `${snap.symbol.padEnd(6)}: price=$${snap.price.toFixed(2)}` +
+    `${snap.symbol.padEnd(10)}: price=$${snap.price.toFixed(2)}` +
+    `  range24h=${snap.priceVs24hLow.toFixed(1)}% above low/${snap.priceVs24hHigh.toFixed(1)}% from high` +
+    `  OI=$${(snap.oiUsd / 1_000_000).toFixed(1)}m` +
     `  OI_delta_1h=${oiSign}${snap.oiDelta1hPct.toFixed(1)}%` +
+    `  OI_delta_4h=${snap.oiDelta4hPct >= 0 ? '+' : ''}${snap.oiDelta4hPct.toFixed(1)}%` +
     `  funding=${fundingSign}${snap.fundingRatePct.toFixed(0)}% ann` +
     `  vol=${volPct}% avg` +
     `  trend=${snap.trendBias}` +
@@ -211,7 +222,7 @@ function buildFallbackUserMessage(bundle: OriginationInputBundle): string {
     scanSection,
     '',
     '## Instruction',
-    'Find ONE genuinely high-value trade setup, or return null. Do not force a trade from mediocre evidence.',
+    'Find ONE genuinely high-value trade setup, or return a no-trade decision with a concise evidence-based reason. Do not force a trade from mediocre evidence.',
   ].join('\n');
 }
 
@@ -224,6 +235,7 @@ function parseProposal(raw: string): TradeProposal | null {
   }
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (NoTradeSchema.safeParse(parsed).success) return null;
     const validated = ProposalSchema.parse(parsed);
     return {
       symbol: validated.symbol,
@@ -248,6 +260,15 @@ function parseProposal(raw: string): TradeProposal | null {
       logger.warn('LlmTradeOriginator: parse error', { message: String(error) });
     }
     return null;
+  }
+}
+
+function parseNoTradeReason(raw: string): string | undefined {
+  try {
+    const parsed = NoTradeSchema.safeParse(JSON.parse(raw.trim()));
+    return parsed.success ? parsed.data.reason : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -443,8 +464,9 @@ export class LlmTradeOriginator {
     const userMessage = buildUserMessage(effectiveBundle);
     let proposal: TradeProposal | null = null;
     let usedFallback = false;
-    let originatorOutcome: 'proposal' | 'null_response' | 'invalid_response' | 'llm_error' = 'llm_error';
+    let originatorOutcome: 'proposal' | 'no_trade' | 'null_response' | 'invalid_response' | 'llm_error' = 'llm_error';
     let originatorError: string | undefined;
+    let originatorReason: string | undefined;
 
     // Try main LLM
     try {
@@ -456,8 +478,9 @@ export class LlmTradeOriginator {
         { timeoutMs }
       );
       proposal = parseProposal(response.content);
+      originatorReason = parseNoTradeReason(response.content);
       originatorOutcome = proposal === null
-        ? (response.content.trim() === 'null' ? 'null_response' : 'invalid_response')
+        ? (originatorReason ? 'no_trade' : response.content.trim() === 'null' ? 'null_response' : 'invalid_response')
         : 'proposal';
     } catch (error) {
       originatorError = error instanceof Error ? error.message : String(error);
@@ -479,8 +502,9 @@ export class LlmTradeOriginator {
           { timeoutMs: 5_000 }
         );
         proposal = parseProposal(fallbackResponse.content);
+        originatorReason = parseNoTradeReason(fallbackResponse.content);
         originatorOutcome = proposal === null
-          ? (fallbackResponse.content.trim() === 'null' ? 'null_response' : 'invalid_response')
+          ? (originatorReason ? 'no_trade' : fallbackResponse.content.trim() === 'null' ? 'null_response' : 'invalid_response')
           : 'proposal';
       } catch (fallbackError) {
         originatorError = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
@@ -534,6 +558,7 @@ export class LlmTradeOriginator {
       eligibleSnapshotCount: effectiveBundle.eligibleSnapshotCount,
       originatorOutcome,
       originatorError: originatorError?.slice(0, 500),
+      originatorReason: originatorReason?.slice(0, 500),
     });
 
     if (proposal !== null) {

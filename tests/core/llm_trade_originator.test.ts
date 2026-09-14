@@ -122,6 +122,21 @@ describe('LlmTradeOriginator', () => {
       expect(result).toBeNull();
     });
 
+    it('records a structured no-trade reason without treating it as an invalid response', async () => {
+      const mainLlm = makeLlmClient(JSON.stringify({
+        decision: 'no_trade',
+        reason: 'Volume lacks open-interest confirmation and no clean invalidation level is available',
+      }));
+      const originator = new LlmTradeOriginator(mainLlm, makeLlmClient('null'), dummyConfig);
+
+      await originator.propose(makeBundle());
+
+      const call = mockRecordTradeProposal.mock.calls[0][0];
+      expect(call.proposed).toBe(false);
+      expect(call.originatorOutcome).toBe('no_trade');
+      expect(call.originatorReason).toContain('open-interest confirmation');
+    });
+
     it('returns null when LLM emits whitespace-padded "null"', async () => {
       const mainLlm = makeLlmClient('  null  ');
       const originator = new LlmTradeOriginator(mainLlm, makeLlmClient('null'), dummyConfig);
@@ -321,6 +336,9 @@ describe('LlmTradeOriginator', () => {
       const messages = fallbackCompleteFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
       const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
       expect(userContent).toContain('## Market Scan');
+      expect(userContent).toContain('range24h=');
+      expect(userContent).toContain('OI=$');
+      expect(userContent).toContain('OI_delta_4h=');
       expect(userContent).not.toContain('## Market Context');
       expect(userContent).not.toContain('## Recent Events');
     });

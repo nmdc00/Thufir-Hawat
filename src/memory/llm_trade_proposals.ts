@@ -25,6 +25,7 @@ export interface TradeProposalRecord {
   eligibleSnapshotCount?: number;
   originatorOutcome?: string;
   originatorError?: string;
+  originatorReason?: string;
 }
 
 function ensureSchema(): void {
@@ -56,7 +57,8 @@ function ensureSchema(): void {
       all_snapshot_count     INTEGER,
       eligible_snapshot_count INTEGER,
       originator_outcome     TEXT,
-      originator_error       TEXT
+      originator_error       TEXT,
+      originator_reason      TEXT
     )
   `);
 
@@ -80,6 +82,7 @@ function ensureSchema(): void {
   addColumnIfMissing('eligible_snapshot_count', 'eligible_snapshot_count INTEGER');
   addColumnIfMissing('originator_outcome', 'originator_outcome TEXT');
   addColumnIfMissing('originator_error', 'originator_error TEXT');
+  addColumnIfMissing('originator_reason', 'originator_reason TEXT');
 }
 
 export function recordTradeProposal(record: TradeProposalRecord): number {
@@ -92,14 +95,14 @@ export function recordTradeProposal(record: TradeProposalRecord): number {
         entry_gate_verdict, executed, trade_id, used_fallback, execute_trades,
         originator_exit_stage, originator_exit_reason, requested_leverage,
         scan_id, market_symbols, all_snapshot_count, eligible_snapshot_count,
-        originator_outcome, originator_error)
+        originator_outcome, originator_error, originator_reason)
      VALUES
        (@triggerReason, @alertedSymbols, @proposed, @symbol, @side, @thesisText,
         @invalidationCondition, @invalidationPrice, @suggestedTtlMinutes, @confidence,
         @entryGateVerdict, @executed, @tradeId, @usedFallback, @executeTrades,
         @originatorExitStage, @originatorExitReason, @requestedLeverage,
         @scanId, @marketSymbols, @allSnapshotCount, @eligibleSnapshotCount,
-        @originatorOutcome, @originatorError)`
+       @originatorOutcome, @originatorError, @originatorReason)`
   ).run({
     triggerReason: record.triggerReason,
     alertedSymbols: record.alertedSymbols ? JSON.stringify(record.alertedSymbols) : null,
@@ -126,6 +129,7 @@ export function recordTradeProposal(record: TradeProposalRecord): number {
     eligibleSnapshotCount: record.eligibleSnapshotCount ?? null,
     originatorOutcome: record.originatorOutcome ?? null,
     originatorError: record.originatorError ?? null,
+    originatorReason: record.originatorReason ?? null,
   });
   return Number(result.lastInsertRowid);
 }
