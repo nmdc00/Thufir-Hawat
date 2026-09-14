@@ -41,7 +41,8 @@ import { SchedulerControlPlane } from './scheduler_control_plane.js';
 import { resolveSessionWeightContext } from './session-weight.js';
 import { AutonomousScanTelemetry } from './performance_metrics.js';
 import { withExecutionContext } from './llm_infra.js';
-import { getPaperPerpBookSummary } from '../memory/paper_perps.js';
+import { getPaperPerpBookSummary, listPaperPerpPositions } from '../memory/paper_perps.js';
+import { enrichQuantEntryGateCandidate } from './quant_entry_gate.js';
 import { getCashBalance } from '../memory/portfolio.js';
 import { PositionBook } from './position_book.js';
 import { isEntryGateCooldownActive, LlmEntryGate, type EntryGateCandidate } from './llm_entry_gate.js';
@@ -952,6 +953,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       session: sessionContext.session,
       entryReasoning: gateContext.gateEntryReasoning,
       invalidationPrice: proposal.invalidationPrice,
+      stopProvenance: 'thesis_derived',
+      accountEquityUsd: this.gateEquity(riskCheck.accountEquityUsd),
       suggestedTtlMinutes: proposal.suggestedTtlMinutes,
       expectedRMultiple: proposal.expectedRMultiple,
       marketContext: gateContext.marketContext,
@@ -1468,7 +1471,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         Number.isFinite(this.thufirConfig.hyperliquid.maxLeverage)
           ? Math.max(1, Number(this.thufirConfig.hyperliquid.maxLeverage))
           : 50;
-      const gateCandidate = {
+      const gateCandidate = enrichQuantEntryGateCandidate({
         symbol,
         side: expr.side,
         notionalUsd: probeUsd,
@@ -1481,7 +1484,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         session: sessionContext.session,
         entryReasoning: expr.expectedMove ?? '',
         invalidationPrice: expressionInvalidationPrice,
-      };
+        stopProvenance: parseTextPriceLevel(expr.invalidation ?? '') != null ? 'thesis_derived' : 'mechanical_fallback',
+        accountEquityUsd: this.gateEquity(riskCheck.accountEquityUsd),
+      }, expr, cluster, Date.now());
       if (
         this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false &&
         isEntryGateCooldownActive(gateCandidate, this.thufirConfig)
@@ -1635,6 +1640,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         thesis_expires_at_ms: expr.newsTrigger?.expiresAtMs ?? timeStopAtMs,
         confidence: confidenceWeighted,
         reasoning: decisionReasoning,
+        plan_context: { entryGateVerdict, entryGateReasonCode },
         entry_trigger: expr.newsTrigger?.enabled ? 'news' : 'technical',
         news_subtype: expr.newsTrigger?.subtype ?? null,
         news_sources: expr.newsTrigger?.sources ?? null,
@@ -1743,6 +1749,19 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   /**
    * Update trade outcome and track losses
    */
+  private gateEquity(liveEquity?: number | null): number | null {
+    if (this.thufirConfig.execution?.mode === 'live') {
+      return typeof liveEquity === 'number' && Number.isFinite(liveEquity) && liveEquity > 0 ? liveEquity : null;
+    }
+    try {
+      // Stored paper marks are last-fill marks, not verified current marks. Only
+      // the flat book has known equity without fetching a fresh portfolio mark set.
+      if (listPaperPerpPositions().length > 0) return null;
+      const cash = getPaperPerpBookSummary(this.thufirConfig.paper?.initialCashUsdc ?? 200).cashBalanceUsdc;
+      return Number.isFinite(cash) && cash > 0 ? cash : null;
+    } catch { return null; }
+  }
+
   updateTradeOutcome(tradeId: string, outcome: 'win' | 'loss', pnl: number): void {
     const db = openDatabase();
     db.prepare(`
