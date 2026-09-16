@@ -176,9 +176,23 @@ export class HyperliquidMarketClient {
   async getMarket(symbol: string): Promise<Market> {
     const markets = await this.listMarkets(500);
     const normalizedSymbol = normalizeMarketSymbol(symbol);
-    const match =
-      markets.find((m) => normalizeMarketSymbol(m.symbol ?? m.id) === normalizedSymbol || normalizeMarketSymbol(m.id) === normalizedSymbol) ??
-      markets.find((m) => matchesMarketSymbol(m.symbol ?? m.id, symbol) || matchesMarketSymbol(m.id, symbol));
+    const exactMatches = markets.filter(
+      (m) =>
+        normalizeMarketSymbol(m.symbol ?? m.id) === normalizedSymbol ||
+        normalizeMarketSymbol(m.id) === normalizedSymbol,
+    );
+    const baseMatches = markets.filter(
+      (m) => matchesMarketSymbol(m.symbol ?? m.id, symbol) || matchesMarketSymbol(m.id, symbol),
+    );
+    const qualifiedQuery = normalizedSymbol.includes(':') || normalizedSymbol.includes('/');
+    if (!qualifiedQuery && baseMatches.length > 1) {
+      throw new Error(
+        `Ambiguous Hyperliquid market symbol ${symbol}; use the qualified symbol: ${baseMatches
+          .map((market) => market.symbol ?? market.id)
+          .join(', ')}`,
+      );
+    }
+    const match = qualifiedQuery ? exactMatches[0] : baseMatches[0];
     if (!match) {
       throw new Error(`Hyperliquid market not found: ${symbol}`);
     }
