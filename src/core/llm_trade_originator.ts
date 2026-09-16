@@ -204,6 +204,7 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     bundle.performanceSummary ?? '(no history yet)',
     '',
     '## Instruction',
+    'Use the exact market identifier shown in the scan, including any DEX prefix such as hyna:ZEC or xyz:GOLD. Do not shorten qualified symbols to their base symbol.',
     'Find ONE trade only if it is genuinely worth deploying capital into right now. Prefer symbols with no current book exposure. If you propose a symbol already in the book, you must name a specific new catalyst in thesisText that justifies adding to that position. Return null if no setup is sufficiently asymmetric, timely, and cleanly invalidated.',
   ].join('\n');
 }
@@ -222,6 +223,7 @@ function buildFallbackUserMessage(bundle: OriginationInputBundle): string {
     scanSection,
     '',
     '## Instruction',
+    'Use the exact market identifier shown in the scan, including any DEX prefix such as hyna:ZEC or xyz:GOLD. Do not shorten qualified symbols to their base symbol.',
     'Find ONE genuinely high-value trade setup, or return a no-trade decision with a concise evidence-based reason. Do not force a trade from mediocre evidence.',
   ].join('\n');
 }
