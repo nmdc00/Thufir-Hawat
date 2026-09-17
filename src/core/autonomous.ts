@@ -1359,7 +1359,15 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       const confidenceRaw = clamp01(expr.confidence ?? 0);
       const confidenceWeighted = clamp01(confidenceRaw * sessionContext.sessionWeight);
       const sizingModifier = sessionContext.sessionWeight;
-      const market = await this.marketClient.getMarket(symbol);
+      let market: Awaited<ReturnType<typeof this.marketClient.getMarket>>;
+      try {
+        market = await this.marketClient.getMarket(symbol);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn('Quant candidate skipped: market resolution failed', { symbol, reason });
+        outputs.push(`${symbol}: Skipped (market resolution failed — ${reason})`);
+        continue;
+      }
       const cluster = cycleSnapshot.clusterBySymbol.get(expr.symbol);
       const snapshotAgeMs = Math.max(0, Date.now() - cycleSnapshot.capturedAtMs);
       const regime = cluster ? classifyMarketRegime(cluster) : 'choppy';
