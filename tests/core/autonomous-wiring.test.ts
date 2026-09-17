@@ -23,6 +23,12 @@ const mocks = vi.hoisted(() => {
   const taComputeAll = vi.fn();
   const triggerShouldFire = vi.fn();
   const originatorPropose = vi.fn();
+  const originatorGetLastDiagnostic = vi.fn(() => ({
+    triggerReason: 'ta_alert' as const,
+    outcome: 'no_trade' as const,
+    reason: 'test no-trade reason',
+    usedFallback: false,
+  }));
   const originatorCtor = vi.fn();
   const upsertExitPolicy = vi.fn();
   const updateTradeProposalOutcome = vi.fn();
@@ -46,11 +52,12 @@ const mocks = vi.hoisted(() => {
   };
   const originatorInstance = {
     propose: (...args: unknown[]) => originatorPropose(...args),
+    getLastDiagnostic: () => originatorGetLastDiagnostic(),
   };
 
   return {
     dbRun, dbPrepare, dbExec,
-    taComputeAll, triggerShouldFire, originatorPropose, originatorCtor,
+    taComputeAll, triggerShouldFire, originatorPropose, originatorGetLastDiagnostic, originatorCtor,
     upsertExitPolicy, updateTradeProposalOutcome, updateTradeProposalStatus,
     createPrediction, runDiscovery,
     taSurfaceInstance, triggerInstance, originatorInstance,
@@ -83,6 +90,9 @@ vi.mock('../../src/core/llm_trade_originator.js', () => ({
     }
     propose(...args: unknown[]) {
       return mocks.originatorInstance.propose(...args);
+    }
+    getLastDiagnostic() {
+      return mocks.originatorInstance.getLastDiagnostic();
     }
   },
 }));
@@ -515,7 +525,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(result).toMatch(/No discovery expressions/i);
   });
 
-  it('3. null proposal + ta_alert trigger → quant fallback does NOT run, returns originator message', async () => {
+  it('3. null proposal + ta_alert trigger → quant fallback runs with originator diagnostics', async () => {
     mocks.triggerShouldFire.mockReturnValue({ fire: true, reason: 'ta_alert', alertedSymbols: ['BTC'] });
     mocks.originatorPropose.mockResolvedValue(null);
 
@@ -529,9 +539,8 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     const manager = new AutonomousManager(llm, llm, marketClient, executor, limiter, baseConfig);
     const result = await manager.runScan({ forceExecute: true });
 
-    expect(result).toContain('Originator returned null');
-    expect(result).toContain('ta_alert');
-    expect(mocks.runDiscovery).not.toHaveBeenCalled();
+    expect(result).toMatch(/No discovery expressions/i);
+    expect(mocks.runDiscovery).toHaveBeenCalled();
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
