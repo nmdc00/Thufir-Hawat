@@ -22,6 +22,14 @@ export interface TradeProposal {
   tradeType: 'scalp' | 'tactical' | 'structural';
 }
 
+export interface OriginatorDiagnostic {
+  triggerReason: 'cadence' | 'ta_alert' | 'event';
+  outcome: 'proposal' | 'no_trade' | 'null_response' | 'invalid_response' | 'llm_error';
+  reason?: string;
+  error?: string;
+  usedFallback: boolean;
+}
+
 export interface OriginationInputBundle {
   book: BookEntry[];
   taSnapshots: TaSnapshot[];
@@ -392,6 +400,7 @@ function validateProposalAgainstMarketContext(
 
 export class LlmTradeOriginator {
   private contextCache: { key: string; value: string; expiresAt: number } | null = null;
+  private lastDiagnostic: OriginatorDiagnostic | null = null;
 
   constructor(
     private mainLlm: LlmClient,
@@ -399,6 +408,10 @@ export class LlmTradeOriginator {
     private config: ThufirConfig,
     private toolContext?: ToolExecutorContext,
   ) {}
+
+  getLastDiagnostic(): OriginatorDiagnostic | null {
+    return this.lastDiagnostic;
+  }
 
   private async getMarketContext(
     bundle?: Pick<OriginationInputBundle, 'contextDomain' | 'taSnapshots'>
@@ -455,6 +468,7 @@ export class LlmTradeOriginator {
     const timeoutMs = this.config.autonomy?.origination?.timeoutMs ?? 10_000;
     const minConfidence = this.config.autonomy?.origination?.minConfidence ?? 0.55;
     const triggerReason = bundle.triggerReason ?? 'cadence';
+    this.lastDiagnostic = null;
 
     // Supplement marketContext from internal cache when bundle doesn't provide it
     const effectiveBundle: OriginationInputBundle = bundle.marketContext
@@ -537,6 +551,14 @@ export class LlmTradeOriginator {
       }
       proposal = validated;
     }
+
+    this.lastDiagnostic = {
+      triggerReason,
+      outcome: originatorOutcome,
+      reason: originatorReason,
+      error: originatorError,
+      usedFallback,
+    };
 
     // Write to DB
     const proposalRecordId = recordTradeProposal({

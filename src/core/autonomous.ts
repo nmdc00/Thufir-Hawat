@@ -823,11 +823,20 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     this.lastFiredMs = now;
 
     if (proposal === null) {
-      // Quant fallback only on cadence trigger
-      if (triggerResult.reason === 'cadence' && quantFallbackEnabled) {
-        return null; // signal caller to run quant path
+      const diagnostic = this.originator.getLastDiagnostic();
+      this.logger.info('Originator returned no proposal; continuing to quantitative discovery', {
+        trigger: triggerResult.reason,
+        outcome: diagnostic?.outcome ?? 'unknown',
+        reason: diagnostic?.reason,
+        error: diagnostic?.error,
+        usedFallback: diagnostic?.usedFallback ?? false,
+        quantFallbackEnabled,
+      });
+      if (quantFallbackEnabled) {
+        return null; // signal caller to run quant path for every trigger type
       }
-      return `Originator returned null (trigger=${triggerResult.reason}). No trade.`;
+      const detail = diagnostic?.reason ?? diagnostic?.error ?? 'no diagnostic detail';
+      return `Originator returned no proposal (trigger=${triggerResult.reason}, outcome=${diagnostic?.outcome ?? 'unknown'}): ${detail}`;
     }
 
     // Proposal is non-null — run through entry gate and execute
