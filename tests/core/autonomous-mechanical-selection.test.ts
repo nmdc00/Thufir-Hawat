@@ -372,6 +372,37 @@ describe('AutonomousManager mechanical expression selection', () => {
     expect(executeToolCall).toHaveBeenCalledTimes(1);
   }, 20000);
 
+  it('skips an unresolvable market and continues to the next ranked candidate', async () => {
+    testState.expressions = [
+      { ...testState.expressions[1], id: 'expr_ambiguous', symbol: 'SOL/USDT', expectedEdge: 0.09 },
+      { ...testState.expressions[0], id: 'expr_eth', symbol: 'ETH/USDT', expectedEdge: 0.08 },
+    ];
+    const { AutonomousManager } = await import('../../src/core/autonomous.js');
+    const gateLlm = {
+      complete: vi.fn(async () => ({
+        content: JSON.stringify({ verdict: 'approve', reasoning: 'approved', stopLevelPrice: 980, equityAtRiskPct: 2.5, targetRR: 2.0 }),
+        model: 'test',
+      })),
+    } as any;
+    const manager = new AutonomousManager(
+      gateLlm,
+      gateLlm,
+      { getMarket: async (symbol: string) => {
+        if (symbol === 'SOL') throw new Error('Ambiguous Hyperliquid market symbol SOL');
+        return { symbol, markPrice: 1000, metadata: { maxLeverage: 10 } };
+      } } as any,
+      {} as any,
+      { getRemainingDaily: () => 100, checkAndReserve: async () => ({ allowed: true }), confirm: () => {}, release: () => {} } as any,
+      { autonomy: { enabled: true, fullAuto: true, minEdge: 0.05, maxTradesPerScan: 1, maxCandidateReviewsPerScan: 3 }, hyperliquid: { maxLeverage: 5, minOrderNotionalUsd: 10 } } as any,
+    );
+
+    const result = await manager.runScan();
+
+    expect(result).toContain('SOL: Skipped (market resolution failed');
+    expect(executeToolCall).toHaveBeenCalledTimes(1);
+    expect(executeToolCall.mock.calls[0]?.[1]?.symbol).toBe('ETH');
+  }, 20000);
+
   it('keeps risk checks before entry review and execution', async () => {
     testState.riskAllowed = false;
     testState.expressions = [
