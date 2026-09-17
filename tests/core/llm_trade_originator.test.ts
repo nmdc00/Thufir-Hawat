@@ -135,6 +135,12 @@ describe('LlmTradeOriginator', () => {
       expect(call.proposed).toBe(false);
       expect(call.originatorOutcome).toBe('no_trade');
       expect(call.originatorReason).toContain('open-interest confirmation');
+      expect(originator.getLastDiagnostic()).toMatchObject({
+        triggerReason: 'cadence',
+        outcome: 'no_trade',
+        reason: expect.stringContaining('open-interest confirmation'),
+        usedFallback: false,
+      });
     });
 
     it('returns null when LLM emits whitespace-padded "null"', async () => {
