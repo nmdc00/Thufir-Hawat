@@ -237,7 +237,7 @@ autonomy:
   enabled: false
   scanIntervalSeconds: 900
   maxMarketsPerScan: 10
-  watchlistOnly: true
+  watchlistOnly: false
   eventDriven: true
   eventDrivenMinItems: 1
   eventDrivenHeartbeat: true
@@ -246,7 +246,7 @@ autonomy:
 
   # Full autonomous mode (auto-executes trades)
   fullAuto: false              # Master toggle for auto-execution
-  minEdge: 0.05                # Minimum edge to trade (5%) — weak setups should not reach execution
+  minEdge: 0.03                # Minimum edge to trade (3%) — paper exploration remains bounded
   requireHighConfidence: true  # Require both edge and conviction, not just one
   pauseOnLossStreak: 3         # Pause after N consecutive losses
   dailyReportTime: "20:00"     # Time to send daily P&L report
@@ -284,7 +284,7 @@ autonomy:
     downweightMultiplier: 0.60
   adaptiveEdge:
     enabled: true              # Replace synthetic confidence*0.1 with history-grounded edge
-    priorEdge: 0.05            # Edge used before minSamples reached per segment (5%) — matches minEdge so cold-start produces candidates
+    priorEdge: 0.03            # Edge used before minSamples reached per segment (3%) — supports bounded paper exploration
     minSamples: 10             # Closed trades needed before empirical estimate kicks in
     signalScaleFactor: 0.5     # How much discovery confidence modulates edge (0=ignore, 1=full)
     decayHalfLifeDays: null    # Time decay for old trades (null=off until enough data)
@@ -300,7 +300,7 @@ autonomy:
     fallbackTimeoutMs: 25000
     timeoutMs: 5000
     rejectOnBothFail: true
-    gateCooldownMinutes: 60
+    gateCooldownMinutes: 15
     deterministicPrechecks: true
   ta:
     oiSpikePct: 4
