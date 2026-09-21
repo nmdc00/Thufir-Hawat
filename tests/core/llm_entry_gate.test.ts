@@ -1290,5 +1290,40 @@ describe('LlmEntryGate', () => {
       expect(userContent).toContain('No historical trades for signal class "novel_breakout"');
       expect(userContent).toContain('Treat as a novel setup');
     });
+
+    it('allows paper-mode cold-start exploration to be judged on the thesis', async () => {
+      const book = makeBook();
+      const completeFn = vi.fn().mockResolvedValue({
+        content: JSON.stringify({ verdict: 'reject', reasoning: 'insufficient target' }),
+        model: 'test-main',
+      });
+      const gate = new LlmEntryGate(
+        { complete: completeFn } as unknown as LlmClient,
+        makeLlmClient(null),
+        notify,
+        book,
+        { execution: { mode: 'paper' } } as any,
+      );
+
+      mockSummarizeSignalPerformance.mockReturnValue({
+        signalClass: 'novel_breakout',
+        sampleCount: 0,
+        wins: 0,
+        losses: 0,
+        thesisCorrectRate: 0,
+        expectancy: 0,
+        variance: 0,
+        sharpeLike: 0,
+        maeProxy: 0,
+        mfeProxy: 0,
+      });
+
+      await gate.evaluate(makeCandidate({ signalClass: 'novel_breakout' }), markPrice);
+
+      const messages = completeFn.mock.calls[0][0] as Array<{ role: string; content: string }>;
+      const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
+      expect(userContent).toContain('bounded paper-mode exploration candidate');
+      expect(userContent).toContain('Do not reject solely because sample count is zero');
+    });
   });
 });
