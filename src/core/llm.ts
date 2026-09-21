@@ -1285,7 +1285,9 @@ type OpenAiStreamResult = {
 
 function parseOpenAiChatCompletionStream(raw: string): OpenAiStreamResult {
   let content = '';
-  const toolCalls = new Map<number, OpenAiToolCall>();
+  const toolCalls = new Map<string, OpenAiToolCall>();
+  const toolCallKeysByIndex = new Map<number, string>();
+  const toolCallKeysById = new Map<string, string>();
 
   for (const line of raw.split(/\r?\n/)) {
     if (!line.startsWith('data: ')) continue;
@@ -1316,15 +1318,29 @@ function parseOpenAiChatCompletionStream(raw: string): OpenAiStreamResult {
     content += delta.content ?? '';
     for (const fragment of delta.tool_calls ?? []) {
       const index = fragment.index ?? toolCalls.size;
-      const existing = toolCalls.get(index) ?? {
-        id: fragment.id ?? `call_${index}`,
-        type: 'function' as const,
-        function: { name: '', arguments: '' },
-      };
-      if (fragment.id) existing.id = fragment.id;
+      // launchdock can emit multiple independent calls with the same index
+      // (observed as index=0 for every call). IDs identify calls; index is only
+      // useful for continuation fragments that omit an ID.
+      let key = fragment.id ? toolCallKeysById.get(fragment.id) : undefined;
+      if (!key && !fragment.id) key = toolCallKeysByIndex.get(index);
+      if (!key) {
+        key = fragment.id ? `id:${fragment.id}` : `index:${index}:${toolCalls.size}`;
+        toolCallKeysByIndex.set(index, key);
+        if (fragment.id) toolCallKeysById.set(fragment.id, key);
+        toolCalls.set(key, {
+          id: fragment.id ?? `call_${index}_${toolCalls.size}`,
+          type: 'function' as const,
+          function: { name: '', arguments: '' },
+        });
+      }
+      const existing = toolCalls.get(key)!;
+      if (fragment.id) {
+        existing.id = fragment.id;
+        toolCallKeysById.set(fragment.id, key);
+      }
       if (fragment.function?.name) existing.function.name += fragment.function.name;
       if (fragment.function?.arguments) existing.function.arguments += fragment.function.arguments;
-      toolCalls.set(index, existing);
+      toolCalls.set(key, existing);
     }
   }
 
