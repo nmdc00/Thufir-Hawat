@@ -1278,6 +1278,59 @@ type OpenAiToolCall = {
   };
 };
 
+type OpenAiStreamResult = {
+  content: string;
+  toolCalls: OpenAiToolCall[];
+};
+
+function parseOpenAiChatCompletionStream(raw: string): OpenAiStreamResult {
+  let content = '';
+  const toolCalls = new Map<number, OpenAiToolCall>();
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.startsWith('data: ')) continue;
+    const payload = line.slice(6).trim();
+    if (!payload || payload === '[DONE]') continue;
+
+    let event: {
+      choices?: Array<{
+        delta?: {
+          content?: string | null;
+          tool_calls?: Array<{
+            index?: number;
+            id?: string;
+            type?: 'function';
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+      }>;
+    };
+    try {
+      event = JSON.parse(payload) as typeof event;
+    } catch {
+      continue;
+    }
+
+    const delta = event.choices?.[0]?.delta;
+    if (!delta) continue;
+    content += delta.content ?? '';
+    for (const fragment of delta.tool_calls ?? []) {
+      const index = fragment.index ?? toolCalls.size;
+      const existing = toolCalls.get(index) ?? {
+        id: fragment.id ?? `call_${index}`,
+        type: 'function' as const,
+        function: { name: '', arguments: '' },
+      };
+      if (fragment.id) existing.id = fragment.id;
+      if (fragment.function?.name) existing.function.name += fragment.function.name;
+      if (fragment.function?.arguments) existing.function.arguments += fragment.function.arguments;
+      toolCalls.set(index, existing);
+    }
+  }
+
+  return { content: content.trim(), toolCalls: [...toolCalls.values()] };
+}
+
 type OpenAiMessage =
   | { role: 'system' | 'user' | 'assistant'; content: string }
   | { role: 'assistant'; content: string | null; tool_calls: OpenAiToolCall[] }
@@ -1410,6 +1463,7 @@ export class AgenticOpenAiClient implements LlmClient {
   private baseUrl: string;
   private toolContext: ToolExecutorContext;
   private includeTemperature: boolean;
+  private useProxy: boolean;
   private useResponsesApi: boolean;
   private toolSubset: ToolSubset;
   meta?: LlmClientMeta;
@@ -1424,6 +1478,7 @@ export class AgenticOpenAiClient implements LlmClient {
     this.baseUrl = resolveOpenAiBaseUrl(config);
     this.toolContext = toolContext;
     this.includeTemperature = !config.agent.useProxy;
+    this.useProxy = Boolean(config.agent.useProxy);
     this.useResponsesApi = config.agent.useResponsesApi ?? config.agent.useProxy;
     this.toolSubset = toolSubset ?? 'full';
     this.meta = { provider: 'openai', model: this.model, kind: 'agentic' };
@@ -1492,6 +1547,10 @@ export class AgenticOpenAiClient implements LlmClient {
               : {
                   model: this.model,
                   ...(this.includeTemperature ? { temperature } : {}),
+                  // launchdock's ChatGPT-backed non-streaming response can omit
+                  // assistant content. Its streaming surface returns both text
+                  // and tool-call deltas reliably.
+                  ...(this.useProxy ? { stream: true } : {}),
                   messages: openaiMessages,
                   tools,
                 }
@@ -1510,7 +1569,12 @@ export class AgenticOpenAiClient implements LlmClient {
         throw new Error(`LLM request failed: ${errorMsg}`);
       }
 
-      const data = (await response.json()) as {
+      const data = (this.useProxy && !this.useResponsesApi
+        ? await (async () => {
+            const parsed = parseOpenAiChatCompletionStream(await response.text());
+            return { choices: [{ message: { content: parsed.content, tool_calls: parsed.toolCalls } }] };
+          })()
+        : await response.json()) as {
         response?: {
           output?: Array<{
             type?: string;
