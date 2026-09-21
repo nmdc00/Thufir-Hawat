@@ -1283,6 +1283,15 @@ type OpenAiStreamResult = {
   toolCalls: OpenAiToolCall[];
 };
 
+function mergeOpenAiStreamFragment(existing: string, fragment: string): string {
+  if (!existing) return fragment;
+  // Some launchdock responses repeat a complete field on each SSE frame rather
+  // than sending only the newly appended delta. Accept both forms.
+  if (fragment === existing || existing.endsWith(fragment)) return existing;
+  if (fragment.startsWith(existing)) return fragment;
+  return existing + fragment;
+}
+
 function parseOpenAiChatCompletionStream(raw: string): OpenAiStreamResult {
   let content = '';
   const toolCalls = new Map<string, OpenAiToolCall>();
@@ -1338,8 +1347,12 @@ function parseOpenAiChatCompletionStream(raw: string): OpenAiStreamResult {
         existing.id = fragment.id;
         toolCallKeysById.set(fragment.id, key);
       }
-      if (fragment.function?.name) existing.function.name += fragment.function.name;
-      if (fragment.function?.arguments) existing.function.arguments += fragment.function.arguments;
+      if (fragment.function?.name) {
+        existing.function.name = mergeOpenAiStreamFragment(existing.function.name, fragment.function.name);
+      }
+      if (fragment.function?.arguments) {
+        existing.function.arguments = mergeOpenAiStreamFragment(existing.function.arguments, fragment.function.arguments);
+      }
       toolCalls.set(key, existing);
     }
   }
