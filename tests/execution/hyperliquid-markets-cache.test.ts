@@ -59,9 +59,8 @@ describe('HyperliquidMarketClient cache', () => {
   it('matches base symbols against quoted market symbols', async () => {
     listPerpMarketsMock.mockResolvedValue([
       { symbol: 'xyz:CL', assetId: 12, maxLeverage: 5, szDecimals: 2 },
-      { symbol: 'CL/USDC', assetId: 12, maxLeverage: 5, szDecimals: 2 },
     ]);
-    getAllMidsMock.mockResolvedValue({ 'xyz:CL': 72.15, 'CL/USDC': 72.15 });
+    getAllMidsMock.mockResolvedValue({ 'xyz:CL': 72.15 });
     const { HyperliquidMarketClient } = await import('../../src/execution/hyperliquid/markets.js');
     const client = new HyperliquidMarketClient({ hyperliquid: { enabled: true } } as any);
 
@@ -73,9 +72,21 @@ describe('HyperliquidMarketClient cache', () => {
       symbol: 'xyz:CL',
       markPrice: 72.15,
     });
-    await expect(client.getMarket('CL/USDC')).resolves.toMatchObject({
-      symbol: 'CL/USDC',
-      markPrice: 72.15,
+  });
+
+  it('rejects an unqualified symbol when multiple DEX markets share its base', async () => {
+    listPerpMarketsMock.mockResolvedValue([
+      { symbol: 'ZEC', assetId: 0, maxLeverage: 10, szDecimals: 2, dex: null },
+      { symbol: 'hyna:ZEC', assetId: 1, maxLeverage: 10, szDecimals: 2, dex: 'hyna' },
+    ]);
+    getAllMidsMock.mockResolvedValue({ ZEC: 1258.3, 'hyna:ZEC': 856.99 });
+    const { HyperliquidMarketClient } = await import('../../src/execution/hyperliquid/markets.js');
+    const client = new HyperliquidMarketClient({ hyperliquid: { enabled: true } } as any);
+
+    await expect(client.getMarket('ZEC')).rejects.toThrow(/Ambiguous Hyperliquid market symbol ZEC/);
+    await expect(client.getMarket('hyna:ZEC')).resolves.toMatchObject({
+      symbol: 'hyna:ZEC',
+      markPrice: 856.99,
     });
   });
 

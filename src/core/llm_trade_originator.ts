@@ -212,6 +212,7 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     bundle.performanceSummary ?? '(no history yet)',
     '',
     '## Instruction',
+    'Use the exact market identifier shown in the scan, including any DEX prefix such as hyna:ZEC or xyz:GOLD. Do not shorten qualified symbols to their base symbol.',
     'Find ONE trade only if it is genuinely worth deploying capital into right now. Prefer symbols with no current book exposure. If you propose a symbol already in the book, you must name a specific new catalyst in thesisText that justifies adding to that position. Return null if no setup is sufficiently asymmetric, timely, and cleanly invalidated.',
   ].join('\n');
 }
@@ -230,6 +231,7 @@ function buildFallbackUserMessage(bundle: OriginationInputBundle): string {
     scanSection,
     '',
     '## Instruction',
+    'Use the exact market identifier shown in the scan, including any DEX prefix such as hyna:ZEC or xyz:GOLD. Do not shorten qualified symbols to their base symbol.',
     'Find ONE genuinely high-value trade setup, or return a no-trade decision with a concise evidence-based reason. Do not force a trade from mediocre evidence.',
   ].join('\n');
 }
@@ -285,14 +287,19 @@ function normalizeComparableSymbol(symbol: string): string {
     .trim()
     .toUpperCase()
     .replace(/\/USDT$/i, '')
-    .replace(/\/USD$/i, '')
-    .replace(/^XYZ:/i, '');
+    .replace(/\/USD$/i, '');
 }
 
-function findSnapshotPrice(proposal: TradeProposal, snapshots: TaSnapshot[]): number | null {
+function findMatchingSnapshots(proposal: TradeProposal, snapshots: TaSnapshot[]): TaSnapshot[] {
   const proposalSymbol = normalizeComparableSymbol(proposal.symbol);
-  const match = snapshots.find((snapshot) => normalizeComparableSymbol(snapshot.symbol) === proposalSymbol);
-  return match && Number.isFinite(match.price) && match.price > 0 ? match.price : null;
+  if (proposalSymbol.includes(':')) {
+    return snapshots.filter((snapshot) => normalizeComparableSymbol(snapshot.symbol) === proposalSymbol);
+  }
+  const baseSymbol = proposalSymbol;
+  return snapshots.filter((snapshot) => {
+    const snapshotSymbol = normalizeComparableSymbol(snapshot.symbol);
+    return (snapshotSymbol.split(':').at(-1) ?? snapshotSymbol) === baseSymbol;
+  });
 }
 
 function resolveTtlBoundsMinutes(
@@ -345,8 +352,22 @@ function validateProposalAgainstMarketContext(
     });
     return null;
   }
-  const snapshotPrice = findSnapshotPrice(proposal, snapshots);
-  if (snapshotPrice == null) return proposal;
+  const matchingSnapshots = findMatchingSnapshots(proposal, snapshots);
+  if (matchingSnapshots.length > 1) {
+    logger.warn('LlmTradeOriginator: proposal rejected by ambiguous_market_symbol_validation', {
+      symbol: proposal.symbol,
+      matchingSymbols: matchingSnapshots.map((snapshot) => snapshot.symbol),
+    });
+    return null;
+  }
+  const matchingSnapshot = matchingSnapshots[0];
+  if (!matchingSnapshot || !Number.isFinite(matchingSnapshot.price) || matchingSnapshot.price <= 0) {
+    return proposal;
+  }
+  const snapshotPrice = matchingSnapshot.price;
+  const resolvedProposal = matchingSnapshot.symbol === proposal.symbol
+    ? proposal
+    : { ...proposal, symbol: matchingSnapshot.symbol };
   const invalidationOnWrongSide = proposal.side === 'long'
     ? proposal.invalidationPrice >= snapshotPrice
     : proposal.invalidationPrice <= snapshotPrice;
@@ -395,7 +416,7 @@ function validateProposalAgainstMarketContext(
     });
     return null;
   }
-  return proposal;
+  return resolvedProposal;
 }
 
 export class LlmTradeOriginator {
