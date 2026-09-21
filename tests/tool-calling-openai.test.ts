@@ -125,4 +125,41 @@ describe('AgenticOpenAiClient tool calling', () => {
     const firstBody = JSON.parse(fetchMock.mock.calls[0][1]?.body ?? '{}');
     expect(firstBody.stream).toBe(true);
   });
+
+  it('does not duplicate repeated cumulative launchdock tool fragments', async () => {
+    const streams = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"current_time"}}]}}]}\n\n' +
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"current_time","arguments":"{\\"timezone\\":\\"UTC\\"}"}}]}}]}\n\n' +
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"current_time","arguments":"{\\"timezone\\":\\"UTC\\"}"}}]}}]}\n\n' +
+        'data: [DONE]\n\n',
+      'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n' +
+        'data: [DONE]\n\n',
+    ];
+    fetchMock.mockImplementation(() => Promise.resolve({
+      ok: true,
+      text: async () => streams.shift() ?? '',
+    }));
+
+    const client = new AgenticOpenAiClient(
+      {
+        agent: {
+          model: 'gpt-5.6-luna',
+          openaiModel: 'gpt-5.6-luna',
+          provider: 'openai',
+          useProxy: true,
+          useResponsesApi: false,
+          proxyBaseUrl: 'http://localhost:8090',
+        },
+      } as any,
+      {
+        config: { intel: { embeddings: { enabled: false } } } as any,
+        marketClient: {} as any,
+      }
+    );
+
+    const result = await client.complete([{ role: 'user', content: 'What time is it?' }], { maxToolCalls: 3 });
+
+    expect(result.content).toBe('Done');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
