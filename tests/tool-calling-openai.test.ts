@@ -89,7 +89,9 @@ describe('AgenticOpenAiClient tool calling', () => {
 
   it('collects launchdock streaming text and tool calls', async () => {
     const streams = [
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"intel_recent","arguments":"{\\"limit\\":1}"}}]}}]}\n\n' +
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"intel_recent"}}]}}]}\n\n' +
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"arguments":"{\\"limit\\":1}"}}]}}]}\n\n' +
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-2","type":"function","function":{"name":"current_time","arguments":"{\\"timezone\\":\\"UTC\\"}"}}]}}]}\n\n' +
         'data: [DONE]\n\n',
       'data: {"choices":[{"delta":{"content":"Latest intel: ..."}}]}\n\n' +
         'data: [DONE]\n\n',
