@@ -238,7 +238,7 @@ autonomy:
   scanIntervalSeconds: 900
   maxMarketsPerScan: 10
   watchlistOnly: true
-  eventDriven: false
+  eventDriven: true
   eventDrivenMinItems: 1
   eventDrivenHeartbeat: true
   strategy: discovery
