@@ -1252,8 +1252,16 @@ if (config.channels?.telegram?.monitor?.enabled) {
   const channelMonitor = new TelegramChannelMonitor(
     config,
     async (itemCount, text, source) => {
+      logger.info('Telegram news activation received', {
+        source: `@${source}`,
+        itemCount,
+        textLength: text.length,
+        eventDrivenScanEnabled: config.channels.telegram.monitor?.eventDrivenScanEnabled !== false,
+      });
       if (config.channels.telegram.monitor?.eventDrivenScanEnabled !== false) {
         await maybeRunEventDrivenScan('intel', itemCount);
+      } else {
+        logger.info('Telegram news activation: event-driven scan disabled', { source: `@${source}` });
       }
 
       // Pre-screen with local trivial LLM — skip if not market-relevant.
@@ -1268,11 +1276,31 @@ if (config.channels?.telegram?.monitor?.enabled) {
           },
         ], { temperature: 0 });
         relevant = screen.content.trim().toUpperCase().startsWith('YES');
-      } catch {
+        logger.info('Telegram news relevance screen completed', {
+          source: `@${source}`,
+          relevant,
+          responseLength: screen.content.length,
+        });
+      } catch (error) {
+        logger.warn('Telegram news relevance screen failed; briefing suppressed', {
+          source: `@${source}`,
+          error: error instanceof Error ? error.message : String(error),
+        });
         return;
       }
 
-      if (!relevant || !telegram) return;
+      if (!relevant) {
+        logger.info('Telegram news briefing suppressed: relevance screen returned NO', {
+          source: `@${source}`,
+        });
+        return;
+      }
+      if (!telegram) {
+        logger.warn('Telegram news briefing suppressed: Telegram adapter unavailable', {
+          source: `@${source}`,
+        });
+        return;
+      }
 
       const prompt =
         `Breaking news from @${source}:\n\n${text}\n\n` +
@@ -1282,12 +1310,37 @@ if (config.channels?.telegram?.monitor?.enabled) {
         `If you hold no positions and the headline has no direct implication for your watchlist, reply BREAKING_OK.`;
       try {
         const response = await primaryAgent.handleMessage('__channel_monitor__', prompt);
-        if (!response?.trim() || response.trim().toUpperCase().startsWith('BREAKING_OK')) return;
-        for (const chatId of config.channels.telegram.allowedChatIds ?? []) {
-          await telegram.sendMessage(String(chatId), response).catch(() => {});
+        if (!response?.trim()) {
+          logger.info('Telegram news briefing completed with empty response', { source: `@${source}` });
+          return;
+        }
+        if (response.trim().toUpperCase().startsWith('BREAKING_OK')) {
+          logger.info('Telegram news briefing suppressed: no actionable position impact', {
+            source: `@${source}`,
+          });
+          return;
+        }
+        const chatIds = config.channels.telegram.allowedChatIds ?? [];
+        logger.info('Telegram news briefing sending', {
+          source: `@${source}`,
+          recipientCount: chatIds.length,
+          responseLength: response.length,
+        });
+        for (const chatId of chatIds) {
+          await telegram.sendMessage(String(chatId), response).then(
+            () => logger.info('Telegram news briefing sent', { source: `@${source}`, chatId }),
+            (error) => logger.warn('Telegram news briefing send failed', {
+              source: `@${source}`,
+              chatId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
         }
       } catch (err) {
-        logger.warn('TelegramChannelMonitor: briefing call failed', err);
+        logger.warn('TelegramChannelMonitor: briefing call failed', {
+          source: `@${source}`,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     },
   );
