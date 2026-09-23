@@ -178,6 +178,10 @@ describe('recordEntryGateDecision schema migration', () => {
       executionScore: 0.91,
       liquidityBucket: 'deep',
       llmConsulted: false,
+      primaryFailureType: 'truncated_stream',
+      fallbackFailureType: 'timeout',
+      primaryModel: 'primary-test',
+      fallbackModel: 'fallback-test',
     });
 
     expect(fakeDb.insertedRows).toHaveLength(1);
@@ -195,6 +199,10 @@ describe('recordEntryGateDecision schema migration', () => {
       executionScore: 0.91,
       liquidityBucket: 'deep',
       llmConsulted: 0,
+      primaryFailureType: 'truncated_stream',
+      fallbackFailureType: 'timeout',
+      primaryModel: 'primary-test',
+      fallbackModel: 'fallback-test',
     });
   });
 
@@ -208,6 +216,8 @@ describe('recordEntryGateDecision schema migration', () => {
     expect(schemaSql).toContain('execution_score   REAL');
     expect(schemaSql).toContain('liquidity_bucket  TEXT');
     expect(schemaSql).toContain('llm_consulted     INTEGER NOT NULL DEFAULT 1');
+    expect(schemaSql).toContain('primary_failure_type TEXT');
+    expect(schemaSql).toContain('fallback_failure_type TEXT');
   });
 
   it('can mark deterministic gate decisions as not LLM-consulted', async () => {

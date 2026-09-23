@@ -52,6 +52,7 @@ describe('autonomous quant paper entry lifecycle', () => {
       orderType: 'market' as const,
       leverage: 1,
       probeSizeUsd: 10,
+      tradePlan: { invalidationPrice: 95, targetPrice: 110, expectedRMultiple: 2, suggestedTtlMinutes: 90, provenance: 'strategy' as const },
       newsTrigger: null,
       contextPack: {
         regime: {
@@ -167,7 +168,7 @@ describe('autonomous quant paper entry lifecycle', () => {
     expect(prompt).toContain('Execution score: 0.90');
     expect(prompt).toContain('provider-confirmed execution quality');
     expect(prompt).toContain('"source":"discovery"');
-    expect(prompt).toContain('Missing numeric plan fields: expectedRMultiple, suggestedTtlMinutes');
+    expect(prompt).toContain('Missing numeric plan fields: none');
     expect(prompt).not.toMatch(/undefinedR|undefinedmin/);
 
     const db = openDatabase();
@@ -185,7 +186,7 @@ describe('autonomous quant paper entry lifecycle', () => {
       risk_source: 'calculated',
       account_equity_usd: 200,
       stop_provenance: 'thesis_derived',
-      missing_plan_fields: '["expectedRMultiple","suggestedTtlMinutes"]',
+      missing_plan_fields: '[]',
       stop_level_price: 95,
       target_rr: null,
     });

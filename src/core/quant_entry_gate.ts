@@ -53,11 +53,27 @@ function finiteNumber(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+export function resolveExplicitTradePlan(expression: ExpressionPlan, markPrice: number) {
+  const plan = expression.tradePlan;
+  if (!plan || !Number.isFinite(markPrice) || markPrice <= 0) return null;
+  const { invalidationPrice, targetPrice, expectedRMultiple, suggestedTtlMinutes } = plan;
+  if (![invalidationPrice, targetPrice, expectedRMultiple, suggestedTtlMinutes].every(
+    value => Number.isFinite(value) && value > 0
+  )) return null;
+  const long = expression.side === 'buy';
+  if (long ? invalidationPrice >= markPrice || targetPrice <= markPrice
+    : invalidationPrice <= markPrice || targetPrice >= markPrice) return null;
+  const calculatedR = Math.abs(targetPrice - markPrice) / Math.abs(markPrice - invalidationPrice);
+  if (Math.abs(calculatedR - expectedRMultiple) > 0.1) return null;
+  return plan;
+}
+
 export function enrichQuantEntryGateCandidate(
   candidate: EntryGateCandidate,
   expression: ExpressionPlan,
   cluster: SignalCluster | undefined,
   nowMs: number,
+  markPrice?: number,
 ): EntryGateCandidate {
   const pack = expression.contextPack;
   const priceVol = cluster?.signals.find(s => s.kind === 'price_vol_regime');
@@ -67,8 +83,18 @@ export function enrichQuantEntryGateCandidate(
       .filter((t): t is number => typeof t === 'number' && Number.isFinite(t) && t > 0 && t <= nowMs) ?? []
     : [];
   const finite = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? n : null;
+  const plan = resolveExplicitTradePlan(expression, markPrice ?? NaN);
   return {
     ...candidate,
+    ...(plan
+      ? {
+          invalidationPrice: plan.invalidationPrice,
+          expectedRMultiple: plan.expectedRMultiple,
+          suggestedTtlMinutes: plan.suggestedTtlMinutes,
+          targetPrice: plan.targetPrice,
+          planProvenance: 'strategy' as const,
+        }
+      : {}),
     // An event expiry is not a thesis TTL. Keep it in evidence rather than guessing.
     catalystTimestamp: published.length ? new Date(Math.max(...published)).toISOString() : undefined,
     sourceContext: boundedSourceContext(sourceEvidence(expression, cluster, pack, expiry)),

@@ -227,9 +227,15 @@ function trimMessagesByCharBudget(
   if (system && totalChars > maxChars && trimmedRest.length > 0) {
     const remaining = Math.max(0, maxChars - calcChars(trimmedRest));
     if (system.content.length > remaining) {
-      const head = Math.ceil(remaining * 0.6);
-      const tail = Math.max(0, remaining - head);
-      system.content = `${system.content.slice(0, head)}\n\n[TRUNCATED]\n\n${system.content.slice(-tail)}`;
+      const marker = '\n\n[TRUNCATED]\n\n';
+      if (remaining <= marker.length) {
+        system.content = system.content.slice(0, remaining);
+      } else {
+        const contentBudget = remaining - marker.length;
+        const head = Math.ceil(contentBudget * 0.6);
+        const tail = contentBudget - head;
+        system.content = `${system.content.slice(0, head)}${marker}${tail ? system.content.slice(-tail) : ''}`;
+      }
       totalChars = calcChars([system, ...trimmedRest]);
     }
   }
@@ -429,6 +435,11 @@ class InfraLlmClient implements LlmClient {
         model: meta.model,
         reason: context.reason,
       });
+      if (context.critical) {
+        const error = new Error('LLM budget exhausted for critical decision');
+        (error as { code?: string }).code = 'llm_budget_exhausted';
+        throw error;
+      }
       return { content: '', model: meta.model };
     }
 
@@ -1771,6 +1782,35 @@ class AnthropicClient implements LlmClient {
   }
 }
 
+function collectDecisionSseText(raw: string): string {
+  let done = false;
+  let content = '';
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.startsWith('data:')) continue;
+    const data = line.slice(5).trim();
+    if (data === '[DONE]') {
+      done = true;
+      break;
+    }
+    if (!data) continue;
+    let event: { choices?: Array<{ delta?: { content?: string } }> };
+    try {
+      event = JSON.parse(data) as typeof event;
+    } catch {
+      const error = new Error('Malformed decision stream event');
+      (error as { code?: string }).code = 'malformed_stream_event';
+      throw error;
+    }
+    content += event.choices?.[0]?.delta?.content ?? '';
+  }
+  if (!done || !content.trim()) {
+    const error = new Error(done ? 'Empty decision stream' : 'Truncated decision stream');
+    (error as { code?: string }).code = done ? 'empty_response' : 'truncated_stream';
+    throw error;
+  }
+  return content.trim();
+}
+
 class OpenAiClient implements LlmClient {
   private config: ThufirConfig;
   private model: string;
@@ -1876,21 +1916,7 @@ class OpenAiClient implements LlmClient {
         if (retry.ok) {
           if (useStreamingDecision) {
             const raw = await retry.text();
-            const content = raw
-              .split(/\r?\n/)
-              .filter((line) => line.startsWith('data: '))
-              .map((line) => line.slice(6).trim())
-              .filter((line) => line && line !== '[DONE]')
-              .map((line) => {
-                try {
-                  return (JSON.parse(line) as { choices?: Array<{ delta?: { content?: string } }> })
-                    .choices?.[0]?.delta?.content ?? '';
-                } catch {
-                  return '';
-                }
-              })
-              .join('')
-              .trim();
+            const content = collectDecisionSseText(raw);
             return { content, model: this.model };
           }
           const retryData = (await retry.json()) as { choices?: Array<{ message?: { content?: string } }> };
@@ -1902,21 +1928,7 @@ class OpenAiClient implements LlmClient {
 
     if (useStreamingDecision) {
       const raw = await response.text();
-      const content = raw
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith('data: '))
-        .map((line) => line.slice(6).trim())
-        .filter((line) => line && line !== '[DONE]')
-        .map((line) => {
-          try {
-            return (JSON.parse(line) as { choices?: Array<{ delta?: { content?: string } }> })
-              .choices?.[0]?.delta?.content ?? '';
-          } catch {
-            return '';
-          }
-        })
-        .join('')
-        .trim();
+      const content = collectDecisionSseText(raw);
       return { content, model: this.model };
     }
 
