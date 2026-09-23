@@ -29,6 +29,10 @@ export interface EntryGateLogEntry {
   executionScore?: number | null;
   liquidityBucket?: string | null;
   llmConsulted?: boolean;
+  primaryFailureType?: string;
+  fallbackFailureType?: string;
+  primaryModel?: string;
+  fallbackModel?: string;
 }
 
 registerRetentionPolicy({
@@ -95,6 +99,10 @@ function ensureSchema(): void {
   addColumnIfMissing('account_equity_usd', 'account_equity_usd REAL');
   addColumnIfMissing('stop_provenance', 'stop_provenance TEXT');
   addColumnIfMissing('missing_plan_fields', 'missing_plan_fields TEXT');
+  addColumnIfMissing('primary_failure_type', 'primary_failure_type TEXT');
+  addColumnIfMissing('fallback_failure_type', 'fallback_failure_type TEXT');
+  addColumnIfMissing('primary_model', 'primary_model TEXT');
+  addColumnIfMissing('fallback_model', 'fallback_model TEXT');
 }
 
 export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
@@ -102,9 +110,9 @@ export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
   const db = openDatabase();
   db.prepare(
     `INSERT INTO llm_entry_gate_log
-       (symbol, side, notional_usd, verdict, reasoning, reason_code, adjusted_size_usd, used_fallback, signal_class, regime, session, edge, stop_level_price, equity_at_risk_pct, target_rr, suggested_leverage, mechanical_leverage_ceiling, stop_distance_pct, liquidity_score, execution_score, liquidity_bucket, llm_consulted, model_equity_at_risk_pct, risk_source, account_equity_usd, stop_provenance, missing_plan_fields)
+       (symbol, side, notional_usd, verdict, reasoning, reason_code, adjusted_size_usd, used_fallback, signal_class, regime, session, edge, stop_level_price, equity_at_risk_pct, target_rr, suggested_leverage, mechanical_leverage_ceiling, stop_distance_pct, liquidity_score, execution_score, liquidity_bucket, llm_consulted, model_equity_at_risk_pct, risk_source, account_equity_usd, stop_provenance, missing_plan_fields, primary_failure_type, fallback_failure_type, primary_model, fallback_model)
      VALUES
-       (@symbol, @side, @notionalUsd, @verdict, @reasoning, @reasonCode, @adjustedSizeUsd, @usedFallback, @signalClass, @regime, @session, @edge, @stopLevelPrice, @equityAtRiskPct, @targetRR, @suggestedLeverage, @mechanicalLeverageCeiling, @stopDistancePct, @liquidityScore, @executionScore, @liquidityBucket, @llmConsulted, @modelEquityAtRiskPct, @riskSource, @accountEquityUsd, @stopProvenance, @missingPlanFields)`
+       (@symbol, @side, @notionalUsd, @verdict, @reasoning, @reasonCode, @adjustedSizeUsd, @usedFallback, @signalClass, @regime, @session, @edge, @stopLevelPrice, @equityAtRiskPct, @targetRR, @suggestedLeverage, @mechanicalLeverageCeiling, @stopDistancePct, @liquidityScore, @executionScore, @liquidityBucket, @llmConsulted, @modelEquityAtRiskPct, @riskSource, @accountEquityUsd, @stopProvenance, @missingPlanFields, @primaryFailureType, @fallbackFailureType, @primaryModel, @fallbackModel)`
   ).run({
     symbol: entry.symbol,
     side: entry.side,
@@ -133,5 +141,9 @@ export function recordEntryGateDecision(entry: EntryGateLogEntry): void {
     executionScore: entry.executionScore ?? null,
     liquidityBucket: entry.liquidityBucket ?? null,
     llmConsulted: entry.llmConsulted === false ? 0 : 1,
+    primaryFailureType: entry.primaryFailureType ?? null,
+    fallbackFailureType: entry.fallbackFailureType ?? null,
+    primaryModel: entry.primaryModel ?? null,
+    fallbackModel: entry.fallbackModel ?? null,
   });
 }

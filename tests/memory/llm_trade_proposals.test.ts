@@ -36,6 +36,10 @@ describe('llm trade proposal scan observability', () => {
       originatorOutcome: 'no_trade',
       originatorReason: 'No clean invalidation level from the available evidence',
       originatorError: undefined,
+      activationId: 'act-1',
+      activationIntelId: 'intel-1',
+      activationSource: '@marketfeed',
+      activationReceivedAtMs: 1_790_000_000_000,
     });
 
     const row = openDatabase().prepare('SELECT * FROM llm_trade_proposals WHERE id = ?').get(id) as Record<string, unknown>;
@@ -47,6 +51,10 @@ describe('llm trade proposal scan observability', () => {
       originator_outcome: 'no_trade',
       originator_error: null,
       originator_reason: 'No clean invalidation level from the available evidence',
+      activation_id: 'act-1',
+      activation_intel_id: 'intel-1',
+      activation_source: '@marketfeed',
+      activation_received_at_ms: 1_790_000_000_000,
     });
     expect(JSON.parse(String(row.market_symbols))).toEqual(['BTC', 'ETH', 'SOL']);
   });

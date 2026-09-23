@@ -33,7 +33,7 @@ function clamp01(value: number): number {
 }
 
 function normalizeSymbol(symbol: string): string {
-  return symbol.trim().toUpperCase();
+  return symbol.trim();
 }
 
 function uniq(values: string[]): string[] {

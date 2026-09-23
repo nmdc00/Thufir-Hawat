@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('node-fetch', () => ({ default: vi.fn() }));
 
@@ -107,5 +110,35 @@ describe('bounded decision clients', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, { body?: string }];
     expect(url.endsWith('/v1/chat/completions')).toBe(true);
     expect(JSON.parse(init.body ?? '{}').stream).toBe(true);
+  });
+
+  it('accepts compact SSE data lines and rejects an incomplete stream', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const { createDecisionClient } = await import('../../src/core/llm.js');
+    const client = createDecisionClient(baseConfig({ useResponsesApi: false }));
+    fetchMock.mockResolvedValueOnce({ ok: true, text: async () =>
+      ': keepalive\n\ndata:{"choices":[{"delta":{"content":"{\\"verdict\\":\\"reject\\"}"}}]}\n\ndata: [DONE]\n' });
+    await expect(client.complete([{ role: 'user', content: 'Decide.' }])).resolves.toMatchObject({ content: '{"verdict":"reject"}' });
+    fetchMock.mockResolvedValueOnce({ ok: true, text: async () =>
+      'data:{"choices":[{"delta":{"content":"{\\"verdict\\":"}}]}\n' });
+    await expect(client.complete([{ role: 'user', content: 'Decide.' }])).rejects.toMatchObject({ code: 'truncated_stream' });
+  });
+
+  it('reports a critical budget refusal without invoking the provider', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'thufir-budget-test-'));
+    try {
+      const { createDecisionClient } = await import('../../src/core/llm.js');
+      const { withExecutionContext } = await import('../../src/core/llm_infra.js');
+      const client = createDecisionClient(baseConfig({
+        useResponsesApi: false,
+        workspace: directory,
+        llmBudget: { enabled: true, maxCallsPerHour: 0, reserveCalls: 0, maxTokensPerHour: 0, reserveTokens: 0 },
+      }));
+      await expect(withExecutionContext({ mode: 'FULL_AGENT', critical: true, reason: 'entry_gate' },
+        () => client.complete([{ role: 'user', content: 'Decide.' }]))).rejects.toMatchObject({ code: 'llm_budget_exhausted' });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

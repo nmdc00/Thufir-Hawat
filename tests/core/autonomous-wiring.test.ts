@@ -366,6 +366,26 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     vi.useRealTimers();
   });
 
+  it('carries a stored Telegram activation through the scan into originator evidence', async () => {
+    mocks.triggerShouldFire.mockReturnValue({ fire: false, reason: 'cadence', alertedSymbols: [] });
+    mocks.originatorPropose.mockResolvedValue(null);
+    const { AutonomousManager } = await import('../../src/core/autonomous.js');
+    const manager = new AutonomousManager(makeGateLlm('reject'), makeGateLlm('reject'),
+      { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000 }) } as any,
+      {} as any, makeLimiter(), baseConfig);
+    const activation = {
+      id: 'intel-123', intelId: 'intel-123', source: '@marketfeed',
+      text: 'Verified oil export ban', receivedAtMs: Date.now(), matchedKeyword: 'ban',
+    };
+    await manager.runScan({ activation });
+    expect(mocks.originatorPropose).toHaveBeenCalledOnce();
+    const bundle = mocks.originatorPropose.mock.calls[0]![0] as any;
+    expect(bundle.triggerReason).toBe('event');
+    expect(bundle.newsActivation).toEqual(activation);
+    expect(bundle.recentEvents).toContain('intel:intel-123');
+    expect(bundle.recentEvents).toContain('Verified oil export ban');
+  });
+
   it('uses bounded decision clients for trade origination', async () => {
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     const primary = makeGateLlm('approve');
@@ -453,6 +473,21 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(userContent).toContain('Trigger reason: ta_alert');
 
     expect(result).toContain('paper ok');
+  });
+
+  it('links a news-referenced proposal to its source in the paper order', async () => {
+    mocks.originatorPropose.mockResolvedValue({ ...BASE_PROPOSAL, newsIntelId: 'intel-123' });
+    const { AutonomousManager } = await import('../../src/core/autonomous.js');
+    const manager = new AutonomousManager(makeGateLlm('approve'), makeGateLlm('approve'),
+      { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000, metadata: { maxLeverage: 10 } }) } as any,
+      {} as any, makeLimiter(), baseConfig);
+    const activation = { id: 'intel-123', intelId: 'intel-123', source: '@marketfeed',
+      text: 'BTC supply shock', receivedAtMs: Date.now(), matchedKeyword: 'shock' };
+    await manager.runScan({ activation });
+    expect(executeToolCall).toHaveBeenCalledOnce();
+    expect(executeToolCall.mock.calls[0]![1]).toMatchObject({
+      entry_trigger: 'news', news_sources: ['@marketfeed#intel-123'],
+    });
   });
 
   it('1b. originator gate prompt carries derived selector, TA, and stop context', async () => {
@@ -728,6 +763,7 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
           side: 'buy',
           confidence: 0.8,
           expectedEdge: 0.12,
+          tradePlan: { invalidationPrice: 68000, targetPrice: 74000, expectedRMultiple: 2, suggestedTtlMinutes: 90, provenance: 'strategy' },
           contextPack: {
             regime: { marketRegime: 'trending', volatilityBucket: 'medium', liquidityBucket: 'normal' },
             executionQuality: { status: 'good' },
