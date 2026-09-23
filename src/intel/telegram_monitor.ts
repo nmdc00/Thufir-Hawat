@@ -7,6 +7,7 @@ import { NewMessage, type NewMessageEvent } from 'telegram/events/index.js';
 import { Logger } from '../core/logger.js';
 import type { ThufirConfig } from '../core/config.js';
 import { storeIntel } from './store.js';
+import type { NewsActivation } from './news_activation.js';
 
 // ---------------------------------------------------------------------------
 // Breaking-news keyword set (hardcoded baseline + configurable extras)
@@ -92,7 +93,7 @@ export class TelegramChannelMonitor {
   constructor(
     private config: ThufirConfig,
     /** Called when a breaking-news message is stored; receives the raw text and source. */
-    private onBreakingNews: (itemCount: number, text: string, source: string) => Promise<void>,
+    private onBreakingNews: (itemCount: number, text: string, source: string, activation: NewsActivation) => Promise<void>,
   ) {}
 
   isConfigured(): boolean {
@@ -252,14 +253,16 @@ export class TelegramChannelMonitor {
     keywords: Set<string>,
     seed: boolean,
   ): Promise<boolean> {
+    const intelId = randomUUID();
+    const receivedAtMs = Date.now();
     const isNew = storeIntel({
-      id: randomUUID(),
+      id: intelId,
       title: text.slice(0, 120),
       content: text,
       source: `@${source}`,
       sourceType: 'social',
       category: 'market_news',
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(receivedAtMs).toISOString(),
     });
 
     if (!isNew) return false; // duplicate
@@ -274,7 +277,14 @@ export class TelegramChannelMonitor {
 
     this.logger.info(`TelegramChannelMonitor: breaking keyword "${matched}" → triggering event scan`);
 
-    await this.onBreakingNews(1, text, source).catch((err) =>
+    await this.onBreakingNews(1, text, source, {
+      id: intelId,
+      intelId,
+      source: `@${source}`,
+      text,
+      receivedAtMs,
+      matchedKeyword: matched,
+    }).catch((err) =>
       this.logger.warn('TelegramChannelMonitor: event scan callback failed', err),
     );
 

@@ -144,7 +144,7 @@ export class HyperliquidMarketClient {
   async listMarkets(limit = 50): Promise<Market[]> {
     const [markets, mids] = await Promise.all([this.getCachedMarketMeta(), this.getCachedMids()]);
     const filtered = this.symbols.length
-      ? markets.filter((m) => this.symbols.some((symbol) => matchesMarketSymbol(m.symbol, symbol)))
+      ? markets.filter((m) => this.symbols.some((symbol) => normalizeMarketSymbol(m.symbol) === normalizeMarketSymbol(symbol)))
       : markets;
     return this.blendMarkets(filtered, limit).map((m) => ({
       id: m.symbol,
@@ -166,7 +166,7 @@ export class HyperliquidMarketClient {
 
   async searchMarkets(query: string, limit = 10): Promise<Market[]> {
     const needle = query.toLowerCase();
-    const markets = await this.listMarkets(500);
+    const markets = await this.listMarkets(Number.MAX_SAFE_INTEGER);
     const filtered = markets.filter((m) =>
       (m.symbol ?? m.id).toLowerCase().includes(needle)
     );
@@ -174,8 +174,13 @@ export class HyperliquidMarketClient {
   }
 
   async getMarket(symbol: string): Promise<Market> {
-    const markets = await this.listMarkets(500);
-    const normalizedSymbol = normalizeMarketSymbol(symbol);
+    const markets = await this.listMarkets(Number.MAX_SAFE_INTEGER);
+    const normalizedSymbol = normalizeMarketSymbol(symbol).split('/')[0]!;
+    if (this.symbols.length > 0 && !this.symbols.some(
+      configured => normalizeMarketSymbol(configured).split('/')[0] === normalizedSymbol
+    )) {
+      throw new Error(`Hyperliquid market not found: ${symbol}`);
+    }
     const exactMatches = markets.filter(
       (m) =>
         normalizeMarketSymbol(m.symbol ?? m.id) === normalizedSymbol ||
@@ -184,15 +189,18 @@ export class HyperliquidMarketClient {
     const baseMatches = markets.filter(
       (m) => matchesMarketSymbol(m.symbol ?? m.id, symbol) || matchesMarketSymbol(m.id, symbol),
     );
-    const qualifiedQuery = normalizedSymbol.includes(':') || normalizedSymbol.includes('/');
-    if (!qualifiedQuery && baseMatches.length > 1) {
+    if (exactMatches.length === 1) return exactMatches[0]!;
+    if (normalizedSymbol.includes(':')) {
+      throw new Error(`Hyperliquid market not found: ${symbol}`);
+    }
+    if (exactMatches.length > 1 || baseMatches.length > 1) {
       throw new Error(
-        `Ambiguous Hyperliquid market symbol ${symbol}; use the qualified symbol: ${baseMatches
+        `Ambiguous Hyperliquid market symbol ${symbol}; use the qualified symbol: ${(exactMatches.length > 1 ? exactMatches : baseMatches)
           .map((market) => market.symbol ?? market.id)
           .join(', ')}`,
       );
     }
-    const match = qualifiedQuery ? exactMatches[0] : baseMatches[0];
+    const match = baseMatches[0];
     if (!match) {
       throw new Error(`Hyperliquid market not found: ${symbol}`);
     }

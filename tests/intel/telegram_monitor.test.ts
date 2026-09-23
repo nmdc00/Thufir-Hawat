@@ -163,14 +163,17 @@ describe('TelegramChannelMonitor message handling', () => {
     const text = 'US Navy will begin blockading all ships entering Strait of Hormuz';
     await monitor.handleMessage(makeEvent(text), TEST_KEYWORDS);
     expect(onBreakingNews).toHaveBeenCalledOnce();
-    expect(onBreakingNews).toHaveBeenCalledWith(1, text, 'marketfeed');
+    expect(onBreakingNews).toHaveBeenCalledWith(1, text, 'marketfeed', expect.objectContaining({
+      intelId: expect.any(String), source: '@marketfeed', text, matchedKeyword: 'blockad', receivedAtMs: expect.any(Number),
+    }));
+    expect(onBreakingNews.mock.calls[0][3].intelId).toBe(storeIntelMock.mock.calls[0][0].id);
   });
 
   it('passes correct source for "tariff" keyword', async () => {
     const { monitor, onBreakingNews } = makeMonitor();
     const text = 'Trump announces 145% tariff on all Chinese imports effective immediately';
     await monitor.handleMessage(makeEvent(text), TEST_KEYWORDS);
-    expect(onBreakingNews).toHaveBeenCalledWith(1, text, 'marketfeed');
+    expect(onBreakingNews).toHaveBeenCalledWith(1, text, 'marketfeed', expect.objectContaining({ matchedKeyword: 'tariff' }));
   });
 
   it('passes full text (not a preview) to onBreakingNews', async () => {
@@ -186,7 +189,7 @@ describe('TelegramChannelMonitor message handling', () => {
   it('is case-insensitive for keyword matching', async () => {
     const { monitor, onBreakingNews } = makeMonitor();
     await monitor.handleMessage(makeEvent('BREAKING: market crash imminent'), TEST_KEYWORDS);
-    expect(onBreakingNews).toHaveBeenCalledWith(1, 'BREAKING: market crash imminent', 'marketfeed');
+    expect(onBreakingNews).toHaveBeenCalledWith(1, 'BREAKING: market crash imminent', 'marketfeed', expect.objectContaining({ source: '@marketfeed' }));
   });
 
   it('silently drops duplicate messages (storeIntel returns false)', async () => {
@@ -231,7 +234,7 @@ describe('TelegramChannelMonitor message handling', () => {
     const keywords = new Set(['blockade', 'sanctions', 'war', 'fomc', 'rate hike']);
     const text = 'FOMC surprises with 50bps cut';
     await monitor.handleMessage(makeEvent(text), keywords);
-    expect(onBreakingNews).toHaveBeenCalledWith(1, text, 'marketfeed');
+    expect(onBreakingNews).toHaveBeenCalledWith(1, text, 'marketfeed', expect.objectContaining({ matchedKeyword: 'fomc' }));
   });
 });
 

@@ -947,7 +947,11 @@ CREATE TABLE IF NOT EXISTS llm_entry_gate_log (
   risk_source       TEXT,
   account_equity_usd REAL,
   stop_provenance   TEXT,
-  missing_plan_fields TEXT
+  missing_plan_fields TEXT,
+  primary_failure_type TEXT,
+  fallback_failure_type TEXT,
+  primary_model TEXT,
+  fallback_model TEXT
 );
 
 CREATE TABLE IF NOT EXISTS gate_verdict_cooldowns (

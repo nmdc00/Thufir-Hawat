@@ -69,6 +69,7 @@ testState.expressions = [
         leverage: 3,
         probeSizeUsd: 20,
         newsTrigger: null,
+        tradePlan: { invalidationPrice: 950, targetPrice: 1100, expectedRMultiple: 2, suggestedTtlMinutes: 120, provenance: 'test-signal' },
       },
       {
         id: 'expr_btc',
@@ -85,6 +86,7 @@ testState.expressions = [
         leverage: 3,
         probeSizeUsd: 20,
         newsTrigger: null,
+        tradePlan: { invalidationPrice: 950, targetPrice: 1100, expectedRMultiple: 2, suggestedTtlMinutes: 120, provenance: 'test-signal' },
       },
     ];
 

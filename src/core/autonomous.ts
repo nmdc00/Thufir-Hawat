@@ -42,7 +42,7 @@ import { resolveSessionWeightContext } from './session-weight.js';
 import { AutonomousScanTelemetry } from './performance_metrics.js';
 import { withExecutionContext } from './llm_infra.js';
 import { getPaperPerpBookSummary, listPaperPerpPositions } from '../memory/paper_perps.js';
-import { enrichQuantEntryGateCandidate } from './quant_entry_gate.js';
+import { enrichQuantEntryGateCandidate, resolveExplicitTradePlan } from './quant_entry_gate.js';
 import { getCashBalance } from '../memory/portfolio.js';
 import { PositionBook } from './position_book.js';
 import { isEntryGateCooldownActive, LlmEntryGate, type EntryGateCandidate } from './llm_entry_gate.js';
@@ -567,7 +567,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   /**
    * Run a scan and optionally execute trades
    */
-  async runScan(options?: { forceExecute?: boolean; maxTrades?: number }): Promise<string> {
+  async runScan(options?: { forceExecute?: boolean; maxTrades?: number; activation?: import('../intel/news_activation.js').NewsActivation }): Promise<string> {
     if (this.isPaused) {
       return `Autonomous trading is paused: ${this.pauseReason}`;
     }
@@ -591,7 +591,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     const forceExecute = Boolean(options?.forceExecute);
     const executeTrades = forceExecute || this.config.fullAuto;
     const maxTrades = options?.maxTrades;
-    const scanInput = { executeTrades, maxTrades, ignoreThresholds: forceExecute };
+    const scanInput = { executeTrades, maxTrades, ignoreThresholds: forceExecute, activation: options?.activation };
 
     // Try LLM originator path first; null means "use quant fallback"
     try {
@@ -698,6 +698,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     executeTrades: boolean;
     maxTrades?: number;
     ignoreThresholds?: boolean;
+    activation?: import('../intel/news_activation.js').NewsActivation;
   }): Promise<string | null> {
     // Only run when origination is explicitly configured (Zod default sets this; raw test configs won't have it)
     if (this.thufirConfig.autonomy?.origination == null) {
@@ -759,6 +760,10 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       taSnapshots,
       pendingEvents
     );
+    if (input.activation) {
+      triggerResult.fire = true;
+      triggerResult.reason = 'event';
+    }
 
     if (!triggerResult.fire) {
       recordTradeProposal({
@@ -787,6 +792,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
             .map((e) => `[${e.domain}] ${e.title}`)
             .join('\n')
             .slice(0, 500);
+    const activationEvent = input.activation
+      ? `[telegram ${input.activation.source} intel:${input.activation.intelId} received:${new Date(input.activation.receivedAtMs).toISOString()}] ${input.activation.text.slice(0, 1000)}`
+      : '';
 
     // Fetch market context (10-min cached)
     const marketContext = await this.getMarketContextCached(topMarkets);
@@ -796,7 +804,8 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       book: book.getAll(),
       taSnapshots,
       marketContext,
-      recentEvents,
+      recentEvents: activationEvent ? `${activationEvent}\n${recentEvents}` : recentEvents,
+      newsActivation: input.activation,
       alertedSymbols: triggerResult.alertedSymbols,
       triggerReason: triggerResult.reason,
       scanId,
@@ -983,6 +992,14 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       accountEquityUsd: this.gateEquity(riskCheck.accountEquityUsd),
       suggestedTtlMinutes: proposal.suggestedTtlMinutes,
       expectedRMultiple: proposal.expectedRMultiple,
+      planProvenance: 'originator',
+      catalystTimestamp: input.activation && proposal.newsIntelId === input.activation.intelId
+        ? new Date(input.activation.publishedAtMs ?? input.activation.receivedAtMs).toISOString()
+        : undefined,
+      sourceContext: input.activation
+        ? JSON.stringify({ source: input.activation.source, intelId: input.activation.intelId,
+            receivedAtMs: input.activation.receivedAtMs, matchedKeyword: input.activation.matchedKeyword })
+        : undefined,
       marketContext: gateContext.marketContext,
     };
 
@@ -1102,6 +1119,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       leverage: targetLeverage,
       mode: executionMode,
       signal_class: 'llm_originator',
+      entry_trigger: input.activation && proposal.newsIntelId === input.activation.intelId ? 'news' : 'technical',
+      news_sources: input.activation && proposal.newsIntelId === input.activation.intelId
+        ? [`${input.activation.source}#${input.activation.intelId}`] : null,
       market_regime: gateContext.marketContext.marketRegime ?? null,
       volatility_bucket: gateContext.marketContext.volatilityBucket ?? null,
       liquidity_bucket:
@@ -1469,10 +1489,9 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       let size = markPrice > 0 ? probeUsd / markPrice : probeUsd;
       let targetLeverage =
         globalGate.leverageCap != null ? Math.min(expr.leverage, globalGate.leverageCap) : expr.leverage;
-      const expressionInvalidationPrice = resolveExpressionInvalidationPrice(
-        expr.invalidation,
-        expr.side,
-        markPrice || null
+      const explicitPlan = resolveExplicitTradePlan(expr, markPrice);
+      const expressionInvalidationPrice = explicitPlan?.invalidationPrice ?? resolveExpressionInvalidationPrice(
+        expr.invalidation, expr.side, markPrice || null
       );
 
       const riskCheck = await checkPerpRiskLimits({
@@ -1520,7 +1539,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         invalidationPrice: expressionInvalidationPrice,
         stopProvenance: parseTextPriceLevel(expr.invalidation ?? '') != null ? 'thesis_derived' : 'mechanical_fallback',
         accountEquityUsd: this.gateEquity(riskCheck.accountEquityUsd),
-      }, expr, cluster, Date.now());
+      }, expr, cluster, Date.now(), markPrice);
       if (
         this.thufirConfig.autonomy?.llmEntryGate?.enabled !== false &&
         isEntryGateCooldownActive(gateCandidate, this.thufirConfig)
@@ -1620,6 +1639,34 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         outputs.push(`${symbol}: Blocked (missing machine-readable invalidation price)`);
         continue;
       }
+      const missingPlanFields = [
+        ...(gateCandidate.expectedRMultiple != null && gateCandidate.expectedRMultiple > 0 ? [] : ['expectedRMultiple']),
+        ...(gateCandidate.suggestedTtlMinutes != null && gateCandidate.suggestedTtlMinutes > 0 ? [] : ['suggestedTtlMinutes']),
+        ...(gateCandidate.targetPrice != null && gateCandidate.targetPrice > 0 ? [] : ['targetPrice']),
+        ...(expr.newsTrigger?.enabled === true && !expr.newsTrigger.sources?.some(source =>
+          !!source.source && !!source.ref && typeof source.publishedAtMs === 'number'
+          && source.publishedAtMs > 0 && source.publishedAtMs <= Date.now())
+          ? ['newsSourcePublication'] : []),
+      ];
+      if (missingPlanFields.length > 0) {
+        try {
+          recordPerpTradeJournal({
+            kind: 'perp_trade_journal',
+            execution_mode: this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper',
+            tradeId: null, hypothesisId: expr.hypothesisId ?? null,
+            symbol, side: expr.side, size, leverage: targetLeverage ?? null,
+            orderType: expr.orderType ?? null, reduceOnly: false,
+            markPrice: markPrice || null, confidence: String(confidenceWeighted),
+            reasoning: `Blocked: missing machine-readable trade plan: ${missingPlanFields.join(', ')}`,
+            signalClass, marketRegime: regime, volatilityBucket, liquidityBucket,
+            expectedEdge: expr.expectedEdge,
+            entryGateVerdict: 'reject', entryGateReasonCode: 'insufficient_data',
+            outcome: 'blocked', error: `Missing machine-readable trade plan: ${missingPlanFields.join(', ')}`,
+          });
+        } catch { /* best-effort */ }
+        outputs.push(`${symbol}: Blocked (missing machine-readable trade plan: ${missingPlanFields.join(', ')})`);
+        continue;
+      }
       // gate approved or was disabled; fall through to executor.execute()
       const decisionReasoning = `${expr.expectedMove} | edge=${(expr.expectedEdge * 100).toFixed(2)}% confidence=${(
         confidenceWeighted * 100
@@ -1650,9 +1697,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
         portfolioPosture: expr.contextPack?.portfolioState.posture ?? null,
       });
       const executionMode = this.thufirConfig.execution?.mode === 'live' ? 'live' : 'paper';
-      const defaultThesisTtlMs =
-        ((this.thufirConfig.autonomy as any)?.newsEntry?.thesisTtlMinutes ?? 120) * 60_000;
-      const timeStopAtMs = expr.newsTrigger?.expiresAtMs ?? Date.now() + defaultThesisTtlMs;
+      const timeStopAtMs = Date.now() + gateCandidate.suggestedTtlMinutes! * 60_000;
       const horizonMinutes = Math.max(1, Math.round((timeStopAtMs - Date.now()) / 60_000));
       const tradeResult = await this.executeSharedPerpOrder({
         symbol,

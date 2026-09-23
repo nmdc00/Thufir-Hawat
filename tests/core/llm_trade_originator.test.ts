@@ -230,7 +230,7 @@ describe('LlmTradeOriginator', () => {
       );
     });
 
-    it('rejects an unqualified proposal when the base symbol exists on multiple DEXes', async () => {
+    it('prefers an exact main-market symbol over a same-base DEX market', async () => {
       const mainLlm = makeLlmClient(validProposalJson.replace('BTC', 'ZEC').replace('63000', '1200'));
       const originator = new LlmTradeOriginator(mainLlm, makeLlmClient('null'), dummyConfig);
       const result = await originator.propose(
@@ -242,10 +242,25 @@ describe('LlmTradeOriginator', () => {
         }),
       );
 
+      expect(result?.symbol).toBe('ZEC');
+    });
+
+    it('rejects an unqualified proposal when only multiple DEX markets share its base symbol', async () => {
+      const mainLlm = makeLlmClient(validProposalJson.replace('BTC', 'ZEC').replace('63000', '1200'));
+      const originator = new LlmTradeOriginator(mainLlm, makeLlmClient('null'), dummyConfig);
+      const result = await originator.propose(
+        makeBundle({
+          taSnapshots: [
+            { ...makeBundle().taSnapshots[0], symbol: 'xyz:ZEC', price: 1258 },
+            { ...makeBundle().taSnapshots[0], symbol: 'hyna:ZEC', price: 856.99 },
+          ],
+        }),
+      );
+
       expect(result).toBeNull();
       expect(mockLoggerWarn).toHaveBeenCalledWith(
         expect.stringContaining('ambiguous_market_symbol_validation'),
-        expect.objectContaining({ symbol: 'ZEC', matchingSymbols: ['ZEC', 'hyna:ZEC'] }),
+        expect.objectContaining({ symbol: 'ZEC', matchingSymbols: ['xyz:ZEC', 'hyna:ZEC'] }),
       );
     });
   });

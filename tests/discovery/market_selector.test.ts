@@ -157,6 +157,6 @@ describe('selectDiscoveryMarkets', () => {
     } as any);
 
     expect(result.source).toBe('full_universe');
-    expect(result.candidates.some((c) => c.symbol === 'XYZ:TSLA')).toBe(true);
+    expect(result.candidates.some((c) => c.symbol === 'xyz:TSLA')).toBe(true);
   });
 });

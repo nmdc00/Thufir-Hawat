@@ -74,7 +74,7 @@ describe('HyperliquidMarketClient cache', () => {
     });
   });
 
-  it('rejects an unqualified symbol when multiple DEX markets share its base', async () => {
+  it('resolves an exact main symbol when a DEX market shares its base', async () => {
     listPerpMarketsMock.mockResolvedValue([
       { symbol: 'ZEC', assetId: 0, maxLeverage: 10, szDecimals: 2, dex: null },
       { symbol: 'hyna:ZEC', assetId: 1, maxLeverage: 10, szDecimals: 2, dex: 'hyna' },
@@ -83,11 +83,37 @@ describe('HyperliquidMarketClient cache', () => {
     const { HyperliquidMarketClient } = await import('../../src/execution/hyperliquid/markets.js');
     const client = new HyperliquidMarketClient({ hyperliquid: { enabled: true } } as any);
 
-    await expect(client.getMarket('ZEC')).rejects.toThrow(/Ambiguous Hyperliquid market symbol ZEC/);
+    await expect(client.getMarket('ZEC')).resolves.toMatchObject({ symbol: 'ZEC', markPrice: 1258.3 });
     await expect(client.getMarket('hyna:ZEC')).resolves.toMatchObject({
       symbol: 'hyna:ZEC',
       markPrice: 856.99,
     });
+  });
+
+  it('fails closed when only multiple qualified markets share a base', async () => {
+    listPerpMarketsMock.mockResolvedValue([
+      { symbol: 'hyna:ZEC', assetId: 1, maxLeverage: 10, szDecimals: 2, dex: 'hyna' },
+      { symbol: 'flx:ZEC', assetId: 2, maxLeverage: 10, szDecimals: 2, dex: 'flx' },
+    ]);
+    getAllMidsMock.mockResolvedValue({ 'hyna:ZEC': 856, 'flx:ZEC': 857 });
+    const { HyperliquidMarketClient } = await import('../../src/execution/hyperliquid/markets.js');
+    const client = new HyperliquidMarketClient({ hyperliquid: { enabled: true } } as any);
+    await expect(client.getMarket('ZEC')).rejects.toThrow(/hyna:ZEC, flx:ZEC/);
+    await expect(client.getMarket('other:ZEC')).rejects.toThrow(/not found/);
+  });
+
+  it('treats configured symbols as canonical market IDs', async () => {
+    listPerpMarketsMock.mockResolvedValue([
+      { symbol: 'ETH', assetId: 1, maxLeverage: 10, szDecimals: 2, dex: null },
+      { symbol: 'hyna:ETH', assetId: 2, maxLeverage: 10, szDecimals: 2, dex: 'hyna' },
+    ]);
+    getAllMidsMock.mockResolvedValue({ ETH: 3000, 'hyna:ETH': 3001 });
+    const { HyperliquidMarketClient } = await import('../../src/execution/hyperliquid/markets.js');
+    const main = new HyperliquidMarketClient({ hyperliquid: { enabled: true, symbols: ['ETH'] } } as any);
+    const hyna = new HyperliquidMarketClient({ hyperliquid: { enabled: true, symbols: ['hyna:ETH'] } } as any);
+    await expect(main.listMarkets()).resolves.toMatchObject([{ symbol: 'ETH' }]);
+    await expect(hyna.listMarkets()).resolves.toMatchObject([{ symbol: 'hyna:ETH' }]);
+    await expect(hyna.getMarket('ETH')).rejects.toThrow(/not found/);
   });
 
   it('returns stale data when refresh fails (stale-if-error)', async () => {

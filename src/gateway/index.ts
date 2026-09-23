@@ -53,6 +53,7 @@ import { createMarketClient } from '../execution/market-client.js';
 import { pruneIntel } from '../intel/store.js';
 import { rankIntelAlerts } from '../intel/alerts.js';
 import { TelegramChannelMonitor } from '../intel/telegram_monitor.js';
+import type { NewsActivation } from '../intel/news_activation.js';
 import { refreshMarketPrices, syncMarketCache } from '../core/markets_sync.js';
 import { formatProactiveSummary, runProactiveSearch } from '../core/proactive_search.js';
 import { buildAgentPeerSessionKey, resolveThreadSessionKeys } from './session_keys.js';
@@ -158,7 +159,7 @@ const eventScanTrigger = new EventScanTriggerCoordinator({
 // Set by the heartbeat block below; called from maybeRunEventDrivenScan when eventDrivenHeartbeat is on.
 let _triggerHeartbeat: (() => Promise<void>) | null = null;
 
-async function maybeRunEventDrivenScan(source: 'intel' | 'proactive', itemCount: number): Promise<void> {
+async function maybeRunEventDrivenScan(source: 'intel' | 'proactive', itemCount: number, activation?: NewsActivation): Promise<void> {
   const minItems = Math.max(1, Number(config.autonomy?.eventDrivenMinItems ?? 1));
   const decision = eventScanTrigger.tryAcquire({
     eventKey: source,
@@ -174,7 +175,7 @@ async function maybeRunEventDrivenScan(source: 'intel' | 'proactive', itemCount:
     return;
   }
   const startedAt = Date.now();
-  const scanResult = await primaryAgent.getAutonomous().runScan();
+  const scanResult = await primaryAgent.getAutonomous().runScan(activation ? { activation } : undefined);
   logger.info(
     `Event-driven scan executed (${source}) in ${Date.now() - startedAt}ms: ${scanResult}`
   );
@@ -1251,7 +1252,7 @@ if (telegram) {
 if (config.channels?.telegram?.monitor?.enabled) {
   const channelMonitor = new TelegramChannelMonitor(
     config,
-    async (itemCount, text, source) => {
+    async (itemCount, text, source, activation) => {
       logger.info('Telegram news activation received', {
         source: `@${source}`,
         itemCount,
@@ -1259,7 +1260,7 @@ if (config.channels?.telegram?.monitor?.enabled) {
         eventDrivenScanEnabled: config.channels.telegram.monitor?.eventDrivenScanEnabled !== false,
       });
       if (config.channels.telegram.monitor?.eventDrivenScanEnabled !== false) {
-        await maybeRunEventDrivenScan('intel', itemCount);
+        await maybeRunEventDrivenScan('intel', itemCount, activation);
       } else {
         logger.info('Telegram news activation: event-driven scan disabled', { source: `@${source}` });
       }

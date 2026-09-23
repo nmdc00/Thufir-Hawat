@@ -26,6 +26,10 @@ export interface TradeProposalRecord {
   originatorOutcome?: string;
   originatorError?: string;
   originatorReason?: string;
+  activationId?: string;
+  activationIntelId?: string;
+  activationSource?: string;
+  activationReceivedAtMs?: number;
 }
 
 function ensureSchema(): void {
@@ -58,7 +62,11 @@ function ensureSchema(): void {
       eligible_snapshot_count INTEGER,
       originator_outcome     TEXT,
       originator_error       TEXT,
-      originator_reason      TEXT
+      originator_reason      TEXT,
+      activation_id         TEXT,
+      activation_intel_id   TEXT,
+      activation_source     TEXT,
+      activation_received_at_ms INTEGER
     )
   `);
 
@@ -83,6 +91,10 @@ function ensureSchema(): void {
   addColumnIfMissing('originator_outcome', 'originator_outcome TEXT');
   addColumnIfMissing('originator_error', 'originator_error TEXT');
   addColumnIfMissing('originator_reason', 'originator_reason TEXT');
+  addColumnIfMissing('activation_id', 'activation_id TEXT');
+  addColumnIfMissing('activation_intel_id', 'activation_intel_id TEXT');
+  addColumnIfMissing('activation_source', 'activation_source TEXT');
+  addColumnIfMissing('activation_received_at_ms', 'activation_received_at_ms INTEGER');
 }
 
 export function recordTradeProposal(record: TradeProposalRecord): number {
@@ -95,14 +107,16 @@ export function recordTradeProposal(record: TradeProposalRecord): number {
         entry_gate_verdict, executed, trade_id, used_fallback, execute_trades,
         originator_exit_stage, originator_exit_reason, requested_leverage,
         scan_id, market_symbols, all_snapshot_count, eligible_snapshot_count,
-        originator_outcome, originator_error, originator_reason)
+        originator_outcome, originator_error, originator_reason,
+        activation_id, activation_intel_id, activation_source, activation_received_at_ms)
      VALUES
        (@triggerReason, @alertedSymbols, @proposed, @symbol, @side, @thesisText,
         @invalidationCondition, @invalidationPrice, @suggestedTtlMinutes, @confidence,
         @entryGateVerdict, @executed, @tradeId, @usedFallback, @executeTrades,
         @originatorExitStage, @originatorExitReason, @requestedLeverage,
         @scanId, @marketSymbols, @allSnapshotCount, @eligibleSnapshotCount,
-       @originatorOutcome, @originatorError, @originatorReason)`
+       @originatorOutcome, @originatorError, @originatorReason,
+       @activationId, @activationIntelId, @activationSource, @activationReceivedAtMs)`
   ).run({
     triggerReason: record.triggerReason,
     alertedSymbols: record.alertedSymbols ? JSON.stringify(record.alertedSymbols) : null,
@@ -130,6 +144,10 @@ export function recordTradeProposal(record: TradeProposalRecord): number {
     originatorOutcome: record.originatorOutcome ?? null,
     originatorError: record.originatorError ?? null,
     originatorReason: record.originatorReason ?? null,
+    activationId: record.activationId ?? null,
+    activationIntelId: record.activationIntelId ?? null,
+    activationSource: record.activationSource ?? null,
+    activationReceivedAtMs: record.activationReceivedAtMs ?? null,
   });
   return Number(result.lastInsertRowid);
 }
