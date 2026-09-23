@@ -419,6 +419,33 @@ describe('LlmEntryGate', () => {
   });
 
   describe('fallback and error handling', () => {
+    it('retries one empty primary response before using fallback', async () => {
+      const mainLlm = { complete: vi.fn()
+        .mockResolvedValueOnce({ content: '' })
+        .mockResolvedValueOnce({ content: '' }) } as any;
+      const fallbackLlm = makeLlmClient({ verdict: 'reject', reasoning: 'local review' });
+      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, makeBook(), dummyConfig);
+      const result = await gate.evaluate(makeCandidate(), markPrice);
+      expect(result.verdict).toBe('reject');
+      expect(mainLlm.complete).toHaveBeenCalledTimes(2);
+      expect(mainLlm.complete.mock.calls[1][0][1].content).toContain('Return only one complete JSON decision object');
+      expect(fallbackLlm.complete).toHaveBeenCalledOnce();
+      expect(notify).toHaveBeenCalledOnce();
+      expect(mockLoggerWarn).toHaveBeenCalledWith('Entry gate main LLM failed; falling back',
+        expect.objectContaining({ failureType: 'empty_response' }));
+    });
+
+    it('does not retry a critical budget refusal', async () => {
+      const refusal = Object.assign(new Error('budget exhausted'), { code: 'llm_budget_exhausted' });
+      const mainLlm = { complete: vi.fn().mockRejectedValue(refusal) } as any;
+      const fallbackLlm = makeLlmClient({ verdict: 'reject', reasoning: 'local review' });
+      const gate = new LlmEntryGate(mainLlm, fallbackLlm, notify, makeBook(), dummyConfig);
+      await gate.evaluate(makeCandidate(), markPrice);
+      expect(mainLlm.complete).toHaveBeenCalledOnce();
+      expect(fallbackLlm.complete).toHaveBeenCalledOnce();
+      expect(mockLoggerWarn).toHaveBeenCalledWith('Entry gate main LLM failed; falling back',
+        expect.objectContaining({ failureType: 'llm_budget_exhausted' }));
+    });
     it('uses fallback LLM when main LLM fails, and calls notify', async () => {
       const book = makeBook();
       const mainLlm = makeLlmClient(null, /* shouldThrow */ true);

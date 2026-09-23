@@ -25,6 +25,8 @@ export interface EntryGateCandidate {
   invalidationPrice?: number | null;
   suggestedTtlMinutes?: number;
   expectedRMultiple?: number;
+  targetPrice?: number;
+  planProvenance?: 'originator' | 'strategy';
   catalystTimestamp?: string;
   marketContext?: EntryGateMarketContext;
   sourceContext?: string;
@@ -415,6 +417,7 @@ function recordGateDecision(
   decision: EntryGateDecision,
   usedFallback: boolean,
   llmConsulted: boolean,
+  diagnostics?: { primaryFailureType?: string; fallbackFailureType?: string; primaryModel?: string; fallbackModel?: string },
 ): void {
   // Normalize every exit path, including deterministic prechecks. The model's
   // estimate is diagnostic only; never persist it as calculated equity risk.
@@ -453,6 +456,10 @@ function recordGateDecision(
     targetRR: decision.targetRR,
     suggestedLeverage: decision.suggestedLeverage,
     llmConsulted,
+    primaryFailureType: diagnostics?.primaryFailureType,
+    fallbackFailureType: diagnostics?.fallbackFailureType,
+    primaryModel: diagnostics?.primaryModel,
+    fallbackModel: diagnostics?.fallbackModel,
   });
   if (decision.verdict === 'reject' && decision.reasonCode !== 'cooldown_suppressed') {
     recordGateVerdictReject({
@@ -592,7 +599,8 @@ async function callLlm(
   sameSideWarning: string | null,
   signalStats: SignalPerformanceSummary,
   allowPaperColdStart: boolean,
-  timeoutMs?: number
+  timeoutMs?: number,
+  retryJsonOnly = false,
 ): Promise<EntryGateDecision> {
   const { system, user } = buildPrompt(
     candidate,
@@ -603,7 +611,9 @@ async function callLlm(
   );
   const messages = [
     { role: 'system' as const, content: system },
-    { role: 'user' as const, content: user },
+    { role: 'user' as const, content: retryJsonOnly
+      ? `${user}\n\nThe previous response was empty or interrupted. Return only one complete JSON decision object; no markdown or prose.`
+      : user },
   ];
   let response;
   if (timeoutMs === undefined) {
@@ -630,6 +640,11 @@ async function callLlm(
     response.content.trim(),
     ['adjustedSizeUsd', 'stopLevelPrice', 'suggestedLeverage']
   );
+  if (!normalized) {
+    const error = new Error('Empty entry-gate response');
+    (error as { code?: string }).code = 'empty_response';
+    throw error;
+  }
   const parsed = JSON.parse(normalized) as Record<string, unknown>;
   if (parsed.adjustedSizeUsd === null) {
     delete parsed.adjustedSizeUsd;
@@ -667,6 +682,9 @@ async function callLlm(
 }
 
 function summarizeLlmError(error: unknown): { type: string; message: string } {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code) : null;
+  if (code) return { type: code, message: error instanceof Error ? error.message : code };
   if (error instanceof SyntaxError) {
     return { type: 'json_parse', message: error.message };
   }
@@ -863,6 +881,8 @@ export class LlmEntryGate {
     const primaryTimeoutMs = resolvePrimaryTimeoutMs(this.config);
     const fallbackTimeoutMs = resolveFallbackTimeoutMs(this.config);
     let usedFallback = false;
+    let primaryFailureType: string | undefined;
+    let fallbackFailureType: string | undefined;
     let decision: EntryGateDecision;
 
     // Build same-side concentration warning if a position in this symbol/side already exists
@@ -877,19 +897,27 @@ export class LlmEntryGate {
 
     // Use explicit, cancellable budgets for both the primary and local fallback.
     try {
-      decision = await withExecutionContext(criticalCtx, () =>
-        callLlm(
-          this.mainLlm,
-          evaluationCandidate,
-          bookEntries,
-          sameSideWarning,
-          signalStats,
-          this.config.execution?.mode === 'paper',
-          primaryTimeoutMs
-        )
-      );
+      const callPrimary = (retryJsonOnly = false) => withExecutionContext(criticalCtx, () =>
+        callLlm(this.mainLlm, evaluationCandidate, bookEntries, sameSideWarning,
+          signalStats, this.config.execution?.mode === 'paper', primaryTimeoutMs, retryJsonOnly));
+      try {
+        decision = await callPrimary();
+      } catch (firstError) {
+        const code = summarizeLlmError(firstError).type;
+        if (code !== 'empty_response' && code !== 'truncated_stream') throw firstError;
+        primaryFailureType = code;
+        logger.warn('Entry gate primary response incomplete; retrying once', {
+          provider: this.mainLlm.meta?.provider ?? 'unknown',
+          model: this.mainLlm.meta?.model ?? 'unknown',
+          symbol: evaluationCandidate.symbol,
+          side: evaluationCandidate.side,
+          failureType: code,
+        });
+        decision = await callPrimary(true);
+      }
     } catch (error) {
       const summary = summarizeLlmError(error);
+      primaryFailureType = summary.type;
       logger.warn('Entry gate main LLM failed; falling back', {
         provider: this.mainLlm.meta?.provider ?? 'unknown',
         model: this.mainLlm.meta?.model ?? 'unknown',
@@ -916,6 +944,7 @@ export class LlmEntryGate {
         );
       } catch (fallbackError) {
         const summary = summarizeLlmError(fallbackError);
+        fallbackFailureType = summary.type;
         logger.warn('Entry gate fallback LLM failed; using safe default', {
           provider: this.fallbackLlm.meta?.provider ?? 'unknown',
           model: this.fallbackLlm.meta?.model ?? 'unknown',
@@ -944,7 +973,11 @@ export class LlmEntryGate {
       evaluationCandidate.marketContext,
     );
 
-    recordGateDecision(evaluationCandidate, decision, usedFallback, true);
+    recordGateDecision(evaluationCandidate, decision, usedFallback, true, {
+      primaryFailureType, fallbackFailureType,
+      primaryModel: this.mainLlm.meta?.model,
+      fallbackModel: usedFallback ? this.fallbackLlm.meta?.model : undefined,
+    });
 
     return decision;
   }

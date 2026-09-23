@@ -156,6 +156,20 @@ describe('quant gate evidence lifecycle', () => {
     expect(candidate.catalystTimestamp).toBe(new Date(1000).toISOString());
   });
 
+  it('blocks a quant order even when the model approves a candidate without a numeric plan', async () => {
+    const complete = vi.fn(async () => ({ content: JSON.stringify({
+      verdict: 'approve', reasoning: 'Synthetic approval', stopLevelPrice: 630,
+      equityAtRiskPct: null, targetRR: null, suggestedLeverage: 1,
+    }) }));
+    const manager = new AutonomousManager({ complete } as any, { complete } as any,
+      { getMarket: async () => ({ symbol: 'XYZ:META', markPrice: 644.04, metadata: { maxLeverage: 50 } }) } as any,
+      { execute } as any, { getRemainingDaily: () => 100 } as any, config);
+    const result = await (manager as any).runDiscoveryScan({ executeTrades: true });
+    expect(result).toContain('missing machine-readable trade plan');
+    expect(execute).not.toHaveBeenCalled();
+    expect(row().missing_plan_fields).toBe('["expectedRMultiple","suggestedTtlMinutes"]');
+  });
+
   it('runs actual quant caller -> gate -> real normalized log and blocked journal, preserving discovery unknowns', async () => {
     fixture.expression = await enrichExpressionContextPack({ expression: fixture.expression, cluster: fixture.cluster,
       hypothesis: { id: 'hyp_meta', clusterId: 'cluster_meta', pressureSource: 'Crowded positioning (technical hypothesis)',

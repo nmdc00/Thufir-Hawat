@@ -53,6 +53,14 @@ export interface ExpressionPlan {
   orderType: 'market' | 'limit';
   leverage: number;
   probeSizeUsd: number;
+  /** Only explicit strategy evidence may populate an executable plan. */
+  tradePlan?: {
+    invalidationPrice: number;
+    targetPrice: number;
+    expectedRMultiple: number;
+    suggestedTtlMinutes: number;
+    provenance: 'strategy';
+  } | null;
   newsTrigger?: {
     enabled: boolean;
     subtype?: string;

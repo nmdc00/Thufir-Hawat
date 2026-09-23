@@ -7,6 +7,7 @@ import { gatherMarketContext, type MarketContextDomain } from '../markets/contex
 import { recordTradeProposal } from '../memory/llm_trade_proposals.js';
 import { Logger } from './logger.js';
 import type { ToolExecutorContext } from './tool-executor.js';
+import type { NewsActivation } from '../intel/news_activation.js';
 
 export interface TradeProposal {
   proposalRecordId?: number;
@@ -20,6 +21,7 @@ export interface TradeProposal {
   leverage: number;
   expectedRMultiple: number;
   tradeType: 'scalp' | 'tactical' | 'structural';
+  newsIntelId?: string;
 }
 
 export interface OriginatorDiagnostic {
@@ -35,6 +37,7 @@ export interface OriginationInputBundle {
   taSnapshots: TaSnapshot[];
   marketContext: string;
   recentEvents: string;
+  newsActivation?: NewsActivation;
   eventContext?: string;
   similarityContext?: string;
   alertedSymbols: string[];
@@ -56,8 +59,9 @@ const ProposalSchema = z.object({
   suggestedTtlMinutes: z.number(),
   confidence: z.number(),
   leverage: z.number().min(1).default(1),
-  expectedRMultiple: z.number().min(0),
+  expectedRMultiple: z.number().positive(),
   tradeType: z.enum(['scalp', 'tactical', 'structural']).default('tactical'),
+  newsIntelId: z.string().optional(),
 });
 
 const NoTradeSchema = z.object({
@@ -130,7 +134,7 @@ If event intelligence includes historical analogs or open forecasts, use them. T
 
 Respond with ONLY one of these valid JSON forms:
 1. A trade proposal matching this schema:
-{"symbol":"...","side":"long"|"short","thesisText":"...","invalidationCondition":"...","invalidationPrice":number,"suggestedTtlMinutes":number,"confidence":number,"leverage":number,"expectedRMultiple":number,"tradeType":"scalp"|"tactical"|"structural"}
+{"symbol":"...","side":"long"|"short","thesisText":"...","invalidationCondition":"...","invalidationPrice":number,"suggestedTtlMinutes":number,"confidence":number,"leverage":number,"expectedRMultiple":number,"tradeType":"scalp"|"tactical"|"structural","newsIntelId":"optional exact triggering intel ID when thesis uses that news"}
 2. A no-trade decision with a concise evidence-based reason:
 {"decision":"no_trade","reason":"..."}`;
 
@@ -184,6 +188,9 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     : '(not available)';
 
   const eventsSection = bundle.recentEvents ? bundle.recentEvents.slice(0, 500) : '(none)';
+  const activationSection = bundle.newsActivation
+    ? `Source: ${bundle.newsActivation.source}; intel ID: ${bundle.newsActivation.intelId}; received: ${new Date(bundle.newsActivation.receivedAtMs).toISOString()}\n${bundle.newsActivation.text.slice(0, 1500)}`
+    : '(none)';
   const eventContextSection = bundle.eventContext ? bundle.eventContext.slice(0, 1500) : '(none)';
   const similarityContextSection = bundle.similarityContext
     ? bundle.similarityContext.slice(0, 1200)
@@ -202,6 +209,9 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     '## Recent Events (last 2h)',
     eventsSection,
     '',
+    '## Triggering News Item',
+    activationSection,
+    '',
     '## Event Intelligence',
     eventContextSection,
     '',
@@ -213,6 +223,7 @@ function buildUserMessage(bundle: OriginationInputBundle): string {
     '',
     '## Instruction',
     'Use the exact market identifier shown in the scan, including any DEX prefix such as hyna:ZEC or xyz:GOLD. Do not shorten qualified symbols to their base symbol.',
+    'If the proposed thesis depends on the triggering news item, include newsIntelId equal to its exact intel ID. Omit newsIntelId for unrelated technical setups. Do not claim a verified catalyst from a keyword match alone.',
     'Find ONE trade only if it is genuinely worth deploying capital into right now. Prefer symbols with no current book exposure. If you propose a symbol already in the book, you must name a specific new catalyst in thesisText that justifies adding to that position. Return null if no setup is sufficiently asymmetric, timely, and cleanly invalidated.',
   ].join('\n');
 }
@@ -258,6 +269,7 @@ function parseProposal(raw: string): TradeProposal | null {
       leverage: validated.leverage,
       expectedRMultiple: validated.expectedRMultiple,
       tradeType: validated.tradeType,
+      newsIntelId: validated.newsIntelId,
     };
   } catch (error) {
     if (error instanceof SyntaxError) {
@@ -292,8 +304,10 @@ function normalizeComparableSymbol(symbol: string): string {
 
 function findMatchingSnapshots(proposal: TradeProposal, snapshots: TaSnapshot[]): TaSnapshot[] {
   const proposalSymbol = normalizeComparableSymbol(proposal.symbol);
+  const exact = snapshots.filter((snapshot) => normalizeComparableSymbol(snapshot.symbol) === proposalSymbol);
+  if (exact.length > 0) return exact;
   if (proposalSymbol.includes(':')) {
-    return snapshots.filter((snapshot) => normalizeComparableSymbol(snapshot.symbol) === proposalSymbol);
+    return [];
   }
   const baseSymbol = proposalSymbol;
   return snapshots.filter((snapshot) => {
@@ -563,6 +577,15 @@ export class LlmTradeOriginator {
       originatorOutcome = 'invalid_response';
       originatorError = `confidence below minimum ${minConfidence}`;
     }
+    if (proposal?.newsIntelId && proposal.newsIntelId !== effectiveBundle.newsActivation?.intelId) {
+      logger.warn('LlmTradeOriginator: proposal rejected by news_source_validation', {
+        symbol: proposal.symbol,
+        newsIntelId: proposal.newsIntelId,
+      });
+      originatorOutcome = 'invalid_response';
+      originatorError = 'newsIntelId does not match triggering intel';
+      proposal = null;
+    }
 
     if (proposal !== null) {
       const validated = validateProposalAgainstMarketContext(proposal, effectiveBundle.taSnapshots);
@@ -602,6 +625,10 @@ export class LlmTradeOriginator {
       originatorOutcome,
       originatorError: originatorError?.slice(0, 500),
       originatorReason: originatorReason?.slice(0, 500),
+      activationId: effectiveBundle.newsActivation?.id,
+      activationIntelId: effectiveBundle.newsActivation?.intelId,
+      activationSource: effectiveBundle.newsActivation?.source,
+      activationReceivedAtMs: effectiveBundle.newsActivation?.receivedAtMs,
     });
 
     if (proposal !== null) {

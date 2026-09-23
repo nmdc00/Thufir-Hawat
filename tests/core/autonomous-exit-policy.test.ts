@@ -39,6 +39,7 @@ vi.mock('../../src/discovery/engine.js', () => ({
         leverage: 3,
         probeSizeUsd: 20,
         newsTrigger: null,
+        tradePlan: { invalidationPrice: 60_000, targetPrice: 90_000, expectedRMultiple: 2, suggestedTtlMinutes: 120, provenance: 'test-signal' },
       },
     ],
   }),

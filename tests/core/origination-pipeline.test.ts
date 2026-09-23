@@ -262,6 +262,28 @@ describe('Section 2: LlmTradeOriginator null discipline', () => {
     expect(result).toBeNull();
   });
 
+  it('binds a news proposal to the exact triggering intel ID', async () => {
+    const activation = { id: 'intel-1', intelId: 'intel-1', source: '@marketfeed',
+      text: 'BTC exchange access approved', receivedAtMs: Date.now(), matchedKeyword: 'breaking' };
+    const primary = makeLlmClient(JSON.stringify({ ...JSON.parse(validProposalJson), newsIntelId: 'intel-1' }));
+    const originator = new LlmTradeOriginator(primary, makeLlmClient('null'), dummyConfig);
+    const proposal = await originator.propose(makeBundle({ newsActivation: activation, triggerReason: 'event' }));
+    expect(proposal?.newsIntelId).toBe('intel-1');
+    const prompt = JSON.stringify((primary.complete as ReturnType<typeof vi.fn>).mock.calls[0][0]);
+    expect(prompt).toContain('BTC exchange access approved');
+    expect(prompt).toContain('intel-1');
+    expect(mockRecordTradeProposal.mock.calls[0][0]).toMatchObject({
+      activationIntelId: 'intel-1', activationSource: '@marketfeed',
+    });
+
+    vi.clearAllMocks();
+    const forged = new LlmTradeOriginator(
+      makeLlmClient(JSON.stringify({ ...JSON.parse(validProposalJson), newsIntelId: 'another-id' })),
+      makeLlmClient('null'), dummyConfig);
+    await expect(forged.propose(makeBundle({ newsActivation: activation }))).resolves.toBeNull();
+    expect(mockRecordTradeProposal.mock.calls[0][0].proposed).toBe(false);
+  });
+
   it('returns null when LLM response is malformed JSON', async () => {
     const originator = new LlmTradeOriginator(
       makeLlmClient('not json {{ broken'),
