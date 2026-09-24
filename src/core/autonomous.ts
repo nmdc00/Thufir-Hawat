@@ -51,6 +51,11 @@ import { TaSurface } from './ta_surface.js';
 import { OriginationTrigger } from './origination_trigger.js';
 import { LlmTradeOriginator } from './llm_trade_originator.js';
 import { listEvents } from '../memory/events.js';
+import {
+  acknowledgeScheduledNewsDigest,
+  consumeScheduledNewsDigest,
+  type RoutineNewsBriefingHandler,
+} from '../intel/news_routing.js';
 import { recordTradeProposal, updateTradeProposalOutcome, updateTradeProposalStatus } from '../memory/llm_trade_proposals.js';
 import { recordEntryGateDecision } from '../memory/llm_entry_gate_log.js';
 import { getSignalWeightsWithFallback, type SignalWeights } from '../memory/learning.js';
@@ -306,6 +311,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   private readonly schedulerNamespace: string;
   private readonly startedAtMs: number;
   private notify?: (message: string) => Promise<void>;
+  private routineNewsBriefingHandler?: RoutineNewsBriefingHandler;
   private entryGate: LlmEntryGate;
 
   private isPaused = false;
@@ -474,7 +480,14 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       },
       async () => {
         try {
-          const result = await this.runScan();
+          const newsDigest = consumeScheduledNewsDigest();
+          const newsScanCanRun = !this.isPaused && this.limiter.getRemainingDaily() > 0 &&
+            this.thufirConfig.autonomy?.origination != null;
+          const result = await this.runScan({ newsDigest: newsDigest.text });
+          if (newsDigest.references.length > 0 && newsScanCanRun && this.routineNewsBriefingHandler) {
+            await this.routineNewsBriefingHandler({ digest: newsDigest, scanResult: result });
+          }
+          if (newsScanCanRun) acknowledgeScheduledNewsDigest(newsDigest, new Date().toISOString());
           this.logger.info(`Autonomous scan result: ${result}`);
         } catch (error) {
           this.logger.error('Autonomous scan failed', error);
@@ -535,6 +548,10 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     this.notify = fn;
   }
 
+  setRoutineNewsBriefingHandler(handler: RoutineNewsBriefingHandler): void {
+    this.routineNewsBriefingHandler = handler;
+  }
+
   /**
    * Get current status
    */
@@ -567,7 +584,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
   /**
    * Run a scan and optionally execute trades
    */
-  async runScan(options?: { forceExecute?: boolean; maxTrades?: number; activation?: import('../intel/news_activation.js').NewsActivation }): Promise<string> {
+  async runScan(options?: { forceExecute?: boolean; maxTrades?: number; activation?: import('../intel/news_activation.js').NewsActivation; newsDigest?: string }): Promise<string> {
     if (this.isPaused) {
       return `Autonomous trading is paused: ${this.pauseReason}`;
     }
@@ -591,7 +608,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     const forceExecute = Boolean(options?.forceExecute);
     const executeTrades = forceExecute || this.config.fullAuto;
     const maxTrades = options?.maxTrades;
-    const scanInput = { executeTrades, maxTrades, ignoreThresholds: forceExecute, activation: options?.activation };
+    const scanInput = { executeTrades, maxTrades, ignoreThresholds: forceExecute, activation: options?.activation, newsDigest: options?.newsDigest };
 
     // Try LLM originator path first; null means "use quant fallback"
     try {
@@ -699,6 +716,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
     maxTrades?: number;
     ignoreThresholds?: boolean;
     activation?: import('../intel/news_activation.js').NewsActivation;
+    newsDigest?: string;
   }): Promise<string | null> {
     // Only run when origination is explicitly configured (Zod default sets this; raw test configs won't have it)
     if (this.thufirConfig.autonomy?.origination == null) {
@@ -760,7 +778,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       taSnapshots,
       pendingEvents
     );
-    if (input.activation) {
+    if (input.activation || input.newsDigest?.trim()) {
       triggerResult.fire = true;
       triggerResult.reason = 'event';
     }
@@ -806,6 +824,7 @@ export class AutonomousManager extends EventEmitter<AutonomousEvents> {
       marketContext,
       recentEvents: activationEvent ? `${activationEvent}\n${recentEvents}` : recentEvents,
       newsActivation: input.activation,
+      routineNewsDigest: input.newsDigest,
       alertedSymbols: triggerResult.alertedSymbols,
       triggerReason: triggerResult.reason,
       scanId,
