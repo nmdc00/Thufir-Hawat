@@ -353,9 +353,9 @@ class BackgroundLocalLlmClient implements LlmClient {
   constructor(private inner: LlmClient, private limiter: LlmQueue) {}
 
   complete(messages: ChatMessage[], options?: LlmClientOptions): Promise<LlmResponse> {
-    const queuedAt = Date.now();
+    const queuedAt = performance.now();
     return this.limiter.enqueueBackground(async () => {
-      const queueWaitMs = Date.now() - queuedAt;
+      const queueWaitMs = performance.now() - queuedAt;
       const response = await this.inner.complete(messages, options);
       return { ...response, queueWaitMs };
     }, options?.signal);
