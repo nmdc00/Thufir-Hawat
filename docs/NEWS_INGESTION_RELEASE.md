@@ -7,7 +7,7 @@
 
 | Task | Status | Branch | Worktree | Runtime entrypoint | Persistence | Path | Required proof | Owning document section |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Durable screening | In progress | `feat/news-ingestion-jobs` | `/tmp/thufir-worktrees/news-release/jobs/feat-news-ingestion-jobs` | Screening worker | `news_screen_jobs` | Write/read | SQLite lifecycle, retry, lease restart, classifier parsing | TDD §2, §4, red-first contracts 8-9 |
+| Durable screening | **Implemented and proven (focused)** | `feat/news-ingestion-jobs` | `/tmp/thufir-worktrees/news-release/jobs/feat-news-ingestion-jobs` | Screening worker | `news_screen_jobs`, call admission log, worker state | Write/read | Seven temporary-SQLite lifecycle/retry/lease/outbox/cap tests; `tsc --noEmit` | TDD §2, §4, red-first contracts 8-9 |
 | Local inference priority | **Implemented and proven** | `feat/news-ingestion-priority` | `/tmp/thufir-worktrees/news-release/priority/feat-news-ingestion-priority` | Trivial local client | None | Runtime queue | Local/global queue ordering, single-flight, queue wait, and abort | TDD §2, red-first contract 15 |
 | Monitor and routing | In progress | `feat/news-ingestion-routing` | `/tmp/thufir-worktrees/news-release/routing/feat-news-ingestion-routing` | Telegram monitor, gateway scheduled/event paths | Dispatch keys and outcomes | Write/read | Monitor-to-worker-to-gateway SQLite integration; scan/briefing caps | TDD §1, §3-4, red-first contracts 1-7, 10-13 |
 | Contract and release evidence | In progress | `docs/news-ingestion-contract` | `/tmp/thufir-worktrees/news-release/docs/docs-news-ingestion-contract` | Release gate | Evidence only | Promotion gate | Reconcile TDD to code; full tests, replay, latency and production proof | TDD acceptance and this release doc |
@@ -31,4 +31,4 @@
 
 ## Status
 
-Local inference admission is **implemented and proven** by the focused tests in TDD contract 15. Durable screening, monitor/routing, and release evidence remain **in progress**. Before each feature PR merges, record each TDD item as implemented, deferred, or blocked with its proving test. Active rollout requires the TDD's shadow latency gates and production-like restart/replay proof.
+Local inference admission is **implemented and proven** by focused TDD contract 15 tests. Durable screening persistence is **implemented and proven** by the seven focused temporary-SQLite lifecycle tests and typecheck. Monitor-to-gateway wiring, full shadow capacity replay, and production restart/replay remain in progress. Active rollout requires the TDD's shadow latency gates and production-like restart/replay proof.
