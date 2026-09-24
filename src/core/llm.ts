@@ -39,6 +39,8 @@ export interface ChatMessage {
 export interface LlmResponse {
   content: string;
   model: string;
+  /** Time spent waiting for background local admission, before inference began. */
+  queueWaitMs?: number;
 }
 
 export type LlmClientOptions = {
@@ -261,8 +263,9 @@ function abortError(): Error {
 }
 
 export class LlmQueue {
-  private queue: Array<() => void> = [];
+  private queue: Array<{ run: () => void; priority: number; order: number }> = [];
   private inFlight = 0;
+  private nextOrder = 0;
 
   constructor(
     private concurrency: number,
@@ -270,6 +273,19 @@ export class LlmQueue {
   ) {}
 
   async enqueue<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.enqueueWithPriority(task, signal, 0);
+  }
+
+  /** Enqueue work behind normal requests while preserving one shared in-flight limit. */
+  async enqueueBackground<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.enqueueWithPriority(task, signal, -1);
+  }
+
+  private async enqueueWithPriority<T>(
+    task: () => Promise<T>,
+    signal: AbortSignal | undefined,
+    priority: number
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (signal?.aborted) {
         reject(abortError());
@@ -297,14 +313,15 @@ export class LlmQueue {
 
       const onAbort = () => {
         if (started) return;
-        const index = this.queue.indexOf(run);
+        const index = this.queue.findIndex((item) => item.run === run);
         if (index >= 0) {
           this.queue.splice(index, 1);
         }
         reject(abortError());
       };
 
-      this.queue.push(run);
+      this.queue.push({ run, priority, order: this.nextOrder++ });
+      this.queue.sort((a, b) => b.priority - a.priority || a.order - b.order);
       signal?.addEventListener('abort', onAbort, { once: true });
       this.dequeue();
     });
@@ -314,7 +331,7 @@ export class LlmQueue {
     while (this.inFlight < this.concurrency && this.queue.length > 0) {
       const next = this.queue.shift();
       if (next) {
-        next();
+        next.run();
       }
     }
   }
@@ -327,6 +344,21 @@ class LimitedLlmClient implements LlmClient {
 
   complete(messages: ChatMessage[], options?: LlmClientOptions): Promise<LlmResponse> {
     return this.limiter.enqueue(() => this.inner.complete(messages, options), options?.signal);
+  }
+}
+
+class BackgroundLocalLlmClient implements LlmClient {
+  get meta() { return this.inner.meta; }
+
+  constructor(private inner: LlmClient, private limiter: LlmQueue) {}
+
+  complete(messages: ChatMessage[], options?: LlmClientOptions): Promise<LlmResponse> {
+    const queuedAt = performance.now();
+    return this.limiter.enqueueBackground(async () => {
+      const queueWaitMs = performance.now() - queuedAt;
+      const response = await this.inner.complete(messages, options);
+      return { ...response, queueWaitMs };
+    }, options?.signal);
   }
 }
 
@@ -690,16 +722,14 @@ export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null 
         : new OpenAiClient(config, config.agent.openaiModel ?? config.agent.model, 'trivial');
     const fallback = new TrivialTaskClient(fallbackRemote, fallbackDefaults);
 
-    return wrapWithLimiter(
-      new FallbackLlmClient(
-        wrapWithInfra(primary, config),
-        wrapWithInfra(fallback, config),
-        // Local failures (timeout, health cooldown, unreachable) must not fall back to a
-        // remote provider — trivial callers degrade gracefully and a remote call here would
-        // consume real API quota for work the local model was supposed to absorb.
-        (error) => !isLocalFailure(error),
-        config
-      )
+    return new FallbackLlmClient(
+      wrapWithInfra(primary, config),
+      wrapWithLimiter(wrapWithInfra(fallback, config)),
+      // Local failures (timeout, health cooldown, unreachable) must not fall back to a
+      // remote provider — trivial callers degrade gracefully and a remote call here would
+      // consume real API quota for work the local model was supposed to absorb.
+      (error) => !isLocalFailure(error),
+      config
     );
   }
   if (provider === 'anthropic') {
@@ -709,6 +739,42 @@ export function createTrivialTaskClient(config: ThufirConfig): LlmClient | null 
   }
   return wrapWithLimiter(
     wrapWithInfra(new TrivialTaskClient(new OpenAiClient(config, model, 'trivial'), defaults), config)
+  );
+}
+
+/**
+ * Local-only admission path for background screening. It deliberately skips the
+ * shared global LLM limiter so a news request waiting behind local work cannot
+ * occupy a permit needed by interactive or risk-management work.
+ */
+export function createBackgroundTrivialTaskClient(config: ThufirConfig): LlmClient | null {
+  const trivialConfig = config.agent?.trivial;
+  if (!trivialConfig?.enabled) return null;
+
+  const model = config.agent?.trivialTaskModel ?? 'qwen2.5:1.5b-instruct';
+  const baseUrl = resolveLocalBaseUrl(config);
+  startLocalKeepWarm({
+    baseUrl,
+    model,
+    enabled: trivialConfig.keepWarmEnabled ?? true,
+    intervalSeconds: trivialConfig.keepWarmIntervalSeconds ?? 180,
+    keepAlive: trivialConfig.keepAlive ?? '30m',
+  });
+  const localSoftTimeoutMs =
+    typeof trivialConfig.localSoftTimeoutMs === 'number'
+      ? Math.max(500, trivialConfig.localSoftTimeoutMs)
+      : 15_000;
+  const timeoutMs = Math.min(trivialConfig.timeoutMs ?? 12_000, localSoftTimeoutMs);
+  const local = new LocalClient(config, model, 'trivial');
+  const guarded = new LocalHealthGuard(local, { baseUrl, model, timeoutMs });
+  const background = new BackgroundLocalLlmClient(guarded, localLlmLimiter);
+  return wrapWithInfra(
+    new TrivialTaskClient(background, {
+      temperature: trivialConfig.temperature ?? 0.2,
+      timeoutMs,
+      maxTokens: Math.min(trivialConfig.maxTokens ?? 96, 96),
+    }),
+    config
   );
 }
 
