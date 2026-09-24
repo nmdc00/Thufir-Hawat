@@ -66,6 +66,7 @@ describe('durable news screening', () => {
     await worker.processNext();
 
     expect(complete).toHaveBeenCalledTimes(2);
+    expect(complete.mock.calls[0][0][1].content).toContain('a specific current price move in any commodity, currency, bond, equity, rate, or crypto market');
     for (const call of complete.mock.calls) {
       const prompt = call[0][1].content as string;
       expect(prompt.length).toBeLessThan(1100);
