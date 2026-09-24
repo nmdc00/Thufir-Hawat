@@ -31,12 +31,26 @@ type JobRow = {
   urgency?: 'routine' | 'urgent' | null;
 };
 
+type PersistedNewsActivation = Omit<NewsActivation, 'text'>;
+
+function serializeActivation(activation: NewsActivation): string {
+  const provenance: PersistedNewsActivation = {
+    id: activation.id,
+    intelId: activation.intelId,
+    source: activation.source,
+    receivedAtMs: activation.receivedAtMs,
+    ...(activation.publishedAtMs === undefined ? {} : { publishedAtMs: activation.publishedAtMs }),
+    matchedKeyword: activation.matchedKeyword,
+  };
+  return JSON.stringify(provenance);
+}
+
 export function enqueueNewsScreenJob(intelId: string, activation?: NewsActivation): boolean {
   const db = openDatabase();
   const intel = db.prepare('SELECT id FROM intel_items WHERE id = ?').get(intelId);
   if (!intel) return false;
   db.prepare(`INSERT INTO news_screen_jobs (intel_id, activation) VALUES (?, ?)
-    ON CONFLICT(intel_id) DO NOTHING`).run(intelId, activation ? JSON.stringify(activation) : null);
+    ON CONFLICT(intel_id) DO NOTHING`).run(intelId, activation ? serializeActivation(activation) : null);
   return true;
 }
 
@@ -47,7 +61,7 @@ export function storeIntelAndEnqueueNewsScreenJob(item: StoredIntel, activation?
     const inserted = storeIntel(item);
     if (inserted) {
       db.prepare(`INSERT INTO news_screen_jobs (intel_id, activation) VALUES (?, ?)
-        ON CONFLICT(intel_id) DO NOTHING`).run(item.id, activation ? JSON.stringify(activation) : null);
+        ON CONFLICT(intel_id) DO NOTHING`).run(item.id, activation ? serializeActivation(activation) : null);
     }
     return inserted;
   })();
@@ -285,7 +299,12 @@ export class NewsScreenWorker {
     }
     let activation: NewsActivation | undefined;
     if (row.activation) {
-      try { activation = JSON.parse(row.activation) as NewsActivation; } catch { /* invalid optional legacy provenance */ }
+      try {
+        const provenance = JSON.parse(row.activation) as PersistedNewsActivation & { text?: string };
+        activation = { ...provenance, text: row.content ?? row.title };
+        this.db.prepare('UPDATE news_screen_jobs SET activation = ? WHERE intel_id = ?')
+          .run(serializeActivation(activation), row.intel_id);
+      } catch { /* invalid optional legacy provenance */ }
     }
     const screen: NewsScreen = row.verdict === 'NO'
       ? { relevance: 'irrelevant', urgency: 'none' }

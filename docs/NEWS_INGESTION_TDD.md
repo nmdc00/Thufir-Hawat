@@ -55,7 +55,7 @@ The callback should carry the stored intel ID and source rather than only text. 
 
 ### 2. Durable, bounded local screening
 
-Add a `news_screen_jobs` table keyed by `intel_id` with `status`, `attempts`, `next_attempt_at`, `lease_until`, `verdict`, `reason`, `model`, `latency_ms`, `queue_wait_ms`, `queue_age_ms`, `created_at`, and `completed_at`. The worker claims one job at a time and uses the injected trivial local client with an explicit lightweight execution context. It reads content from `intel_items`, so the headline is not duplicated in the job table. Live item storage and enqueue are atomic; sampled-out items can be stored with an explicit `unsampled` outcome.
+Add a `news_screen_jobs` table keyed by `intel_id` with `status`, `attempts`, `next_attempt_at`, `lease_until`, `verdict`, `reason`, `model`, `latency_ms`, `queue_wait_ms`, `queue_age_ms`, `created_at`, and `completed_at`. The worker claims one job at a time and uses the injected trivial local client with an explicit lightweight execution context. It reads content from `intel_items`, so the headline is not duplicated in the job table. Persist only activation provenance in the job row; rebuild `NewsActivation.text` from the joined intel content/title for callbacks and restart replay. Live item storage and enqueue are atomic; sampled-out items can be stored with an explicit `unsampled` outcome.
 
 Keep first-pass output short. The small local model performed poorly with a three-way JSON prompt in the production replay. The first pass returns exactly `YES` or `NO`; a noncompliant or empty response is an error, never a `NO`. Only `YES` items get a second short local urgency check:
 
@@ -93,7 +93,7 @@ The shadow review must include gold and Brent moves, conditional Iran warnings, 
 
 ### Implementation evidence status (2026-09-24)
 
-- **Implemented and focused-tested:** `news_screen_jobs` persistence, atomic store-and-enqueue API, explicit unsampled state, one-at-a-time claims, exact binary/urgency parsing, two retries then visible failure, persisted leases and restart recovery, callback replay after callback failure, and per-minute/hour call admission. See `tests/intel/news_screening.test.ts` (seven temporary-SQLite lifecycle tests).
+- **Implemented and focused-tested:** `news_screen_jobs` persistence, atomic store-and-enqueue API, explicit unsampled state, provenance-only activation storage with callback text reconstruction, one-at-a-time claims, exact binary/urgency parsing, two retries then visible failure, persisted leases and restart recovery, callback replay after callback failure, and per-minute/hour call admission. See `tests/intel/news_screening.test.ts` (seven temporary-SQLite lifecycle tests).
 - **Pending integration proof:** monitor-to-worker-to-gateway fixture, shadow routing behavior, local/global queue priority under concurrent work, observed burst capacity replay, full suite, and production-like restart/replay. The focused worker tests do not prove rollout or latency acceptance.
 
 ## Red-first test contracts

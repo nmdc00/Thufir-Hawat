@@ -20,7 +20,7 @@ describe('durable news screening', () => {
     db = memory.openDatabase();
     screening = await import('../../src/intel/news_screening.js');
     db.prepare(`INSERT INTO intel_items (id, title, content, source, source_type, timestamp)
-      VALUES ('intel-1', 'Gold falls nearly 1%', 'Spot gold dropped', '@marketfeed', 'news', ?)`).run(new Date().toISOString());
+      VALUES ('intel-1', 'Gold falls nearly 1%', 'Gold falls nearly 1% as dollar rebounds', '@marketfeed', 'news', ?)`).run(new Date().toISOString());
   });
 
   afterEach(() => {
@@ -34,9 +34,12 @@ describe('durable news screening', () => {
 
   it('enqueues idempotently and persists a terminal NO without urgency inference', async () => {
     const { getExecutionContext } = await import('../../src/core/llm_infra.js');
-    const activation = { id: 'activation-1', intelId: 'intel-1', source: '@marketfeed', text: 'Gold falls nearly 1%', receivedAtMs: 10, matchedKeyword: '' };
+    const activation = { id: 'activation-1', intelId: 'intel-1', source: '@marketfeed', text: 'Gold falls nearly 1% as dollar rebounds', receivedAtMs: 10, matchedKeyword: '' };
     expect(screening.enqueueNewsScreenJob('intel-1', activation)).toBe(true);
     expect(screening.enqueueNewsScreenJob('intel-1', activation)).toBe(true);
+    const storedActivation = JSON.parse((db.prepare('SELECT activation FROM news_screen_jobs').get() as { activation: string }).activation) as Record<string, unknown>;
+    expect(storedActivation).not.toHaveProperty('text');
+    expect(storedActivation).toMatchObject({ id: activation.id, intelId: activation.intelId, source: activation.source, receivedAtMs: activation.receivedAtMs, matchedKeyword: activation.matchedKeyword });
     const complete = vi.fn(async () => {
       expect(getExecutionContext()).toMatchObject({ mode: 'LIGHT_REASONING', reason: 'news_screening', source: 'news' });
       return { content: 'NO', model: 'fake' };
@@ -108,7 +111,7 @@ describe('durable news screening', () => {
   });
 
   it('reclaims an expired lease after worker restart and reads the stored item', async () => {
-    const activation = { id: 'activation-1', intelId: 'intel-1', source: '@marketfeed', text: 'Gold falls nearly 1%', receivedAtMs: 10, matchedKeyword: '' };
+    const activation = { id: 'activation-1', intelId: 'intel-1', source: '@marketfeed', text: 'Gold falls nearly 1% as dollar rebounds', receivedAtMs: 10, matchedKeyword: '' };
     screening.enqueueNewsScreenJob('intel-1', activation);
     db.prepare(`UPDATE news_screen_jobs SET status = 'processing', attempts = 1,
       lease_until = '2000-01-01T00:00:00.000Z'`).run();
@@ -124,7 +127,8 @@ describe('durable news screening', () => {
 
     expect(await restartedWorker.processNext()).toBe(true);
     expect(complete.mock.calls[0]?.[0][1]?.content).toContain('Gold falls nearly 1%');
-    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({ intelId: 'intel-1', source: '@marketfeed', activation, screen: { relevance: 'relevant', urgency: 'urgent' }, attempts: 2 }));
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({ intelId: 'intel-1', source: '@marketfeed', activation: expect.objectContaining(activation), screen: { relevance: 'relevant', urgency: 'urgent' }, attempts: 2 }));
+    expect(onTerminal.mock.calls[0]?.[0].activation?.text).toBe('Gold falls nearly 1% as dollar rebounds');
     expect(db.prepare('SELECT status, verdict, urgency, attempts FROM news_screen_jobs').get()).toEqual({ status: 'screened', verdict: 'YES', urgency: 'urgent', attempts: 2 });
   });
 });
