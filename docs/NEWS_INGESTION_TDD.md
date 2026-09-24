@@ -55,7 +55,7 @@ The callback should carry the stored intel ID and source rather than only text. 
 
 ### 2. Durable, bounded local screening
 
-Add a `news_screen_jobs` table keyed by `intel_id` with `status`, `attempts`, `next_attempt_at`, `lease_until`, `verdict`, `reason`, `model`, `latency_ms`, `created_at`, and `completed_at`. The worker claims one job at a time and uses the existing trivial local client with an explicit lightweight execution context. It reads content from `intel_items`, so the headline is not duplicated in the job table.
+Add a `news_screen_jobs` table keyed by `intel_id` with `status`, `attempts`, `next_attempt_at`, `lease_until`, `verdict`, `reason`, `model`, `latency_ms`, `queue_wait_ms`, `queue_age_ms`, `created_at`, and `completed_at`. The worker claims one job at a time and uses the injected trivial local client with an explicit lightweight execution context. It reads content from `intel_items`, so the headline is not duplicated in the job table. Live item storage and enqueue are atomic; sampled-out items can be stored with an explicit `unsampled` outcome.
 
 Keep first-pass output short. The small local model performed poorly with a three-way JSON prompt in the production replay. The first pass returns exactly `YES` or `NO`; a noncompliant or empty response is an error, never a `NO`. Only `YES` items get a second short local urgency check:
 
@@ -67,7 +67,7 @@ type NewsScreen =
 
 The relevance prompt asks whether the post **could materially affect a tradable market or a held position over the current or next trading session**. It accepts realized moves and credible developing events without requiring a literal asset name. The urgency prompt distinguishes a fresh event that needs immediate review from routine relevant news. Neither model response authorizes an order. Validate both prompts against labeled real headlines in shadow mode before enabling routing.
 
-Malformed output, timeout, health failure, budget suppression, and empty output remain retryable job failures. Use at most two bounded retries with backoff; pause claims while the local model is unhealthy. After exhaustion, mark `failed` and surface an alert/metric. No failure is logged as a model `NO`. Retain the original post even when screening fails.
+Malformed output, timeout, health failure, budget suppression, and empty output remain retryable job failures. Use at most two bounded retries with backoff; pause claims for 30 seconds after local request failures. After exhaustion, mark `failed` and surface an alert/metric. No failure is logged as a model `NO`. Persist terminal classifier state as `routing` before invoking the gateway callback, then replay the callback after a crash until it succeeds; callback failure has its own backoff and never consumes classifier retries. Retain the original post even when screening fails. Default worker call caps are configurable at 30/minute and 320/hour; validate final settings against shadow replay and normal-task latency.
 
 Run one local screening request at a time so the worker respects the existing single-flight Ollama client. The queue is asynchronous to Telegram polling. Add an explicit low-priority admission path for background news that does not hold a global LLM permit while waiting for the local queue. Interactive, originator, and risk-management work must take priority over queued news jobs; the current FIFO `LlmQueue` does not provide that priority. Bound news calls per minute/hour and pause claims when normal-task latency or queue age exceeds its limit. Record queue wait separately from inference time. Add bounded batching only if the measured peak exceeds single-worker capacity; batch parsing must preserve a verdict for every intel ID and retry omissions individually.
 
@@ -90,6 +90,11 @@ Deploy in three stages:
 3. **Active:** route classifier results after the shadow checks pass. Keep a flag to return to prior routing without deleting pending jobs. A restart must drain pending work without duplicate side-effect initiation.
 
 The shadow review must include gold and Brent moves, conditional Iran warnings, a concrete diesel shock, an unrelated pharmaceutical headline, duplicate feed posts, and a digest. A classification label is reviewed against the actual post; no target `YES` rate is imposed.
+
+### Implementation evidence status (2026-09-24)
+
+- **Implemented and focused-tested:** `news_screen_jobs` persistence, atomic store-and-enqueue API, explicit unsampled state, one-at-a-time claims, exact binary/urgency parsing, two retries then visible failure, persisted leases and restart recovery, callback replay after callback failure, and per-minute/hour call admission. See `tests/intel/news_screening.test.ts` (five temporary-SQLite lifecycle tests).
+- **Pending integration proof:** monitor-to-worker-to-gateway fixture, shadow routing behavior, local/global queue priority under concurrent work, observed burst capacity replay, full suite, and production-like restart/replay. The focused worker tests do not prove rollout or latency acceptance.
 
 ## Red-first test contracts
 

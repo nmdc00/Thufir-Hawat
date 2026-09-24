@@ -7,7 +7,7 @@
 
 | Task | Branch | Worktree | Runtime entrypoint | Persistence | Path | Required proof | Owning document section |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Durable screening | `feat/news-ingestion-jobs` | `/tmp/thufir-worktrees/news-release/jobs/feat-news-ingestion-jobs` | Screening worker | `news_screen_jobs` | Write/read | SQLite lifecycle, retry, lease restart, classifier parsing | TDD §2, §4, red-first contracts 8-9 |
+| Durable screening | `feat/news-ingestion-jobs` | `/tmp/thufir-worktrees/news-release/jobs/feat-news-ingestion-jobs` | Screening worker | `news_screen_jobs`, call admission log, worker state | Write/read | `tests/intel/news_screening.test.ts` (five focused SQLite lifecycle, retry, lease restart, route replay, cap cases); typecheck pending final rerun | TDD §2, §4, red-first contracts 8-9 |
 | Local inference priority | `feat/news-ingestion-priority` | `/tmp/thufir-worktrees/news-release/priority/feat-news-ingestion-priority` | Trivial local client | None | Runtime queue | Concurrent local/global queue ordering and abort | TDD §2, red-first contract 15 |
 | Monitor and routing | `feat/news-ingestion-routing` | `/tmp/thufir-worktrees/news-release/routing/feat-news-ingestion-routing` | Telegram monitor, gateway scheduled/event paths | Dispatch keys and outcomes | Write/read | Monitor-to-worker-to-gateway SQLite integration; scan/briefing caps | TDD §1, §3-4, red-first contracts 1-7, 10-13 |
 | Contract and release evidence | `docs/news-ingestion-contract` | `/tmp/thufir-worktrees/news-release/docs/docs-news-ingestion-contract` | Release gate | Evidence only | Promotion gate | Reconcile TDD to code; full tests, replay, latency and production proof | TDD acceptance and this release doc |
@@ -31,4 +31,4 @@
 
 ## Status
 
-All implementation items are **in progress**. Before each feature PR merges, record each TDD item as implemented, deferred, or blocked with its proving test. Active rollout requires the TDD's shadow latency gates and production-like restart/replay proof.
+Durable screening persistence and its focused SQLite lifecycle tests are implemented on `feat/news-ingestion-jobs`. Monitor-to-gateway wiring, priority integration, full shadow capacity replay, and production restart/replay remain in progress. Active rollout requires the TDD's shadow latency gates and production-like restart/replay proof.

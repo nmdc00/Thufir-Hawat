@@ -194,6 +194,37 @@ CREATE INDEX IF NOT EXISTS idx_intel_source ON intel_items(source);
 CREATE INDEX IF NOT EXISTS idx_intel_category ON intel_items(category);
 CREATE INDEX IF NOT EXISTS idx_intel_timestamp ON intel_items(timestamp);
 
+-- Durable first-pass local screening. The source text stays in intel_items.
+CREATE TABLE IF NOT EXISTS news_screen_jobs (
+    intel_id TEXT PRIMARY KEY REFERENCES intel_items(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'routing', 'screened', 'unsampled', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    lease_until TEXT,
+    verdict TEXT CHECK(verdict IN ('YES', 'NO')),
+    urgency TEXT CHECK(urgency IN ('routine', 'urgent')),
+    reason TEXT,
+    model TEXT,
+    latency_ms INTEGER,
+    queue_wait_ms INTEGER,
+    queue_age_ms INTEGER,
+    activation TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_news_screen_jobs_claim
+    ON news_screen_jobs(status, next_attempt_at, lease_until, created_at);
+CREATE TABLE IF NOT EXISTS news_screen_call_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admitted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_news_screen_call_log_time ON news_screen_call_log(admitted_at);
+CREATE TABLE IF NOT EXISTS news_screen_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- Deduplication tracking
 CREATE TABLE IF NOT EXISTS intel_hashes (
     hash TEXT PRIMARY KEY,
