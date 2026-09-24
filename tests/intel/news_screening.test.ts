@@ -33,10 +33,14 @@ describe('durable news screening', () => {
   });
 
   it('enqueues idempotently and persists a terminal NO without urgency inference', async () => {
+    const { getExecutionContext } = await import('../../src/core/llm_infra.js');
     const activation = { id: 'activation-1', intelId: 'intel-1', source: '@marketfeed', text: 'Gold falls nearly 1%', receivedAtMs: 10, matchedKeyword: '' };
     expect(screening.enqueueNewsScreenJob('intel-1', activation)).toBe(true);
     expect(screening.enqueueNewsScreenJob('intel-1', activation)).toBe(true);
-    const complete = vi.fn(async () => ({ content: 'NO', model: 'fake' }));
+    const complete = vi.fn(async () => {
+      expect(getExecutionContext()).toMatchObject({ mode: 'LIGHT_REASONING', reason: 'news_screening', source: 'news' });
+      return { content: 'NO', model: 'fake' };
+    });
     const onTerminal = vi.fn();
     const worker = new screening.NewsScreenWorker({ client: { complete, meta: { provider: 'local', model: 'fake' } } as LlmClient, db, onTerminal });
 

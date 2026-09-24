@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { openDatabase } from '../memory/db.js';
 import type { ChatMessage, LlmClient } from '../core/llm.js';
+import { withExecutionContext } from '../core/llm_infra.js';
 import type { NewsActivation } from './news_activation.js';
 import { storeIntel, type StoredIntel } from './store.js';
 
@@ -57,7 +58,7 @@ export function storeIntelAndMarkNewsScreenUnsampled(item: StoredIntel): boolean
   return db.transaction(() => {
     const inserted = storeIntel(item);
     if (inserted) db.prepare(`INSERT INTO news_screen_jobs (intel_id, status, completed_at)
-      VALUES (?, 'unsampled', datetime('now')) ON CONFLICT(intel_id) DO NOTHING`).run(item.id);
+      VALUES (?, 'unsampled', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(intel_id) DO NOTHING`).run(item.id);
     return inserted;
   })();
 }
@@ -269,7 +270,10 @@ export class NewsScreenWorker {
       return true;
     })();
     if (!admission) throw new Error('news_call_budget_exhausted');
-    return this.options.client.complete(messages, { temperature: 0, maxTokens });
+    return withExecutionContext(
+      { mode: 'LIGHT_REASONING', critical: false, reason: 'news_screening', source: 'news' },
+      () => this.options.client.complete(messages, { temperature: 0, maxTokens })
+    );
   }
 
   private toTerminalResult(row: JobRow): NewsScreenTerminalResult {

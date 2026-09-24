@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS news_screen_jobs (
     intel_id TEXT PRIMARY KEY REFERENCES intel_items(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'routing', 'screened', 'unsampled', 'failed')),
     attempts INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+    next_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     lease_until TEXT,
     verdict TEXT CHECK(verdict IN ('YES', 'NO')),
     urgency TEXT CHECK(urgency IN ('routine', 'urgent')),
@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS news_screen_jobs (
     queue_age_ms INTEGER,
     activation TEXT,
     error TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     completed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_news_screen_jobs_claim
