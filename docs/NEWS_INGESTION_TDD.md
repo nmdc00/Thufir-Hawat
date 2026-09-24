@@ -1,6 +1,6 @@
 # News Ingestion and Relevance Routing TDD
 
-**Status:** Proposed  
+**Status:** Implemented on release branch; active rollout pending shadow capacity and production validation
 **Date:** 2026-09-24  
 **Scope:** Telegram channel ingestion, local relevance screening, news briefings, and event-scan routing
 
@@ -91,10 +91,14 @@ Deploy in three stages:
 
 The shadow review must include gold and Brent moves, conditional Iran warnings, a concrete diesel shock, an unrelated pharmaceutical headline, duplicate feed posts, and a digest. A classification label is reviewed against the actual post; no target `YES` rate is imposed.
 
+**Implementation reconciliation:** The old keyword path launched an unconditional full scan before relevance screening. The shipped shadow compatibility path screens all legacy keyword hits, including those outside the configured sample, and routes them only after a relevant/urgent verdict, dynamic market mapping, existing cooldown, and the separate hourly cap. Non-keyword shadow posts do not route. This is a deliberate safety change from the literal “keep current routing” line above. Active routing remains opt-in after the full-shadow latency gate. Focused monitor, router, autonomous-wiring, and temporary-SQLite integration tests prove the implemented entrypoints; full-shadow performance and production behavior are pending release validation.
+
 ### Implementation evidence status (2026-09-24)
 
 - **Implemented and focused-tested:** `news_screen_jobs` persistence, atomic store-and-enqueue API, explicit unsampled state, provenance-only activation storage with callback text reconstruction, one-at-a-time claims, exact binary/urgency parsing, two retries then visible failure, persisted leases and restart recovery, callback replay after callback failure, and per-minute/hour call admission. See `tests/intel/news_screening.test.ts` (seven temporary-SQLite lifecycle tests).
-- **Pending integration proof:** monitor-to-worker-to-gateway fixture, shadow routing behavior, local/global queue priority under concurrent work, observed burst capacity replay, full suite, and production-like restart/replay. The focused worker tests do not prove rollout or latency acceptance.
+- **Implemented and focused-tested:** monitor-to-worker-to-gateway temporary-SQLite fixture, shadow routing, local/global queue priority under concurrent work, 11-post nonblocking ingestion, and durable restart/dispatch replay. See `tests/intel/news_ingestion_routing.integration.test.ts`, `tests/intel/news_routing.test.ts`, and `tests/core/llm-trivial-local-isolation.test.ts`.
+- **Full-suite proof on the routing feature branch:** 229 files and 1,224 tests passed with V8 coverage; production build passed. New screening, routing, and gateway router modules have 87.9%, 96.4%, and 86.3% line coverage respectively.
+- **Pending release proof:** observed 26-post and 127-post burst capacity under concurrent production work, full-shadow latency targets, and production deployment validation. The test suite does not prove active-rollout capacity.
 
 ## Red-first test contracts
 
