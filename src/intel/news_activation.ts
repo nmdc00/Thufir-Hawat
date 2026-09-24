@@ -6,5 +6,5 @@ export interface NewsActivation {
   text: string;
   receivedAtMs: number;
   publishedAtMs?: number;
-  matchedKeyword: string;
+  matchedKeyword?: string;
 }
