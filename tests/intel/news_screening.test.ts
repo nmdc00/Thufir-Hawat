@@ -54,6 +54,25 @@ describe('durable news screening', () => {
     expect(await worker.processNext()).toBe(false);
   });
 
+  it('bounds both local prompts and does not repeat the stored title', async () => {
+    const title = 'Gold falls nearly 1%';
+    db.prepare('UPDATE intel_items SET content = ? WHERE id = ?').run(`${title} ${'market detail '.repeat(1000)}`, 'intel-1');
+    screening.enqueueNewsScreenJob('intel-1');
+    const complete = vi.fn()
+      .mockResolvedValueOnce({ content: 'YES', model: 'fake' })
+      .mockResolvedValueOnce({ content: 'ROUTINE', model: 'fake' });
+    const worker = new screening.NewsScreenWorker({ client: { complete, meta: { provider: 'local', model: 'fake' } } as LlmClient, db });
+
+    await worker.processNext();
+
+    expect(complete).toHaveBeenCalledTimes(2);
+    for (const call of complete.mock.calls) {
+      const prompt = call[0][1].content as string;
+      expect(prompt.length).toBeLessThan(1100);
+      expect(prompt.split(title)).toHaveLength(2);
+    }
+  });
+
   it('routes a persisted terminal result again after callback failure without reclassifying', async () => {
     screening.enqueueNewsScreenJob('intel-1');
     const complete = vi.fn().mockResolvedValue({ content: 'NO', model: 'fake' });
