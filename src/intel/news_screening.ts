@@ -80,12 +80,12 @@ export function storeIntelAndMarkNewsScreenUnsampled(item: StoredIntel): boolean
 function boundedNewsText(title: string, content: string | null): string {
   const body = content?.trim() || title;
   const post = body.startsWith(title) ? body : `${title}\n${body}`;
-  return post.slice(0, 800);
+  return post.slice(0, 750);
 }
 
 const relevancePrompt = (title: string, content: string | null): ChatMessage[] => [
   { role: 'system', content: 'Classify market relevance. Reply with exactly YES or NO.' },
-  { role: 'user', content: `Could this post materially affect a tradable market or held position over the current or next trading session? Consider realized price moves and credible developing events; an asset name is not required. Reply exactly YES or NO.\n\n${boundedNewsText(title, content)}` },
+  { role: 'user', content: `Screen news for financial-market relevance. Mark YES for a specific current price move in any commodity, currency, bond, equity, rate, or crypto market, or a new concrete event that could move one. Mark NO for unrelated company stories and generic recaps without a specific current move. Reply exactly YES or NO.\nHeadline: ${boundedNewsText(title, content)}` },
 ];
 
 const urgencyPrompt = (title: string, content: string | null): ChatMessage[] => [
