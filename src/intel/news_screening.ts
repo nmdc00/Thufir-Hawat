@@ -77,14 +77,20 @@ export function storeIntelAndMarkNewsScreenUnsampled(item: StoredIntel): boolean
   })();
 }
 
+function boundedNewsText(title: string, content: string | null): string {
+  const body = content?.trim() || title;
+  const post = body.startsWith(title) ? body : `${title}\n${body}`;
+  return post.slice(0, 800);
+}
+
 const relevancePrompt = (title: string, content: string | null): ChatMessage[] => [
   { role: 'system', content: 'Classify market relevance. Reply with exactly YES or NO.' },
-  { role: 'user', content: `Could this post materially affect a tradable market or held position over the current or next trading session? Consider realized price moves and credible developing events; an asset name is not required. Reply exactly YES or NO.\n\n${title}\n${content ?? ''}` },
+  { role: 'user', content: `Could this post materially affect a tradable market or held position over the current or next trading session? Consider realized price moves and credible developing events; an asset name is not required. Reply exactly YES or NO.\n\n${boundedNewsText(title, content)}` },
 ];
 
 const urgencyPrompt = (title: string, content: string | null): ChatMessage[] => [
   { role: 'system', content: 'Classify news urgency. Reply with exactly URGENT or ROUTINE.' },
-  { role: 'user', content: `Does this relevant market news describe a fresh event that needs immediate review, or routine relevant news? Reply exactly URGENT or ROUTINE.\n\n${title}\n${content ?? ''}` },
+  { role: 'user', content: `Does this relevant market news describe a fresh event that needs immediate review, or routine relevant news? Reply exactly URGENT or ROUTINE.\n\n${boundedNewsText(title, content)}` },
 ];
 
 function parseExact(response: string, allowed: readonly string[]): string {
