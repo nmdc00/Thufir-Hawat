@@ -782,6 +782,11 @@ const ConfigSchema = z.object({
               channels: z.array(z.string()).default([]),
               breakingNewsKeywords: z.array(z.string()).default([]),
               eventDrivenScanEnabled: z.boolean().default(true),
+              newsScreenRollout: z.enum(['sampled_shadow', 'full_shadow', 'active']).default('sampled_shadow'),
+              newsScreenSampleRate: z.number().min(0).max(1).default(0.1),
+              newsScreenCallsPerMinute: z.number().int().min(1).default(30),
+              newsScreenCallsPerHour: z.number().int().min(1).default(320),
+              newsScansPerHour: z.number().int().min(0).max(24).default(4),
             })
             .default({}),
         })

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
@@ -7,10 +7,13 @@ import { NewMessage, type NewMessageEvent } from 'telegram/events/index.js';
 import { Logger } from '../core/logger.js';
 import type { ThufirConfig } from '../core/config.js';
 import { storeIntel } from './store.js';
+import { storeIntelAndEnqueueNewsScreenJob } from './news_screening.js';
+import { storeIntelAndMarkNewsScreenUnsampled } from './news_screening.js';
 import type { NewsActivation } from './news_activation.js';
 
 // ---------------------------------------------------------------------------
-// Breaking-news keyword set (hardcoded baseline + configurable extras)
+// Legacy keyword set is retained only as optional diagnostic metadata. It must
+// never decide whether a newly stored post enters the screening queue.
 // ---------------------------------------------------------------------------
 
 const BREAKING_KEYWORDS = new Set([
@@ -66,8 +69,7 @@ const POLL_INTERVAL_MS = 60_000; // 1 minute
  *
  * On every new message:
  *   1. Stores the post as a `social` intel item (deduped by title+URL hash).
- *   2. If the text contains a breaking-news keyword, invokes `onBreakingNews`
- *      so the caller (gateway) can fire an immediate event-driven scan.
+ *   2. Enqueues every new non-seed post for durable relevance screening.
  *
  * Delivery strategy (two complementary paths):
  *   - Event handler (bonus): gramjs NewMessage fires for channels where the
@@ -92,8 +94,8 @@ export class TelegramChannelMonitor {
 
   constructor(
     private config: ThufirConfig,
-    /** Called when a breaking-news message is stored; receives the raw text and source. */
-    private onBreakingNews: (itemCount: number, text: string, source: string, activation: NewsActivation) => Promise<void>,
+    /** Called once a new post is stored; implementations should enqueue by intel ID. */
+    private onNewIntel: (intelId: string, source: string, activation: NewsActivation) => void | Promise<void>,
   ) {}
 
   isConfigured(): boolean {
@@ -255,7 +257,7 @@ export class TelegramChannelMonitor {
   ): Promise<boolean> {
     const intelId = randomUUID();
     const receivedAtMs = Date.now();
-    const isNew = storeIntel({
+    const item = {
       id: intelId,
       title: text.slice(0, 120),
       content: text,
@@ -263,30 +265,53 @@ export class TelegramChannelMonitor {
       sourceType: 'social',
       category: 'market_news',
       timestamp: new Date(receivedAtMs).toISOString(),
-    });
+    } as const;
+
+    // Build provenance before storage so the durable job and intel row commit
+    // atomically for live posts. Startup seeds remain archival only.
+    const lowerText = text.toLowerCase();
+    const matched = [...keywords].find((k) => lowerText.includes(k));
+    const activation: NewsActivation = {
+      id: intelId,
+      intelId,
+      source: `@${source}`,
+      text,
+      receivedAtMs,
+      matchedKeyword: matched ?? '',
+    };
+    const monitorConfig = this.config.channels?.telegram?.monitor;
+    const sampledShadow = monitorConfig?.newsScreenRollout === 'sampled_shadow';
+    const sampleRate = Math.max(0, Math.min(1, Number(monitorConfig?.newsScreenSampleRate ?? 0.1)));
+    const sampleBucket = Number.parseInt(
+      createHash('sha256').update(`${source}:${text}`).digest('hex').slice(0, 8), 16,
+    ) / 0xffffffff;
+    // Legacy keyword hits remain admitted during sampled shadow so the safe,
+    // screen-first compatibility route can continue existing news alerts.
+    const shouldScreen = !sampledShadow || Boolean(matched) || sampleBucket < sampleRate;
+    const isNew = seed
+      ? storeIntel(item)
+      : shouldScreen
+        ? storeIntelAndEnqueueNewsScreenJob(item, activation)
+        : storeIntelAndMarkNewsScreenUnsampled(item);
 
     if (!isNew) return false; // duplicate
     if (seed) return true; // seeding — store but don't trigger callbacks
 
     this.logger.info(`TelegramChannelMonitor: stored intel from @${source} (${text.length} chars)`);
 
-    // Check for breaking-news keywords
-    const lowerText = text.toLowerCase();
-    const matched = [...keywords].find((k) => lowerText.includes(k));
-    if (!matched) return true;
-
-    this.logger.info(`TelegramChannelMonitor: breaking keyword "${matched}" → triggering event scan`);
-
-    await this.onBreakingNews(1, text, source, {
-      id: intelId,
-      intelId,
-      source: `@${source}`,
-      text,
-      receivedAtMs,
-      matchedKeyword: matched,
-    }).catch((err) =>
-      this.logger.warn('TelegramChannelMonitor: event scan callback failed', err),
-    );
+    // Keyword hits are diagnostics only. The durable job was inserted in the
+    // same transaction as the intel row; this hook is a nonblocking wakeup.
+    if (!shouldScreen) return true;
+    try {
+      const queued = this.onNewIntel(intelId, source, activation);
+      if (queued && typeof (queued as Promise<void>).catch === 'function') {
+        void (queued as Promise<void>).catch((err) =>
+          this.logger.warn('TelegramChannelMonitor: screening enqueue failed', err),
+        );
+      }
+    } catch (err) {
+      this.logger.warn('TelegramChannelMonitor: screening enqueue failed', err);
+    }
 
     return true;
   }

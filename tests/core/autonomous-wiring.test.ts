@@ -386,6 +386,21 @@ describe('AutonomousManager — originator wiring (v1.98)', () => {
     expect(bundle.recentEvents).toContain('Verified oil export ban');
   });
 
+  it('forces the scheduled originator trigger when a routine news digest is pending', async () => {
+    mocks.triggerShouldFire.mockReturnValue({ fire: false, reason: 'cadence', alertedSymbols: [] });
+    mocks.originatorPropose.mockResolvedValue(null);
+    const { AutonomousManager } = await import('../../src/core/autonomous.js');
+    const manager = new AutonomousManager(makeGateLlm('reject'), makeGateLlm('reject'),
+      { getMarket: async () => ({ symbol: 'BTC', markPrice: 70000 }) } as any,
+      {} as any, makeLimiter(), baseConfig);
+    const digest = '[intel-routine-1] Gold futures drop 1% (@marketfeed)';
+    await manager.runScan({ newsDigest: digest });
+    expect(mocks.originatorPropose).toHaveBeenCalledOnce();
+    const bundle = mocks.originatorPropose.mock.calls[0]![0] as any;
+    expect(bundle.triggerReason).toBe('event');
+    expect(bundle.routineNewsDigest).toBe(digest);
+  });
+
   it('uses bounded decision clients for trade origination', async () => {
     const { AutonomousManager } = await import('../../src/core/autonomous.js');
     const primary = makeGateLlm('approve');
