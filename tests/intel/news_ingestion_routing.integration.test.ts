@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RPCMessageToError } from 'telegram/errors/index.js';
 
 import { TelegramChannelMonitor } from '../../src/intel/telegram_monitor.js';
 import { NewsScreenWorker } from '../../src/intel/news_screening.js';
@@ -63,6 +64,31 @@ describe('monitor to worker to gateway news routing', () => {
     };
     return new NewsScreenWorker({ client, db, pollIntervalMs: 5, onTerminal: router.onTerminal });
   }
+
+  it('recovers a Telegram RPC failure through polling into durable screening and routing without duplicates', async () => {
+    const { db, scan, router, monitor } = setup('active');
+    const error = RPCMessageToError({ errorMessage: 'CONNECTION_NOT_INITED', errorCode: 400 } as any,
+      { className: 'messages.GetHistory' } as any);
+    const client = {
+      getMessages: vi.fn().mockRejectedValueOnce(error)
+        .mockResolvedValue([{ message: 'Brent crude gains 2.2% after a fresh supply disruption' }]),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      connect: vi.fn().mockResolvedValue(true),
+    };
+    const pollingMonitor = monitor as any;
+    pollingMonitor.client = client;
+    pollingMonitor.entityObjects = new Map([['marketfeed', {}]]);
+    await pollingMonitor.pollAll(new Set(), false);
+    await pollingMonitor.pollAll(new Set(), false);
+    expect(client.connect).toHaveBeenCalledOnce();
+    expect(db.prepare('SELECT COUNT(*) AS count FROM intel_items').get()).toMatchObject({ count: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM news_screen_jobs').get()).toMatchObject({ count: 1 });
+    await worker(db, router).processNext();
+    expect(db.prepare('SELECT status FROM news_screen_jobs').get()).toMatchObject({ status: 'screened' });
+    expect(await router.drainUrgent()).toBe(1);
+    expect(scan).toHaveBeenCalledOnce();
+    await monitor.stop();
+  });
 
   it('screens non-keyword posts, deduplicates push plus poll, routes urgent mapped news under cap, and batches routine impact', async () => {
     const { db, scan, listMarkets, router, monitor } = setup('active', 2);
