@@ -60,6 +60,13 @@ const BREAKING_KEYWORDS = new Set([
 
 const POLL_INTERVAL_MS = 60_000; // 1 minute
 
+function isConnectionNotInitialized(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const rpcError = error as { errorMessage?: unknown; message?: unknown };
+  return rpcError.errorMessage === 'CONNECTION_NOT_INITED'
+    || rpcError.message === 'CONNECTION_NOT_INITED';
+}
+
 // ---------------------------------------------------------------------------
 // TelegramChannelMonitor
 // ---------------------------------------------------------------------------
@@ -91,6 +98,7 @@ export class TelegramChannelMonitor {
   /** username → resolved entity object, used for polling */
   private entityObjects: Map<string, any> = new Map();
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private needsReconnect = false;
 
   constructor(
     private config: ThufirConfig,
@@ -204,10 +212,28 @@ export class TelegramChannelMonitor {
   // -------------------------------------------------------------------------
 
   private async pollAll(keywords: Set<string>, seed: boolean): Promise<void> {
-    if (!this.client) return;
+    if (!this.client || this.stopped) return;
+    // One recovery attempt per poll, shared across channels. Failed attempts
+    // remain pending for the next scheduled poll instead of spinning here.
+    let recoveryAttempted = this.needsReconnect;
+    if (this.needsReconnect && !(await this.reconnectForPolling())) return;
     for (const [username, entity] of this.entityObjects) {
+      if (this.stopped) return;
       try {
-        const msgs = await this.client.getMessages(entity, { limit: 20 }) as any[];
+        let msgs: any[];
+        try {
+          msgs = await this.client.getMessages(entity, { limit: 20 }) as any[];
+        } catch (err) {
+          // GramJS 2.26.22 checks err.message, but RPCError decorates that
+          // string. The protocol error identifier lives in errorMessage.
+          if (!isConnectionNotInitialized(err)) throw err;
+          this.needsReconnect = true;
+          if (recoveryAttempted) throw err;
+          recoveryAttempted = true;
+          if (!(await this.reconnectForPolling())) return;
+          msgs = await this.client.getMessages(entity, { limit: 20 }) as any[];
+        }
+        if (this.stopped) return;
         let stored = 0;
         for (const msg of msgs) {
           const text: string = msg.message ?? msg.text ?? '';
@@ -219,8 +245,32 @@ export class TelegramChannelMonitor {
           this.logger.info(`TelegramChannelMonitor: poll stored ${stored} new item(s) from @${username}`);
         }
       } catch (err) {
+        if (isConnectionNotInitialized(err)) this.needsReconnect = true;
         this.logger.warn(`TelegramChannelMonitor: poll failed for @${username}`, err);
+        if (this.needsReconnect) return;
       }
+    }
+  }
+
+  private async reconnectForPolling(): Promise<boolean> {
+    const client = this.client;
+    if (!client || this.stopped) return false;
+    this.logger.warn('TelegramChannelMonitor: reinitializing Telegram connection');
+    try {
+      await client.disconnect();
+      if (this.stopped) return false;
+      await client.connect();
+      if (this.stopped) {
+        await client.disconnect();
+        return false;
+      }
+      this.needsReconnect = false;
+      this.logger.info('TelegramChannelMonitor: Telegram connection reinitialized');
+      return true;
+    } catch (err) {
+      this.needsReconnect = true;
+      this.logger.warn('TelegramChannelMonitor: reconnect failed; retrying on next poll', err);
+      return false;
     }
   }
 
