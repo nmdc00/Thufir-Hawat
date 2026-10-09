@@ -10,7 +10,8 @@
  * - Messages from non-monitored channels (wrong ID, DMs) are ignored
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { RPCMessageToError } from 'telegram/errors/index.js';
 import { TelegramChannelMonitor } from '../../src/intel/telegram_monitor.js';
 
 // ---------------------------------------------------------------------------
@@ -41,6 +42,7 @@ vi.mock('telegram', () => ({
     disconnect = vi.fn().mockResolvedValue(undefined);
     addEventHandler = vi.fn();
     getEntity = vi.fn().mockResolvedValue({ id: BigInt(123), username: 'marketfeed', title: 'Market Feed' });
+    getMessages = vi.fn().mockResolvedValue([]);
     session = { save: () => 'mock-session-string' };
   },
 }));
@@ -242,5 +244,135 @@ describe('TelegramChannelMonitor seed behaviour', () => {
     expect(storeIntelMock).toHaveBeenCalledOnce();
     expect(storeAndEnqueueMock).not.toHaveBeenCalled();
     expect(onNewIntel).not.toHaveBeenCalled();
+  });
+});
+
+describe('TelegramChannelMonitor connection recovery', () => {
+  function rpcError() {
+    return RPCMessageToError({ errorMessage: 'CONNECTION_NOT_INITED', errorCode: 400 } as any,
+      { className: 'messages.GetHistory' } as any);
+  }
+
+  function setup() {
+    const { monitor, onNewIntel } = makeMonitor();
+    const client = {
+      getMessages: vi.fn().mockResolvedValue([{ message: 'Gold futures rise as the dollar falls' }]),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      connect: vi.fn().mockResolvedValue(true),
+    };
+    monitor.client = client;
+    return { monitor, onNewIntel, client };
+  }
+
+  beforeEach(() => {
+    storeIntelMock.mockReset().mockReturnValue(true);
+    storeAndEnqueueMock.mockReset().mockReturnValue(true);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('recovers the actual GramJS RPCError and delivers the retried post to screening', async () => {
+    const { monitor, client, onNewIntel } = setup();
+    const error = rpcError();
+    expect(error.message).toBe('400: CONNECTION_NOT_INITED (caused by messages.GetHistory)');
+    client.getMessages.mockRejectedValueOnce(error);
+    await monitor.pollAll(TEST_KEYWORDS, false);
+    expect(client.disconnect).toHaveBeenCalledOnce();
+    expect(client.connect).toHaveBeenCalledOnce();
+    expect(client.getMessages).toHaveBeenCalledTimes(2);
+    expect(storeAndEnqueueMock).toHaveBeenCalledOnce();
+    expect(onNewIntel).toHaveBeenCalledOnce();
+  });
+
+  it('leaves ordinary RPC errors to the next poll without reconnecting', async () => {
+    const { monitor, client } = setup();
+    client.getMessages.mockRejectedValueOnce({ errorMessage: 'FLOOD_WAIT_120' });
+    await monitor.pollAll(TEST_KEYWORDS, false);
+    expect(client.disconnect).not.toHaveBeenCalled();
+    expect(storeAndEnqueueMock).not.toHaveBeenCalled();
+    await monitor.pollAll(TEST_KEYWORDS, false);
+    expect(storeAndEnqueueMock).toHaveBeenCalledOnce();
+  });
+
+  it('bounds persistent initialization failures to one reconnect per poll across channels', async () => {
+    const { monitor, client } = setup();
+    monitor.entityObjects.set('second_channel', {});
+    client.getMessages.mockRejectedValue(rpcError());
+    await monitor.pollAll(TEST_KEYWORDS, false);
+    expect(client.connect).toHaveBeenCalledOnce();
+    expect(client.getMessages).toHaveBeenCalledTimes(2);
+    await monitor.pollAll(TEST_KEYWORDS, false);
+    expect(client.connect).toHaveBeenCalledTimes(2);
+    expect(client.getMessages).toHaveBeenCalledTimes(3);
+    expect(storeAndEnqueueMock).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed reconnect on the next poll before fetching again', async () => {
+    const { monitor, client } = setup();
+    client.getMessages.mockRejectedValueOnce(rpcError());
+    client.connect.mockRejectedValueOnce(new Error('network unavailable'));
+    await monitor.pollAll(TEST_KEYWORDS, false);
+    expect(client.getMessages).toHaveBeenCalledOnce();
+    await monitor.pollAll(TEST_KEYWORDS, false);
+    expect(client.connect).toHaveBeenCalledTimes(2);
+    expect(storeAndEnqueueMock).toHaveBeenCalledOnce();
+  });
+
+  it('preserves seed suppression after recovery', async () => {
+    const { monitor, client, onNewIntel } = setup();
+    client.getMessages.mockRejectedValueOnce(rpcError());
+    await monitor.pollAll(TEST_KEYWORDS, true);
+    expect(storeIntelMock).toHaveBeenCalledOnce();
+    expect(storeAndEnqueueMock).not.toHaveBeenCalled();
+    expect(onNewIntel).not.toHaveBeenCalled();
+  });
+
+  it('does not reconnect after stopping during disconnect', async () => {
+    const { monitor, client } = setup();
+    let release!: () => void;
+    client.disconnect.mockReturnValueOnce(new Promise<void>((resolve) => { release = resolve; }));
+    client.getMessages.mockRejectedValueOnce(rpcError());
+    const polling = monitor.pollAll(TEST_KEYWORDS, false);
+    await vi.waitFor(() => expect(client.disconnect).toHaveBeenCalledOnce());
+    await monitor.stop();
+    release();
+    await polling;
+    expect(client.connect).not.toHaveBeenCalled();
+    expect(storeAndEnqueueMock).not.toHaveBeenCalled();
+  });
+
+  it('resumes scheduled polling after recovery without registering duplicate event handlers', async () => {
+    vi.useFakeTimers();
+    const monitor = new TelegramChannelMonitor(makeConfig(), vi.fn()) as any;
+    await monitor.start();
+    const client = monitor.client;
+    client.getMessages.mockRejectedValueOnce(rpcError())
+      .mockResolvedValue([{ message: 'Gold futures rise as the dollar falls' }]);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(client.connect).toHaveBeenCalledTimes(2); // startup + recovery
+      expect(storeAndEnqueueMock).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(storeAndEnqueueMock).toHaveBeenCalledTimes(2);
+      expect(client.addEventHandler).toHaveBeenCalledOnce();
+    } finally {
+      await monitor.stop();
+    }
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(storeAndEnqueueMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes a connection that finishes reconnecting after stop', async () => {
+    const { monitor, client } = setup();
+    let release!: () => void;
+    client.connect.mockReturnValueOnce(new Promise<void>((resolve) => { release = resolve; }));
+    client.getMessages.mockRejectedValueOnce(rpcError());
+    const polling = monitor.pollAll(TEST_KEYWORDS, false);
+    await vi.waitFor(() => expect(client.connect).toHaveBeenCalledOnce());
+    await monitor.stop();
+    release();
+    await polling;
+    expect(client.disconnect).toHaveBeenCalledTimes(3); // recovery, stop, late connect cleanup
+    expect(client.getMessages).toHaveBeenCalledOnce();
+    expect(storeAndEnqueueMock).not.toHaveBeenCalled();
   });
 });
